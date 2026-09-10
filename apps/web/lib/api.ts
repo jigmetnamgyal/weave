@@ -43,6 +43,28 @@ function apiBaseUrl(): string {
   return url.replace(/\/$/, "");
 }
 
+/** A member's position in a workspace. */
+export type Role = "owner" | "admin" | "developer" | "viewer";
+
+/**
+ * A workspace, with the caller's role and what that role permits.
+ *
+ * `permissions` is advisory — it exists so the UI can hide controls the caller
+ * cannot use, rather than reimplementing the role matrix in TypeScript where
+ * it would drift. The server enforces the same matrix regardless.
+ */
+export type Workspace = {
+  id: string;
+  slug: string;
+  name: string;
+  version: number;
+  role: Role;
+  permissions: string[];
+  created_at: string;
+};
+
+type ListResponse<T> = { items: T[] };
+
 /**
  * Fetch the authenticated user from the control-plane API.
  *
@@ -91,4 +113,71 @@ export async function fetchCurrentUser(): Promise<Result<User>> {
   }
 
   return { ok: true, data: (await response.json()) as User };
+}
+
+/** List the workspaces the caller belongs to. */
+export async function fetchWorkspaces(): Promise<Result<Workspace[]>> {
+  const result = await apiRequest<ListResponse<Workspace>>("/v1/workspaces");
+  return result.ok ? { ok: true, data: result.data.items } : result;
+}
+
+/** Create a workspace. The caller becomes its owner. */
+export async function createWorkspace(name: string): Promise<Result<Workspace>> {
+  return apiRequest<Workspace>("/v1/workspaces", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+/**
+ * Issue a request to the control-plane API with the caller's session token.
+ *
+ * Server-side only, so the token never reaches the browser and no CORS
+ * configuration is needed.
+ */
+async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<Result<T>> {
+  const { getToken } = await auth();
+  const token = await getToken();
+
+  if (!token) {
+    return { ok: false, status: 401, message: "Not signed in." };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl()}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+  } catch (error) {
+    const reason =
+      error instanceof Error && error.name === "TimeoutError"
+        ? "The API did not respond in time."
+        : "The API could not be reached.";
+    return { ok: false, status: 0, message: reason };
+  }
+
+  if (!response.ok) {
+    let message = `The API returned ${response.status}.`;
+    let requestId: string | undefined;
+    try {
+      const body = (await response.json()) as Partial<ApiError>;
+      if (body.message) message = body.message;
+      requestId = body.request_id;
+    } catch {
+      // A non-JSON error body is unremarkable; keep the default.
+    }
+    return { ok: false, status: response.status, message, requestId };
+  }
+
+  if (response.status === 204) {
+    return { ok: true, data: undefined as T };
+  }
+  return { ok: true, data: (await response.json()) as T };
 }

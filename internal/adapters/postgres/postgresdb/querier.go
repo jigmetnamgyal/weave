@@ -6,12 +6,40 @@ package postgresdb
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 type Querier interface {
+	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
+	AppendAuditEvent(ctx context.Context, arg AppendAuditEventParams) (AuditEvent, error)
 	// Test and operator support only; not used on a request path.
 	CountUsers(ctx context.Context) (int64, error)
+	// Used under LockWorkspace to enforce that a workspace never loses its last
+	// owner.
+	CountWorkspaceOwners(ctx context.Context, workspaceID uuid.UUID) (int64, error)
+	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
+	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
 	GetUserByExternalID(ctx context.Context, externalID string) (User, error)
+	// Scoped by member, not just by id. A caller who is not a member gets no row,
+	// so "not found" and "not yours" are indistinguishable from the outside and
+	// workspace identifiers cannot be probed.
+	GetWorkspaceForMember(ctx context.Context, arg GetWorkspaceForMemberParams) (Workspace, error)
+	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
+	// Operator and test support.
+	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
+	ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUID) ([]ListWorkspaceMembersRow, error)
+	ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) ([]ListWorkspacesForUserRow, error)
+	// Serialises membership changes within a workspace. Taken before any check
+	// that counts owners, so two concurrent demotions cannot both observe two
+	// owners and both proceed.
+	LockWorkspace(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Optimistic concurrency: the caller supplies the version it read. A stale
+	// version matches no row, which the store reports as a conflict rather than
+	// silently overwriting a concurrent edit.
+	RenameWorkspace(ctx context.Context, arg RenameWorkspaceParams) (Workspace, error)
+	SlugExists(ctx context.Context, slug string) (bool, error)
+	UpdateWorkspaceMemberRole(ctx context.Context, arg UpdateWorkspaceMemberRoleParams) (WorkspaceMember, error)
 	// Just-in-time provisioning. ON CONFLICT makes concurrent first requests for
 	// the same subject resolve to a single row instead of racing, and DO UPDATE
 	// (rather than DO NOTHING) guarantees RETURNING yields the row either way.

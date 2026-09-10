@@ -1,0 +1,385 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jigmetnamgyal/weave/internal/adapters/postgres/postgresdb"
+	"github.com/jigmetnamgyal/weave/internal/application"
+	"github.com/jigmetnamgyal/weave/internal/domain"
+)
+
+// uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint breach.
+const uniqueViolation = "23505"
+
+// WorkspaceStore persists workspaces, membership and audit events.
+type WorkspaceStore struct {
+	pool    *pgxpool.Pool
+	queries *postgresdb.Queries
+}
+
+// compile-time check that the adapter satisfies the port.
+var _ application.WorkspaceStore = (*WorkspaceStore)(nil)
+
+// NewWorkspaceStore constructs a WorkspaceStore.
+func NewWorkspaceStore(pool *pgxpool.Pool) *WorkspaceStore {
+	return &WorkspaceStore{pool: pool, queries: postgresdb.New(pool)}
+}
+
+// inTx runs fn inside a transaction, rolling back on error or panic.
+//
+// Every method that changes state and writes an audit row goes through here,
+// which is what makes the port's atomicity promise true: the change and its
+// record commit together or not at all.
+func (s *WorkspaceStore) inTx(ctx context.Context, fn func(*postgresdb.Queries) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		// Rollback after a successful commit is a no-op, so this is safe to
+		// run unconditionally and covers the panic path too.
+		_ = tx.Rollback(ctx)
+	}()
+
+	if err := fn(s.queries.WithTx(tx)); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// CreateWithOwner creates a workspace, its owner membership and the audit row.
+func (s *WorkspaceStore) CreateWithOwner(ctx context.Context, workspace domain.Workspace, event application.AuditEvent) (domain.Workspace, error) {
+	var created domain.Workspace
+
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		row, err := q.CreateWorkspace(ctx, postgresdb.CreateWorkspaceParams{
+			ID:        workspace.ID,
+			Slug:      workspace.Slug,
+			Name:      workspace.Name,
+			CreatedBy: workspace.CreatedBy,
+		})
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+				// The advisory slug check lost a race with a concurrent
+				// creation. Surfacing it as a domain error lets the caller
+				// retry with a different slug rather than see a driver error.
+				return fmt.Errorf("%w: slug %q is already taken",
+					domain.ErrInvalidWorkspace, workspace.Slug)
+			}
+			return fmt.Errorf("insert workspace: %w", err)
+		}
+
+		if _, err := q.AddWorkspaceMember(ctx, postgresdb.AddWorkspaceMemberParams{
+			WorkspaceID: row.ID,
+			UserID:      workspace.CreatedBy,
+			Role:        string(domain.RoleOwner),
+		}); err != nil {
+			return fmt.Errorf("insert owner membership: %w", err)
+		}
+
+		if err := appendAudit(ctx, q, event); err != nil {
+			return err
+		}
+
+		created = workspaceToDomain(row)
+		return nil
+	})
+	if err != nil {
+		return domain.Workspace{}, err
+	}
+	return created, nil
+}
+
+// SlugExists reports whether a slug is already in use.
+func (s *WorkspaceStore) SlugExists(ctx context.Context, slug string) (bool, error) {
+	exists, err := s.queries.SlugExists(ctx, slug)
+	if err != nil {
+		return false, fmt.Errorf("check slug: %w", err)
+	}
+	return exists, nil
+}
+
+// GetForMember returns a workspace only when the user is a member.
+func (s *WorkspaceStore) GetForMember(ctx context.Context, workspaceID, userID uuid.UUID) (domain.Workspace, error) {
+	row, err := s.queries.GetWorkspaceForMember(ctx, postgresdb.GetWorkspaceForMemberParams{
+		ID:     workspaceID,
+		UserID: userID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Workspace{}, application.ErrWorkspaceNotFound
+		}
+		return domain.Workspace{}, fmt.Errorf("select workspace: %w", err)
+	}
+	return workspaceToDomain(row), nil
+}
+
+// ListForUser returns the workspaces a user belongs to, with their role.
+func (s *WorkspaceStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]application.WorkspaceMembership, error) {
+	rows, err := s.queries.ListWorkspacesForUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces: %w", err)
+	}
+
+	result := make([]application.WorkspaceMembership, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, application.WorkspaceMembership{
+			Workspace: domain.Workspace{
+				ID:        row.ID,
+				Slug:      row.Slug,
+				Name:      row.Name,
+				CreatedBy: row.CreatedBy,
+				Version:   int(row.Version),
+				CreatedAt: timestamp(row.CreatedAt),
+				UpdatedAt: timestamp(row.UpdatedAt),
+			},
+			Role: domain.Role(row.Role),
+		})
+	}
+	return result, nil
+}
+
+// GetMembership returns a user's membership in a workspace.
+func (s *WorkspaceStore) GetMembership(ctx context.Context, workspaceID, userID uuid.UUID) (domain.Membership, error) {
+	row, err := s.queries.GetWorkspaceMember(ctx, postgresdb.GetWorkspaceMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Membership{}, application.ErrMemberNotFound
+		}
+		return domain.Membership{}, fmt.Errorf("select membership: %w", err)
+	}
+	return membershipToDomain(row), nil
+}
+
+// ListMembers returns every member of a workspace.
+func (s *WorkspaceStore) ListMembers(ctx context.Context, workspaceID uuid.UUID) ([]domain.MemberProfile, error) {
+	rows, err := s.queries.ListWorkspaceMembers(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list members: %w", err)
+	}
+
+	members := make([]domain.MemberProfile, 0, len(rows))
+	for _, row := range rows {
+		members = append(members, domain.MemberProfile{
+			Membership: domain.Membership{
+				WorkspaceID: row.WorkspaceID,
+				UserID:      row.UserID,
+				Role:        domain.Role(row.Role),
+				CreatedAt:   timestamp(row.CreatedAt),
+				UpdatedAt:   timestamp(row.UpdatedAt),
+			},
+			Email:       row.Email,
+			DisplayName: derefText(row.DisplayName),
+			AvatarURL:   derefText(row.AvatarUrl),
+		})
+	}
+	return members, nil
+}
+
+// Rename applies a new name under optimistic concurrency.
+func (s *WorkspaceStore) Rename(ctx context.Context, workspaceID uuid.UUID, expectedVersion int, name string, event application.AuditEvent) (domain.Workspace, error) {
+	var updated domain.Workspace
+
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		row, err := q.RenameWorkspace(ctx, postgresdb.RenameWorkspaceParams{
+			ID:      workspaceID,
+			Version: int32(expectedVersion), //nolint:gosec // bounded by the version CHECK
+			Name:    name,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// The row exists — authorization already proved membership —
+				// so no match means the version moved under us.
+				return application.ErrVersionConflict
+			}
+			return fmt.Errorf("update workspace: %w", err)
+		}
+
+		if err := appendAudit(ctx, q, event); err != nil {
+			return err
+		}
+
+		updated = workspaceToDomain(row)
+		return nil
+	})
+	if err != nil {
+		return domain.Workspace{}, err
+	}
+	return updated, nil
+}
+
+// ChangeMemberRole updates a member's role, refusing to remove the last owner.
+func (s *WorkspaceStore) ChangeMemberRole(ctx context.Context, workspaceID, userID uuid.UUID, role domain.Role, event application.AuditEvent) (domain.Membership, error) {
+	var updated domain.Membership
+
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		current, err := lockAndLoadMember(ctx, q, workspaceID, userID)
+		if err != nil {
+			return err
+		}
+
+		// Only a demotion of a current owner can strand the workspace.
+		if domain.Role(current.Role) == domain.RoleOwner && role != domain.RoleOwner {
+			if err := ensureAnotherOwnerExists(ctx, q, workspaceID); err != nil {
+				return err
+			}
+		}
+
+		row, err := q.UpdateWorkspaceMemberRole(ctx, postgresdb.UpdateWorkspaceMemberRoleParams{
+			WorkspaceID: workspaceID,
+			UserID:      userID,
+			Role:        string(role),
+		})
+		if err != nil {
+			return fmt.Errorf("update member role: %w", err)
+		}
+
+		if err := appendAudit(ctx, q, event); err != nil {
+			return err
+		}
+
+		updated = membershipToDomain(row)
+		return nil
+	})
+	if err != nil {
+		return domain.Membership{}, err
+	}
+	return updated, nil
+}
+
+// RemoveMember deletes a membership, refusing to remove the last owner.
+func (s *WorkspaceStore) RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID, event application.AuditEvent) error {
+	return s.inTx(ctx, func(q *postgresdb.Queries) error {
+		current, err := lockAndLoadMember(ctx, q, workspaceID, userID)
+		if err != nil {
+			return err
+		}
+
+		if domain.Role(current.Role) == domain.RoleOwner {
+			if err := ensureAnotherOwnerExists(ctx, q, workspaceID); err != nil {
+				return err
+			}
+		}
+
+		removed, err := q.DeleteWorkspaceMember(ctx, postgresdb.DeleteWorkspaceMemberParams{
+			WorkspaceID: workspaceID,
+			UserID:      userID,
+		})
+		if err != nil {
+			return fmt.Errorf("delete member: %w", err)
+		}
+		if removed == 0 {
+			return application.ErrMemberNotFound
+		}
+
+		return appendAudit(ctx, q, event)
+	})
+}
+
+// lockAndLoadMember takes the workspace lock, then reads the target member.
+//
+// The lock is taken before the read so that concurrent membership changes on
+// the same workspace serialise. Without it two callers could each observe two
+// owners and each demote one, leaving none.
+func lockAndLoadMember(ctx context.Context, q *postgresdb.Queries, workspaceID, userID uuid.UUID) (postgresdb.WorkspaceMember, error) {
+	if _, err := q.LockWorkspace(ctx, workspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return postgresdb.WorkspaceMember{}, application.ErrWorkspaceNotFound
+		}
+		return postgresdb.WorkspaceMember{}, fmt.Errorf("lock workspace: %w", err)
+	}
+
+	member, err := q.GetWorkspaceMember(ctx, postgresdb.GetWorkspaceMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return postgresdb.WorkspaceMember{}, application.ErrMemberNotFound
+		}
+		return postgresdb.WorkspaceMember{}, fmt.Errorf("select member: %w", err)
+	}
+	return member, nil
+}
+
+// ensureAnotherOwnerExists fails when the workspace has only one owner.
+func ensureAnotherOwnerExists(ctx context.Context, q *postgresdb.Queries, workspaceID uuid.UUID) error {
+	owners, err := q.CountWorkspaceOwners(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("count owners: %w", err)
+	}
+	if owners <= 1 {
+		return domain.ErrLastOwner
+	}
+	return nil
+}
+
+// appendAudit writes the audit row for a change, inside the caller's
+// transaction.
+func appendAudit(ctx context.Context, q *postgresdb.Queries, event application.AuditEvent) error {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("generate audit id: %w", err)
+	}
+
+	detail := []byte("{}")
+	if event.Detail != nil {
+		detail, err = json.Marshal(event.Detail)
+		if err != nil {
+			return fmt.Errorf("encode audit detail: %w", err)
+		}
+	}
+
+	if _, err := q.AppendAuditEvent(ctx, postgresdb.AppendAuditEventParams{
+		ID:          id,
+		WorkspaceID: event.WorkspaceID,
+		ActorUserID: pgtype.UUID{Bytes: event.ActorUserID, Valid: event.ActorUserID != uuid.Nil},
+		Action:      event.Action,
+		Target:      optionalText(event.Target),
+		Detail:      detail,
+	}); err != nil {
+		return fmt.Errorf("append audit event: %w", err)
+	}
+	return nil
+}
+
+// workspaceToDomain converts a generated row into the domain entity.
+func workspaceToDomain(row postgresdb.Workspace) domain.Workspace {
+	return domain.Workspace{
+		ID:        row.ID,
+		Slug:      row.Slug,
+		Name:      row.Name,
+		CreatedBy: row.CreatedBy,
+		Version:   int(row.Version),
+		CreatedAt: timestamp(row.CreatedAt),
+		UpdatedAt: timestamp(row.UpdatedAt),
+	}
+}
+
+// membershipToDomain converts a generated row into the domain entity.
+func membershipToDomain(row postgresdb.WorkspaceMember) domain.Membership {
+	return domain.Membership{
+		WorkspaceID: row.WorkspaceID,
+		UserID:      row.UserID,
+		Role:        domain.Role(row.Role),
+		CreatedAt:   timestamp(row.CreatedAt),
+		UpdatedAt:   timestamp(row.UpdatedAt),
+	}
+}

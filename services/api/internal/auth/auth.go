@@ -112,6 +112,15 @@ func UserFrom(ctx context.Context) (domain.User, bool) {
 	return user, ok
 }
 
+// ContextWithUser attaches an authenticated user to a context.
+//
+// Middleware does this itself; this exists so that packages downstream of
+// authentication can be tested at their own boundary, standing in for the
+// middleware rather than reconstructing a signed token to get past it.
+func ContextWithUser(ctx context.Context, user domain.User) context.Context {
+	return context.WithValue(ctx, userKey, user)
+}
+
 // bearerToken extracts the credential from the Authorization header.
 func bearerToken(r *http.Request) (string, error) {
 	header := r.Header.Get("Authorization")

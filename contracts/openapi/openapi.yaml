@@ -25,6 +25,13 @@ servers:
 tags:
   - name: users
     description: The authenticated user.
+  - name: workspaces
+    description: |
+      Workspaces are the tenant boundary. Authorization has two steps and the
+      responses distinguish them: a caller who is not a member receives `404`
+      for every workspace endpoint, identical to a workspace that does not
+      exist, because `403` would confirm existence and allow tenant
+      enumeration. A member who lacks the required permission receives `403`.
 
 security:
   - bearerAuth: []
@@ -58,7 +65,179 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
 
+  /v1/workspaces:
+    get:
+      operationId: listWorkspaces
+      tags: [workspaces]
+      summary: List the caller's workspaces
+      responses:
+        "200":
+          description: Workspaces the caller belongs to, each with their role.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      operationId: createWorkspace
+      tags: [workspaces]
+      summary: Create a workspace
+      description: The caller becomes its owner. A workspace always has at least one owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        "201":
+          description: The created workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/workspaces/{workspaceId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: getWorkspace
+      tags: [workspaces]
+      summary: Return one workspace
+      responses:
+        "200":
+          description: The workspace, with the caller's role and permissions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    patch:
+      operationId: renameWorkspace
+      tags: [workspaces]
+      summary: Rename a workspace
+      description: |
+        Requires `workspace:manage`.
+
+        `version` is mandatory and must be the value from the last read. A
+        stale version returns `409` rather than overwriting a concurrent edit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, version]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                version: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The updated workspace, carrying its new version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/workspaces/{workspaceId}/members:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listWorkspaceMembers
+      tags: [workspaces]
+      summary: List a workspace's members
+      responses:
+        "200":
+          description: Every member of the workspace.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Member" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/workspaces/{workspaceId}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      operationId: changeWorkspaceMemberRole
+      tags: [workspaces]
+      summary: Change a member's role
+      description: |
+        Requires `member:manage`. Demoting the last owner returns `409`: a
+        workspace with no owner cannot be administered by anyone.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "200":
+          description: The updated membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, role]
+                properties:
+                  user_id: { type: string, format: uuid }
+                  role: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      operationId: removeWorkspaceMember
+      tags: [workspaces]
+      summary: Remove a member
+      description: |
+        Requires `member:manage`, except when removing yourself, which any
+        member may do. Removing the last owner returns `409`.
+      responses:
+        "204": { description: The member was removed. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
 components:
+  parameters:
+    WorkspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -69,6 +248,63 @@ components:
         as `Authorization: Bearer <token>`.
 
   schemas:
+    Role:
+      type: string
+      description: |
+        A member's position in a workspace. Permissions are derived from the
+        role by the server; clients read `permissions` rather than mapping
+        roles themselves.
+      enum: [owner, admin, developer, viewer]
+
+    Permission:
+      type: string
+      description: An action a member may perform, named for the action rather than the role.
+      enum:
+        - workspace:read
+        - workspace:manage
+        - member:invite
+        - member:manage
+        - session:create
+        - session:control
+        - action:approve
+        - repository:manage
+        - billing:manage
+
+    Workspace:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name, version, role, created_at, permissions]
+      properties:
+        id: { type: string, format: uuid }
+        slug:
+          type: string
+          description: URL-safe identifier, derived from the name and unique across workspaces.
+        name: { type: string }
+        version:
+          type: integer
+          description: |
+            Optimistic concurrency token. Send it back on the next update; a
+            stale value is rejected with `409` instead of overwriting.
+        role: { $ref: "#/components/schemas/Role" }
+        permissions:
+          type: array
+          description: |
+            What the caller may do here. Advisory, for hiding controls the
+            caller cannot use — the server enforces the same matrix regardless.
+          items: { $ref: "#/components/schemas/Permission" }
+        created_at: { type: string, format: date-time }
+
+    Member:
+      type: object
+      additionalProperties: false
+      required: [user_id, email, role]
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        avatar_url: { type: string, format: uri }
+        role: { $ref: "#/components/schemas/Role" }
+
     User:
       type: object
       additionalProperties: false
@@ -106,7 +342,13 @@ components:
         code:
           type: string
           description: Stable, machine-readable identifier. Clients branch on this rather than on `message`.
-          enum: [unauthenticated, not_found, internal_error]
+          enum:
+            - unauthenticated
+            - permission_denied
+            - not_found
+            - conflict
+            - invalid_request
+            - internal_error
         message:
           type: string
           description: Human-readable summary, safe to surface to an end user.
@@ -131,6 +373,39 @@ components:
             code: unauthenticated
             message: Authentication required. Present a valid bearer token.
             request_id: 0199a3b4-1c2d-7e3f-8a9b-0c1d2e3f4a5b
+
+    WorkspaceNotFound:
+      description: |
+        No such workspace, **or** the caller is not a member of it. The two are
+        deliberately indistinguishable: answering `403` for a workspace that
+        exists but is not the caller's would let anyone enumerate tenants by
+        guessing identifiers.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    PermissionDenied:
+      description: |
+        The caller is a member of this workspace but their role does not hold
+        the required permission. Distinct from `404`, which hides the workspace
+        entirely.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    Conflict:
+      description: |
+        The request conflicts with the resource's current state — a stale
+        `version`, or a change that would leave the workspace with no owner.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    InvalidRequest:
+      description: The body was malformed, carried unknown fields, or failed validation.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
 
     InternalError:
       description: The request could not be completed. The failure is recorded against `request_id`.
