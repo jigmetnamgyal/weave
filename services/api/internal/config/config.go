@@ -32,6 +32,13 @@ type Config struct {
 	OTelServiceName string
 	// ReadinessTimeout bounds the total time a readiness probe may take.
 	ReadinessTimeout time.Duration
+	// ClerkIssuer is the expected `iss` claim on session tokens, and the base
+	// URL the signing key set is discovered from.
+	ClerkIssuer string
+	// ClerkJWTAudience, when set, is required in the token's `aud` claim.
+	// Clerk's default session token has no audience; one appears only when a
+	// JWT template sets it, so enforcement is opt-in.
+	ClerkJWTAudience string
 }
 
 // requiredKeys are environment variables that have no safe default. Every one
@@ -41,6 +48,11 @@ var requiredKeys = []string{
 	"REDIS_URL",
 	"NATS_URL",
 	"TEMPORAL_HOST_PORT",
+	// The API needs the issuer to know which tokens to trust and where to
+	// fetch signing keys. It never needs CLERK_SECRET_KEY: verifying a
+	// signature requires only public keys, so that secret stays with the web
+	// application and out of this process entirely.
+	"CLERK_ISSUER",
 }
 
 // validExporters are the accepted values for OTEL_EXPORTER.
@@ -86,6 +98,8 @@ func Load() (Config, error) {
 		OTelExporter:     valueOr("OTEL_EXPORTER", "none"),
 		OTelServiceName:  valueOr("OTEL_SERVICE_NAME", "weave-api"),
 		ReadinessTimeout: 3 * time.Second,
+		ClerkIssuer:      strings.TrimSpace(os.Getenv("CLERK_ISSUER")),
+		ClerkJWTAudience: strings.TrimSpace(os.Getenv("CLERK_JWT_AUDIENCE")),
 	}
 
 	if !validExporters[cfg.OTelExporter] {

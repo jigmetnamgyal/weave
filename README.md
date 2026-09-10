@@ -68,42 +68,72 @@ Stop the dependency containers:
 make down
 ```
 
-No real credential is needed to run this baseline. Every value in
-`.env.example` is a local development default.
+The stack, both health probes and the public routes run on the committed
+defaults with no real credential. **Signing in additionally needs Clerk keys**
+— see below.
+
+## Authentication
+
+Weave uses [Clerk](https://clerk.com) for authentication only. Workspaces,
+membership and every permission decision live in PostgreSQL; Clerk
+Organizations is deliberately not used, because two sources of truth for
+authorization is how tenant isolation breaks (ADR-009).
+
+To sign in locally you need your own Clerk application:
+
+1. Create one at [dashboard.clerk.com](https://dashboard.clerk.com), or run
+   `npx clerk@latest init` from the repository root, which creates an
+   application and writes the keys into `.env`.
+2. Enable **GitHub** as the only social connection, and disable email/password.
+3. Set `CLERK_ISSUER`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and
+   `CLERK_SECRET_KEY` in `.env` (see `.env.example` for which is which).
+
+Until real keys are present the public routes and the API's health probes work
+normally, and `/v1/me` answers `503` — the credential cannot be checked, which
+is different from rejecting it.
+
+Clerk's GitHub connection establishes **identity only**. Repository access is a
+separate GitHub App installation and must never reuse this token.
 
 ## Commands
 
 Run `make help` for the full list.
 
-| Command            | Purpose                                                |
-| ------------------ | ------------------------------------------------------ |
-| `make dev`         | Start dependencies, the API and the web shell          |
-| `make up` / `down` | Start / stop just the dependency containers            |
-| `make health`      | Report health of every dependency and both API probes  |
-| `make logs`        | Follow dependency container logs                       |
-| `make clean`       | Stop containers, delete their volumes and build output |
-| `make ci`          | Run every quality gate the CI workflow runs            |
-| `make fmt`         | Format Go and web sources in place                     |
-| `make lint-go`     | golangci-lint at the pinned version                    |
-| `make test`        | Go unit tests with the race detector                   |
+| Command                 | Purpose                                                |
+| ----------------------- | ------------------------------------------------------ |
+| `make dev`              | Start dependencies, the API and the web shell          |
+| `make up` / `down`      | Start / stop just the dependency containers            |
+| `make health`           | Report health of every dependency and both API probes  |
+| `make logs`             | Follow dependency container logs                       |
+| `make clean`            | Stop containers, delete their volumes and build output |
+| `make ci`               | Run every quality gate the CI workflow runs            |
+| `make fmt`              | Format Go and web sources in place                     |
+| `make lint-go`          | golangci-lint at the pinned version                    |
+| `make test`             | Go unit tests with the race detector                   |
+| `make test-integration` | Tests that need a real database                        |
+| `make migrate-up`       | Apply pending database migrations                      |
+| `make sqlc`             | Regenerate the database layer from `db/queries`        |
 
 ## Layout
 
 ```
 apps/web/              Next.js application shell and product UI
-  app/                 Routes, layouts, loading and error boundaries
+  app/(app)/           Authenticated routes — the layout protects the subtree
+  app/sign-in/         Clerk sign-in
   components/ui/       Generated shadcn/ui primitives — do not edit by hand
-  lib/                 Shared web utilities
-services/api/          Go control-plane service (health probes today)
+  lib/                 Shared web utilities and the server-side API client
+services/api/          Go control-plane service: health probes, GET /v1/me
+services/migrate/      Migration runner (goose as a library, not the CLI)
 services/worker/       Temporal worker entrypoint            (scaffold, M5)
 services/runner-manager/  Isolated environment lifecycle     (scaffold, M5)
 services/runner/       Sandbox-side supervisor and adapters  (scaffold, M5)
-internal/domain/       Pure entities, policies, state machines (scaffold, M2)
-internal/application/  Use cases, ports, transactions         (scaffold, M2)
-internal/adapters/     Infrastructure implementations         (scaffold, M2)
-contracts/openapi/     API contract source                    (placeholder)
+internal/domain/       Pure entities, policies, state machines
+internal/application/  Use cases and ports (identity, user store)
+internal/adapters/     Port implementations: clerk/, postgres/
+contracts/openapi/     API contract source
 contracts/events/      Event schemas                          (placeholder)
-db/migrations/         Ordered SQL migrations                 (empty)
+db/migrations/         Ordered SQL migrations
+db/queries/            sqlc query definitions
 infra/                 Local Docker Compose stack
 scripts/               Task-runner scripts backing the Makefile
 context/               Product, architecture and standards baseline

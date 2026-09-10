@@ -37,18 +37,15 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 - Defined repository code standards and AI implementation workflow.
 - Installed and configured shadcn/ui design system and UI primitives (see Verification Record).
 - Built the repository foundation: monorepo layout, Go API with health probes, local Docker Compose stack, task runner, environment validation, CI quality gates, and OpenTelemetry bootstrap (Unit M1.1 — see Verification Record).
+- Built the authentication baseline: database foundation (goose migrations, sqlc, `users` table), the identity-verifier port with a Clerk JWKS adapter, deny-by-default auth middleware, just-in-time user provisioning, `GET /v1/me`, the first OpenAPI document, and Clerk sign-in with a protected route in the web shell (Unit M2.1 — see Verification Record). **End-to-end sign-in is unverified pending Clerk keys; see Session Notes.**
 
 ## In Progress
-
-- None.
-
-## Next Up
 
 ### Unit M2.1 — Authentication Baseline
 
 **Source:** `context/features-specs/03-authentication-baseline.md`
 
-Unblocked — Open Question 2 resolved in favour of Clerk (ADR-009). Ready to start once M1.1 merges to `main`.
+Implemented 2026-09-10 on `feat/m2.1-authentication-baseline`, stacked on the unmerged `feat/m1.1-repository-foundation` branch so the M1.1 pull request stays reviewable on its own. Code complete and all automated gates pass; the unit stays In Progress until a real Clerk application exists and the sign-in flow is confirmed by a human.
 
 **Outcome:** A developer signs in with GitHub through Clerk, and the Go API verifies that session and resolves it to an internal `users` row.
 
@@ -57,6 +54,12 @@ Unblocked — Open Question 2 resolved in favour of Clerk (ADR-009). Ready to st
 **Non-scope:** workspaces, membership, roles, invitations, the authorization matrix, Clerk webhooks, generated TypeScript API client, CORS (the protected route calls the API server-side), and repository access via the GitHub App.
 
 **Note on size:** this unit carries the database foundation (migration runner and sqlc) alongside authentication, because the "identity-provider IDs are never internal primary keys" invariant cannot be honoured without a `users` table. If it proves too large to review in one pass, split at that seam: database foundation first, authentication second.
+
+## Next Up
+
+### Unit M2.2 — Workspaces and Membership
+
+Follows M2.1. Expected scope: `workspaces`, `workspace_members` and `workspace_invitations` tables; workspace creation and the invitation flow; the owner/admin/developer/viewer role model; and workspace-scoped repository access checks. The authorization matrix and its test suite land with it.
 
 ## Open Questions
 
@@ -101,6 +104,7 @@ Resolve these before the milestone that depends on them:
 
 | Date | Unit | Environment | Commands/tests | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-10 | Authentication Baseline, Unit M2.1 (`context/features-specs/03-authentication-baseline.md`) | Local dev, macOS arm64, Go 1.25.14, Node 23.11.0, PostgreSQL 17.2 | `make ci` (now including `sqlc-check` and `lint-go`); `make test-integration` against the compose database; `make migrate-up`; `psql \d users`; `curl` against a running API for every auth path; browser check of the web shell | Pass, with one gap | Migration applied and schema matches the spec. Integration tests against real PostgreSQL prove 16 concurrent first requests create exactly one row, that citext makes email lookup case-insensitive, and that empty profile fields store as NULL. Verifier tests use a locally generated RSA key and an httptest JWKS server — no Clerk network call — covering valid, expired, wrong issuer, wrong audience, unpublished key, tampered payload, malformed, empty, missing-email, and HMAC algorithm confusion. Live API: `/health/*` public and 200; `/v1/me` returns 401 with the standard envelope and an echoed `X-Request-Id` for missing, malformed and wrong-scheme credentials; a well-formed RS256 token against an unreachable issuer returns 503, while `alg:none` returns 401 without any network call. **Gap: sign-in end to end is unverified** — it needs a real Clerk application, which is the user's account to create. |
 | 2026-09-10 | Repository Foundation, Unit M1.1 (`context/features-specs/02-repository-foundation.md`) | Local dev, macOS arm64, Node 23.11.0, Go 1.25.14, Docker 28.1.1, Compose 2.35.1 | `make check-prereqs`; `make ci` (gofmt, prettier, go vet, eslint, tsc, `go test -race`, go build, next build); `golangci-lint run`; `govulncheck`; `npm audit --audit-level=high`; gitleaks via Docker; `make dev` from a clean checkout (no `.env`, no containers, no volumes); `make health`; per-dependency outage probes; `curl` of both probes and the web shell | Pass | Monorepo layout created and the Next.js app moved to `apps/web` via `git mv` (history preserved); dark-theme tokens verified intact in the browser (`--background #090b10`, `--primary #8b7cff`, `--card #131722`, `--ring #a99fff`). Go API serves `/health/live` (200, no dependency I/O) and `/health/ready` (200 when all up; 503 naming the failing dependency, verified by stopping postgres, redis and nats in turn). Compose stack reports all five services healthy. Config validation fails fast listing every missing variable at once. Local gates all green; **the CI workflow file itself is unverified until first push** — each gate's command was verified locally instead. |
 | 2026-09-10 | M1.1 review follow-up (CodeRabbit on PR #1) | Local dev, macOS arm64, Docker 28.1.1 | `make ci` (gofmt, prettier, go vet, eslint, tsc, `go test -race`, go build, next build); `golangci-lint run` (0 issues); `govulncheck` at the newly pinned v1.7.0; gitleaks v8.30.1 in git mode; full compose stack up with `--wait`; both probes via `curl` and `scripts/health.sh` | Pass | Nine inline findings triaged: eight fixed, one rejected on evidence. Two fixes were measured rather than assumed — the NATS readiness probe returned in 10.01s before the change and 3.01s (the configured `ReadinessTimeout`) after, with the NATS container paused to simulate an open-but-unresponsive server; and `scripts/health.sh` was reproduced building `http://localhost127.0.0.1:8080` from a host-qualified `API_HTTP_ADDR` before the fix. Compose publishers confirmed bound to 127.0.0.1 only. |
 | 2026-09-10 | Design System and UI Primitives (`context/features-specs/design-system.md`) | Local dev, Node 23, Next.js 16.3.4 | `npx tsc --noEmit`, `npx eslint .`, `npm run build`, manual browser check of Button/Card/Dialog/Input/Tabs/Textarea/ScrollArea at `http://localhost:3000` | Pass | shadcn/ui installed (`style: base-nova`, Base UI primitives, not Radix); Button, Card, Dialog, Input, Tabs, Textarea, ScrollArea added via `npx shadcn add`; `lucide-react` installed; `lib/utils.ts` exports `cn()` from the official `cn` package; `app/globals.css` dark-theme tokens replaced with the hex values from `ui-context.md` (background, foreground, card, popover, primary, secondary, muted, accent, destructive, border, ring, sidebar, chart). Verified visually via a temporary route (removed after verification) — correct dark surfaces/borders, purple primary accent, working dialog with backdrop blur, no hydration errors, no default light styling. |
@@ -120,6 +124,12 @@ Resolve these before the milestone that depends on them:
 - The web workspace has **no unit tests**; the `test` gate covers Go only. A web test runner should be added with the first stateful UI logic (reducers, event merging), not before.
 - `/health/ready` probes PostgreSQL, Redis and NATS but **not Temporal**, matching the spec exactly. Temporal runs in the local stack and its host/port is validated config. Add a Temporal probe when the session workflow in M5 makes it a hard serving dependency.
 - Readiness responses report only `ok`/`unavailable` per dependency; the underlying error is logged, never returned, because probe output is unauthenticated and dependency errors embed hostnames and connection strings.
+- **M2.1 needs a Clerk application before sign-in works.** Create one (`npx clerk@latest init`, or dashboard.clerk.com), enable GitHub as the only connection, and set `CLERK_ISSUER`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in `.env`. Until then the public routes and health probes work, and `/v1/me` answers 503 rather than 401 — the credential cannot be checked, which is deliberately distinct from rejecting it.
+- **`apps/web/.env` is a symlink to the root `.env`, created by `make dev` / the Makefile's `.env` target.** Next.js reads env files only from its own directory, and neither exporting the variables into the process nor calling `loadEnvConfig` from `next.config.ts` reaches the edge runtime that `proxy.ts` runs in or the `NEXT_PUBLIC_` inlining the client bundle needs. Both were tried and both failed; the symlink is what works. It is gitignored, so a fresh clone gets it from the task runner.
+- **The migration runner is `services/migrate`, not the goose CLI.** Installing the CLI links every database driver goose supports (ClickHouse, YDB, libsql, MySQL); it filled the disk mid-build. Driving goose as a library reuses the pgx driver already present. Migrations run as their own step, never at API startup.
+- **Web route protection lives in `app/(app)/layout.tsx`, not in path patterns.** Clerk deprecated `createRouteMatcher` because path matching can diverge from how Next.js resolves routes and leave protected resources reachable. The layout protects everything nested in the route group, mirroring how the API wraps its whole `/v1` subtree — in both cases a new route is protected by where it sits, not by remembering.
+- **Clerk Core 3 removed `<SignedIn>` / `<SignedOut>`;** use `<Show when="signed-in">`. The old names are still exported and throw at runtime, so this fails at render rather than at compile.
+- Go commands and gates now include `sqlc-check`, which regenerates and fails on a diff. A Homebrew-installed sqlc shadowed the pinned one during this unit and generated output at the wrong version, which is exactly what that gate catches.
 - Only the directories the M1.1 spec enumerated were created. `docs/adr/`, `docs/runbooks/`, `test/fixtures/` and `apps/web/features/` are named in `code-standards.md` but were deliberately not scaffolded — create each with its first real occupant rather than as an empty placeholder.
 - `app/globals.css` now carries only the dark-theme token values from `ui-context.md`; light theme and a theme toggle are not implemented. `ui-context.md` requires both themes for the shipped product, so this must be completed before M1.1's "Next.js application shell with design tokens" is considered done, or before any user-facing light/dark toggle ships.
 - **`natsProbe` uses `conn.FlushWithContext(ctx)`, never `conn.RTT()`.** `RTT()` flushes with a hardcoded 10s timeout that ignores the caller's context, and `health.Ready` waits for every probe, so one unresponsive NATS server held the whole readiness response past `ReadinessTimeout`. Measured: 10.01s before, 3.01s after.
@@ -133,4 +143,4 @@ Resolve these before the milestone that depends on them:
 ## Last Updated
 
 - Date: 2026-09-10
-- Updated by: M1.1 review follow-up (CodeRabbit feedback on PR #1, after the docstring coverage repair)
+- Updated by: Authentication Baseline (Unit M2.1) implementation
