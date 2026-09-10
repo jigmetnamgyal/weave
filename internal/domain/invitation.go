@@ -62,6 +62,23 @@ const (
 	InvitationExpired  InvitationStatus = "expired"
 )
 
+// InvitationStatuses is every status an invitation can report.
+var InvitationStatuses = []InvitationStatus{
+	InvitationPending, InvitationAccepted, InvitationRevoked, InvitationExpired,
+}
+
+// ParseInvitationStatus converts external input into a status, rejecting
+// anything unknown.
+func ParseInvitationStatus(value string) (InvitationStatus, error) {
+	status := InvitationStatus(value)
+	for _, known := range InvitationStatuses {
+		if status == known {
+			return status, nil
+		}
+	}
+	return "", fmt.Errorf("%w: unknown status %q", ErrInvalidInvitation, value)
+}
+
 // Invitation is an offer to join a workspace at a given role.
 type Invitation struct {
 	ID          uuid.UUID

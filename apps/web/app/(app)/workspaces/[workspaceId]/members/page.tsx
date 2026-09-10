@@ -30,13 +30,13 @@ export default async function MembersPage({
 
   const [members, invitations] = await Promise.all([
     fetchMembers(workspaceId),
-    canInvite ? fetchInvitations(workspaceId) : Promise.resolve(null),
+    // Filtered by the server rather than here, so the page and the API agree
+    // on what "pending" means — expiry is a moving target, and two
+    // definitions of it would drift.
+    canInvite ? fetchInvitations(workspaceId, "pending") : Promise.resolve(null),
   ]);
 
-  const pending =
-    invitations?.ok === true
-      ? invitations.data.filter((invitation) => invitation.status === "pending")
-      : [];
+  const pending = invitations?.ok === true ? invitations.data : [];
 
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 space-y-6 p-6">

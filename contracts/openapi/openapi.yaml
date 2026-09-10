@@ -167,7 +167,20 @@ paths:
       operationId: listWorkspaceInvitations
       tags: [workspaces]
       summary: List a workspace's invitations
-      description: Requires `member:invite`. Never returns tokens or token hashes.
+      description: |
+        Requires `member:invite`. Never returns tokens or token hashes.
+
+        Omitting `status` returns every invitation. An unrecognised value is
+        rejected rather than ignored, so a caller never receives the full list
+        under a filter it believes was applied.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Narrow the list to one status.
+          schema:
+            type: string
+            enum: [pending, accepted, revoked, expired]
       responses:
         "200":
           description: Every invitation for the workspace, newest first.

@@ -187,3 +187,20 @@ func TestNewInvitationIDIsTimeOrdered(t *testing.T) {
 		t.Error("identifiers are not time-ordered")
 	}
 }
+
+func TestParseInvitationStatus(t *testing.T) {
+	for _, status := range InvitationStatuses {
+		got, err := ParseInvitationStatus(string(status))
+		if err != nil || got != status {
+			t.Errorf("ParseInvitationStatus(%q) = %q, %v", status, got, err)
+		}
+	}
+	// Unrecognised input is rejected rather than ignored: silently dropping
+	// the filter would return the whole list under a filter the caller
+	// believes was applied.
+	for _, invalid := range []string{"", "Pending", "outstanding", "all", "pending "} {
+		if _, err := ParseInvitationStatus(invalid); err == nil {
+			t.Errorf("ParseInvitationStatus(%q) accepted an unknown status", invalid)
+		}
+	}
+}

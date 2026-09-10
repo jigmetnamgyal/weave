@@ -192,16 +192,34 @@ func (s *InvitationService) Issue(ctx context.Context, actor domain.Membership, 
 	return IssuedInvitation{Invitation: created, Token: token.Plaintext}, nil
 }
 
-// List returns a workspace's invitations.
-func (s *InvitationService) List(ctx context.Context, actor domain.Membership) ([]InvitationRecord, error) {
+// List returns a workspace's invitations, optionally narrowed to one status.
+//
+// The filter is applied here rather than in SQL because status is derived from
+// timestamps, not stored. Expressing the same derivation a second time as a
+// CASE expression would create exactly the disagreement that deriving it
+// avoids — and an invitation list is bounded by a workspace's team, so there
+// is nothing to gain from pushing it down.
+func (s *InvitationService) List(ctx context.Context, actor domain.Membership, status domain.InvitationStatus) ([]InvitationRecord, error) {
 	if err := require(actor, domain.PermissionMemberInvite); err != nil {
 		return nil, err
 	}
+
 	records, err := s.invitations.ListForWorkspace(ctx, actor.WorkspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list invitations: %w", err)
 	}
-	return records, nil
+	if status == "" {
+		return records, nil
+	}
+
+	now := s.now()
+	filtered := make([]InvitationRecord, 0, len(records))
+	for _, record := range records {
+		if record.Status(now) == status {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered, nil
 }
 
 // Revoke withdraws an outstanding invitation.

@@ -103,7 +103,20 @@ func (i *invitationRoutes) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := i.service.List(ctx, membership)
+	// Absent means every status; anything unrecognised is rejected rather
+	// than silently ignored, which would return the whole list under a filter
+	// the caller thinks is applied.
+	var status domain.InvitationStatus
+	if raw := r.URL.Query().Get("status"); raw != "" {
+		parsed, err := domain.ParseInvitationStatus(raw)
+		if err != nil {
+			i.handler.writeError(ctx, w, err, "parse status filter")
+			return
+		}
+		status = parsed
+	}
+
+	records, err := i.service.List(ctx, membership, status)
 	if err != nil {
 		i.handler.writeError(ctx, w, err, "list invitations")
 		return

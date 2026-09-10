@@ -405,7 +405,7 @@ func TestListNeverReturnsTokenMaterial(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	records, err := invitations.List(ctx, actor)
+	records, err := invitations.List(ctx, actor, "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -451,5 +451,83 @@ func TestCrossWorkspaceRevokeIsRefused(t *testing.T) {
 	// Still usable by its intended recipient's workspace.
 	if _, err := invitations.Preview(ctx, issued.Token); err != nil {
 		t.Errorf("invitation was damaged by the cross-workspace attempt: %v", err)
+	}
+}
+
+// TestListFiltersByStatus covers the status filter the spec requires.
+//
+// The filter runs against the derived status, so an invitation that merely
+// aged out reports as expired without anything having updated its row.
+func TestListFiltersByStatus(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+
+	owner := seedUser(t, pool)
+	joiner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Filtered Workspace")
+
+	clock := time.Now()
+	invitations, _ := invitationServices(pool, func() time.Time { return clock })
+	actor := ownerOf(workspace.ID, owner.ID)
+
+	// One that will expire, purely by the clock moving.
+	if _, err := invitations.Issue(ctx, actor, "aged@example.com", domain.RoleViewer); err != nil {
+		t.Fatalf("Issue aged: %v", err)
+	}
+	clock = clock.Add(domain.InvitationLifetime + time.Minute)
+
+	// One revoked.
+	revoked, err := invitations.Issue(ctx, actor, "revoked@example.com", domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("Issue revoked: %v", err)
+	}
+	if err := invitations.Revoke(ctx, actor, revoked.Invitation.ID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	// One accepted.
+	accepted, err := invitations.Issue(ctx, actor, joiner.Email, domain.RoleDeveloper)
+	if err != nil {
+		t.Fatalf("Issue accepted: %v", err)
+	}
+	if _, err := invitations.Accept(ctx, joiner, accepted.Token); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	// And one left pending.
+	if _, err := invitations.Issue(ctx, actor, "pending@example.com", domain.RoleViewer); err != nil {
+		t.Fatalf("Issue pending: %v", err)
+	}
+
+	counts := map[domain.InvitationStatus]int{
+		domain.InvitationPending:  1,
+		domain.InvitationExpired:  1,
+		domain.InvitationRevoked:  1,
+		domain.InvitationAccepted: 1,
+	}
+	for status, want := range counts {
+		t.Run(string(status), func(t *testing.T) {
+			records, err := invitations.List(ctx, actor, status)
+			if err != nil {
+				t.Fatalf("List(%q): %v", status, err)
+			}
+			if len(records) != want {
+				t.Errorf("List(%q) returned %d, want %d", status, len(records), want)
+			}
+			for _, record := range records {
+				if got := record.Status(clock); got != status {
+					t.Errorf("List(%q) included an invitation with status %q", status, got)
+				}
+			}
+		})
+	}
+
+	// No filter returns everything.
+	all, err := invitations.List(ctx, actor, "")
+	if err != nil {
+		t.Fatalf("List(all): %v", err)
+	}
+	if len(all) != 4 {
+		t.Errorf("unfiltered List returned %d, want 4", len(all))
 	}
 }

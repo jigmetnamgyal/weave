@@ -174,10 +174,14 @@ export async function fetchMembers(workspaceId: string): Promise<Result<Member[]
   return result.ok ? { ok: true, data: result.data.items } : result;
 }
 
-/** List a workspace's invitations. */
-export async function fetchInvitations(workspaceId: string): Promise<Result<Invitation[]>> {
+/** List a workspace's invitations, optionally narrowed to one status. */
+export async function fetchInvitations(
+  workspaceId: string,
+  status?: Invitation["status"]
+): Promise<Result<Invitation[]>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
   const result = await apiRequest<ListResponse<Invitation>>(
-    `/v1/workspaces/${workspaceId}/invitations`
+    `/v1/workspaces/${workspaceId}/invitations${query}`
   );
   return result.ok ? { ok: true, data: result.data.items } : result;
 }
