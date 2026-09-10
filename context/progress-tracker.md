@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M1.1, M2.1, M2.2 and M2.3 complete; M3.1 (GitHub App) next
+- Status: M2 complete; M3.0 (row-level security) next, then M3.1 (GitHub App)
 
 ## Current Goal
 
@@ -47,9 +47,21 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Next Up
 
+### Unit M3.0 — Row-Level Security
+
+**Source:** `context/features-specs/06-row-level-security.md`
+
+**Outcome:** PostgreSQL refuses to return another tenant's rows regardless of what the query asked for, so a store method written without its workspace filter is caught by the database rather than shipped.
+
+**Scope:** a non-owning `weave_app` role the API connects as; transaction-scoped tenant context via `SET LOCAL`; enabled and forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`; `SECURITY DEFINER` functions for the two lookups that legitimately cannot be workspace-scoped; and tests that remove a filter on purpose to prove the policies carry the isolation.
+
+**Why now, ahead of M3.1:** none of ADR-010's three triggers had fired — the tables were added by the same author, through sqlc, with no external customers — so deferring further would have been consistent with the ADR. Doing it here is a deliberate choice: M3.1 roughly doubles the tenant-owned surface, and four tables are easier to convert than eight.
+
+**Note on size:** the pooling hazard is the sharp edge. `SET LOCAL` is transaction-scoped, so every tenant read must move inside a transaction — several currently are not. Expect the refactor to be wider than the migration.
+
 ### Unit M3.1 — GitHub App Installation and Repository Access
 
-Follows M2.3. Expected scope: GitHub App installation bound to a workspace, selected-repository access, repository records scoped by `workspace_id`, and permission/webhook health checks. This is the first unit whose data is workspace-owned, so it is also the trigger named in ADR-010 for revisiting row-level security.
+Follows M3.0. Expected scope: GitHub App installation bound to a workspace, selected-repository access, repository records scoped by `workspace_id`, and permission/webhook health checks. Its tables are workspace-owned and will be created under the policies M3.0 establishes. It also needs a real GitHub App, which is an account action only the operator can perform.
 
 ## Open Questions
 
