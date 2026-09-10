@@ -1,0 +1,33 @@
+# sqlc generates the database access layer from the migrations in
+# db/migrations and the queries in db/queries.
+#
+# Generated output is committed and CI verifies it matches this configuration
+# at the pinned SQLC_VERSION, so a reviewer never has to guess whether the
+# checked-in code corresponds to the checked-in SQL.
+#
+# Regenerate with `make sqlc`.
+
+version: "2"
+
+sql:
+  - engine: postgresql
+    schema: db/migrations
+    queries: db/queries
+    gen:
+      go:
+        package: postgresdb
+        out: internal/adapters/postgres/postgresdb
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        emit_prepared_queries: false
+        emit_interface: true
+        emit_empty_slices: true
+        overrides:
+          # citext behaves as a plain string in Go; without this sqlc has no
+          # mapping for the extension type.
+          - db_type: citext
+            go_type: string
+          - db_type: uuid
+            go_type:
+              import: github.com/google/uuid
+              type: UUID

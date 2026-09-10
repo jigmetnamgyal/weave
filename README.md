@@ -19,7 +19,7 @@ source of truth and is enforced by `make check-prereqs`.
 | -------------- | ------- | -------------------------------------------------------------- |
 | Node           | 23.11.0 | Also in `.tool-versions` and `package.json` `engines`          |
 | npm            | 10.9.2  | Ships with Node                                                |
-| Go             | 1.25.14 | Also in `go.mod`; see the toolchain note below                 |
+| Go             | 1.26.8  | Also in `go.mod`; see the toolchain note below                 |
 | Docker         | 28.1.1  | Docker Desktop or an equivalent engine, and it must be running |
 | Docker Compose | 2.35.1  | The `docker compose` plugin, not the legacy `docker-compose`   |
 
@@ -27,11 +27,16 @@ If you use [asdf](https://asdf-vm.com) or [mise](https://mise.jdx.dev),
 `.tool-versions` covers Node and Go.
 
 **Go toolchain note:** `go.mod` carries two versions. The `go` directive says
-`1.25.0` — the minimum language version our dependencies require — while the
-`toolchain` directive pins `go1.25.14`, the compiler that actually builds and
-tests the module. They differ on purpose: go1.25.0 ships with known
-standard-library vulnerabilities that `govulncheck` flags, and 1.25.14 is the
+`1.26.0` — the minimum language version our dependencies require — while the
+`toolchain` directive pins `go1.26.8`, the compiler that actually builds and
+tests the module. They differ on purpose: go1.26.0 ships with known
+standard-library vulnerabilities that `govulncheck` flags, and 1.26.8 is the
 patched release of that line.
+
+Watch for this when adding dependencies: `go get` rewrites the `go` directive
+and **drops the `toolchain` line** when a dependency raises the requirement,
+which silently moves the build onto an unpatched release. Re-run
+`govulncheck` after any dependency bump.
 
 Go's default `GOTOOLCHAIN=auto` downloads the pinned toolchain automatically,
 so an older base install still builds against the right version — and still
@@ -68,42 +73,72 @@ Stop the dependency containers:
 make down
 ```
 
-No real credential is needed to run this baseline. Every value in
-`.env.example` is a local development default.
+The stack, both health probes and the public routes run on the committed
+defaults with no real credential. **Signing in additionally needs Clerk keys**
+— see below.
+
+## Authentication
+
+Weave uses [Clerk](https://clerk.com) for authentication only. Workspaces,
+membership and every permission decision live in PostgreSQL; Clerk
+Organizations is deliberately not used, because two sources of truth for
+authorization is how tenant isolation breaks (ADR-009).
+
+To sign in locally you need your own Clerk application:
+
+1. Create one at [dashboard.clerk.com](https://dashboard.clerk.com), or run
+   `npx clerk@latest init` from the repository root, which creates an
+   application and writes the keys into `.env`.
+2. Enable **GitHub** as the only social connection, and disable email/password.
+3. Set `CLERK_ISSUER`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and
+   `CLERK_SECRET_KEY` in `.env` (see `.env.example` for which is which).
+
+Until real keys are present the public routes and the API's health probes work
+normally, and `/v1/me` answers `503` — the credential cannot be checked, which
+is different from rejecting it.
+
+Clerk's GitHub connection establishes **identity only**. Repository access is a
+separate GitHub App installation and must never reuse this token.
 
 ## Commands
 
 Run `make help` for the full list.
 
-| Command            | Purpose                                                |
-| ------------------ | ------------------------------------------------------ |
-| `make dev`         | Start dependencies, the API and the web shell          |
-| `make up` / `down` | Start / stop just the dependency containers            |
-| `make health`      | Report health of every dependency and both API probes  |
-| `make logs`        | Follow dependency container logs                       |
-| `make clean`       | Stop containers, delete their volumes and build output |
-| `make ci`          | Run every quality gate the CI workflow runs            |
-| `make fmt`         | Format Go and web sources in place                     |
-| `make lint-go`     | golangci-lint at the pinned version                    |
-| `make test`        | Go unit tests with the race detector                   |
+| Command                 | Purpose                                                |
+| ----------------------- | ------------------------------------------------------ |
+| `make dev`              | Start dependencies, the API and the web shell          |
+| `make up` / `down`      | Start / stop just the dependency containers            |
+| `make health`           | Report health of every dependency and both API probes  |
+| `make logs`             | Follow dependency container logs                       |
+| `make clean`            | Stop containers, delete their volumes and build output |
+| `make ci`               | Run every quality gate the CI workflow runs            |
+| `make fmt`              | Format Go and web sources in place                     |
+| `make lint-go`          | golangci-lint at the pinned version                    |
+| `make test`             | Go unit tests with the race detector                   |
+| `make test-integration` | Tests that need a real database                        |
+| `make migrate-up`       | Apply pending database migrations                      |
+| `make sqlc`             | Regenerate the database layer from `db/queries`        |
 
 ## Layout
 
 ```
 apps/web/              Next.js application shell and product UI
-  app/                 Routes, layouts, loading and error boundaries
+  app/(app)/           Authenticated routes — the layout protects the subtree
+  app/sign-in/         Clerk sign-in
   components/ui/       Generated shadcn/ui primitives — do not edit by hand
-  lib/                 Shared web utilities
-services/api/          Go control-plane service (health probes today)
+  lib/                 Shared web utilities and the server-side API client
+services/api/          Go control-plane service: health probes, GET /v1/me
+services/migrate/      Migration runner (goose as a library, not the CLI)
 services/worker/       Temporal worker entrypoint            (scaffold, M5)
 services/runner-manager/  Isolated environment lifecycle     (scaffold, M5)
 services/runner/       Sandbox-side supervisor and adapters  (scaffold, M5)
-internal/domain/       Pure entities, policies, state machines (scaffold, M2)
-internal/application/  Use cases, ports, transactions         (scaffold, M2)
-internal/adapters/     Infrastructure implementations         (scaffold, M2)
-contracts/openapi/     API contract source                    (placeholder)
+internal/domain/       Pure entities, policies, state machines
+internal/application/  Use cases and ports (identity, user store)
+internal/adapters/     Port implementations: clerk/, postgres/
+contracts/openapi/     API contract source
 contracts/events/      Event schemas                          (placeholder)
-db/migrations/         Ordered SQL migrations                 (empty)
+db/migrations/         Ordered SQL migrations
+db/queries/            sqlc query definitions
 infra/                 Local Docker Compose stack
 scripts/               Task-runner scripts backing the Makefile
 context/               Product, architecture and standards baseline

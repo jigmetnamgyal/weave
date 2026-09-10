@@ -1,0 +1,150 @@
+openapi: 3.1.0
+
+info:
+  title: Weave Control Plane API
+  version: 0.1.0
+  description: |
+    The Weave control-plane HTTP API.
+
+    This document is the source of truth for the API surface and is updated
+    before or alongside the implementation it describes. The TypeScript client
+    is generated from it; response types are never hand-written in the web
+    application.
+
+    Only the authenticated user's own profile is defined so far. Workspaces,
+    tasks and sessions arrive in later units.
+
+    Operational probes (`/health/live`, `/health/ready`) are deliberately not
+    described here: they are an operator interface, not part of the versioned
+    product API, and their shape is free to change with the deployment.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: users
+    description: The authenticated user.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/me:
+    get:
+      operationId: getCurrentUser
+      tags: [users]
+      summary: Return the authenticated user
+      description: |
+        Resolves the presented session token to the caller's Weave user.
+
+        On first sign-in the user record is created, so a client never has to
+        register a user before calling this.
+
+        The response carries the internal user identifier only. The identity
+        provider's subject is never exposed: it is an implementation detail of
+        how someone signed in, and clients must not key on it.
+      responses:
+        "200":
+          description: The authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A session token issued by the configured identity provider, presented
+        as `Authorization: Bearer <token>`.
+
+  schemas:
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The user's Weave identifier. Stable, and the only user identifier the API accepts or returns.
+          examples: ["0199a3b4-1c2d-7e3f-8a9b-0c1d2e3f4a5b"]
+        email:
+          type: string
+          format: email
+          examples: ["developer@example.com"]
+        display_name:
+          type: string
+          description: Omitted when the identity provider supplied no name.
+          examples: ["Ada Lovelace"]
+        avatar_url:
+          type: string
+          format: uri
+          description: Omitted when the identity provider supplied no avatar.
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id]
+      description: |
+        The error shape returned by every failing endpoint.
+
+        It never contains a stack trace, database error, provider response or
+        internal hostname. Quote `request_id` when reporting a problem: it
+        correlates to the server-side logs that hold the diagnosis.
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable identifier. Clients branch on this rather than on `message`.
+          enum: [unauthenticated, not_found, internal_error]
+        message:
+          type: string
+          description: Human-readable summary, safe to surface to an end user.
+        request_id:
+          type: string
+          description: Correlates this response with server-side logs. Also returned in the `X-Request-Id` header.
+
+  responses:
+    Unauthenticated:
+      description: |
+        No valid credential was presented.
+
+        Returned identically whether the token was absent, malformed, expired,
+        signed by the wrong key, or issued for a different audience.
+        Distinguishing them would tell a caller how close a forgery attempt
+        came, and no legitimate client needs the difference.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: unauthenticated
+            message: Authentication required. Present a valid bearer token.
+            request_id: 0199a3b4-1c2d-7e3f-8a9b-0c1d2e3f4a5b
+
+    InternalError:
+      description: The request could not be completed. The failure is recorded against `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Unavailable:
+      description: |
+        A dependency the request needs is temporarily unreachable — for
+        example the identity provider's signing keys. The credential may be
+        perfectly valid; it could not be checked. Safe to retry.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

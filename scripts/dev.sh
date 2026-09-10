@@ -22,6 +22,13 @@ if [ ! -f "${ENV_FILE}" ]; then
   cp "${REPO_ROOT}/.env.example" "${ENV_FILE}"
 fi
 
+# Next.js reads .env only from its own directory, and both its edge runtime and
+# NEXT_PUBLIC_ inlining need the file found that way rather than inherited from
+# the environment. Link it so one file stays authoritative for API and web.
+if [ ! -L "${REPO_ROOT}/apps/web/.env" ]; then
+  ln -sf ../../.env "${REPO_ROOT}/apps/web/.env"
+fi
+
 set -a
 # shellcheck disable=SC1090
 source "${ENV_FILE}"

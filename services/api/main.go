@@ -21,9 +21,15 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/jigmetnamgyal/weave/internal/adapters/clerk"
+	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
+	"github.com/jigmetnamgyal/weave/internal/application"
+	"github.com/jigmetnamgyal/weave/services/api/internal/auth"
 	"github.com/jigmetnamgyal/weave/services/api/internal/config"
 	"github.com/jigmetnamgyal/weave/services/api/internal/health"
+	"github.com/jigmetnamgyal/weave/services/api/internal/httpx"
 	"github.com/jigmetnamgyal/weave/services/api/internal/telemetry"
+	"github.com/jigmetnamgyal/weave/services/api/internal/users"
 )
 
 // shutdownTimeout bounds how long in-flight requests may take to drain before
@@ -104,13 +110,32 @@ func run() error {
 		{Name: "nats", Probe: natsProbe(natsConn)},
 	}
 
+	verifier, err := clerk.New(ctx, clerk.Config{
+		Issuer:   cfg.ClerkIssuer,
+		Audience: cfg.ClerkJWTAudience,
+	})
+	if err != nil {
+		return fmt.Errorf("configure identity verifier: %w", err)
+	}
+
+	provisioner := application.NewUserProvisioner(postgres.NewUserStore(pool))
+	authMiddleware := auth.NewMiddleware(verifier, provisioner, logger)
+
+	// Every product route lives under /v1 and the whole subtree is wrapped in
+	// authentication exactly once. Public routes are enumerated individually
+	// below, so adding a route to the product surface makes it protected by
+	// default rather than by remembering to protect it.
+	protected := http.NewServeMux()
+	protected.Handle("GET /v1/me", users.Me())
+
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())
 	mux.Handle("GET /health/ready", withTimeout(cfg.ReadinessTimeout, health.Ready(logger, checks...)))
+	mux.Handle("/v1/", authMiddleware.Require(protected))
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           httpx.WithRequestID(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

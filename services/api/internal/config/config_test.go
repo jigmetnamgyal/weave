@@ -13,6 +13,7 @@ func validEnv() map[string]string {
 		"REDIS_URL":          "redis://localhost:6379/0",
 		"NATS_URL":           "nats://localhost:4222",
 		"TEMPORAL_HOST_PORT": "localhost:7233",
+		"CLERK_ISSUER":       "https://test.clerk.accounts.dev",
 	}
 }
 
@@ -54,9 +55,9 @@ func TestLoad(t *testing.T) {
 		{
 			name:      "every missing variable is reported at once",
 			env:       map[string]string{},
-			unset:     []string{"DATABASE_URL", "REDIS_URL", "NATS_URL", "TEMPORAL_HOST_PORT"},
+			unset:     requiredKeys,
 			wantErr:   ErrMissingConfig,
-			errSubstr: []string{"DATABASE_URL", "NATS_URL", "REDIS_URL", "TEMPORAL_HOST_PORT"},
+			errSubstr: []string{"CLERK_ISSUER", "DATABASE_URL", "NATS_URL", "REDIS_URL", "TEMPORAL_HOST_PORT"},
 		},
 		{
 			name: "blank value counts as missing",
@@ -128,7 +129,8 @@ func TestLoad(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// t.Setenv restores the previous value when the subtest ends.
-			for _, key := range append(requiredKeys, "APP_ENV", "API_HTTP_ADDR", "OTEL_EXPORTER", "OTEL_SERVICE_NAME") {
+			optional := []string{"APP_ENV", "API_HTTP_ADDR", "OTEL_EXPORTER", "OTEL_SERVICE_NAME", "CLERK_JWT_AUDIENCE"}
+			for _, key := range append(append([]string{}, requiredKeys...), optional...) {
 				t.Setenv(key, "")
 			}
 			for key, value := range tt.env {

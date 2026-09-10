@@ -1,4 +1,36 @@
-/** Renders the minimal web application shell for the repository foundation. */
+import Link from "next/link";
+// Clerk Core 3 replaced <SignedIn> / <SignedOut> with <Show when="...">.
+import { Show } from "@clerk/nextjs";
+
+import { Button } from "@/components/ui/button";
+
+/** Public landing route. */
 export default function Home() {
-  return <div className="flex min-h-screen items-center justify-center">weave</div>;
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-6">
+      <div className="space-y-2 text-center">
+        <h1 className="text-3xl font-semibold tracking-tight">weave</h1>
+        <p className="text-muted-foreground max-w-sm text-sm">
+          The shared control room for human and AI work.
+        </p>
+      </div>
+
+      {/*
+        These primitives are Base UI based, so composition uses `render`
+        rather than Radix's `asChild`.
+
+        `nativeButton={false}` tells Base UI the rendered element is an <a>,
+        not a <button>. Without it Base UI applies native button semantics to
+        a link, which breaks keyboard and screen-reader behaviour — Enter and
+        Space do different things on the two elements.
+      */}
+      <Show when="signed-out">
+        <Button nativeButton={false} render={<Link href="/sign-in">Sign in with GitHub</Link>} />
+      </Show>
+
+      <Show when="signed-in">
+        <Button nativeButton={false} render={<Link href="/dashboard">Go to dashboard</Link>} />
+      </Show>
+    </main>
+  );
 }

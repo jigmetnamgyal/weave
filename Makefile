@@ -15,14 +15,22 @@ WEB_WORKSPACE := @weave/web
 GO_PKGS := ./services/... ./internal/...
 GO_DIRS := services internal
 
-# Same pinned linter version CI uses, read from the same file.
+# Pinned tool versions, read from the same file CI reads. Each tool is invoked
+# through $(GOBIN) rather than by bare name so a differently-versioned copy
+# earlier on PATH cannot silently take over.
 GOLANGCI_LINT_VERSION := $(shell . ./versions.env && echo $$GOLANGCI_LINT_VERSION)
+GOOSE_VERSION := $(shell . ./versions.env && echo $$GOOSE_VERSION)
+SQLC_VERSION := $(shell . ./versions.env && echo $$SQLC_VERSION)
 GOBIN := $(shell go env GOPATH)/bin
+
+# Migrations run against the DATABASE_URL in .env.
+DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$DATABASE_URL)
 
 .DEFAULT_GOAL := help
 
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
-        fmt fmt-check lint lint-go typecheck test build ci tidy
+        fmt fmt-check lint lint-go typecheck test test-integration build ci tidy \
+        migrate-up migrate-down migrate-status sqlc sqlc-check
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -34,8 +42,15 @@ help: ## Show available commands
 
 # Creating .env from the committed template is a real file dependency, so any
 # target that needs it can simply depend on `.env`.
+#
+# The symlink matters: Next.js reads .env only from its own directory, and its
+# edge runtime and NEXT_PUBLIC_ inlining both need the file to be found that
+# way — exporting the variables into the process, or loading them from
+# next.config.ts, is too late for either. Linking keeps one file authoritative
+# for both the Go API and the web application.
 .env: .env.example
 	@test -f .env || (cp .env.example .env && echo "Created .env from .env.example")
+	@test -L apps/web/.env || ln -sf ../../.env apps/web/.env
 	@touch .env
 
 check-prereqs: ## Verify the local toolchain matches versions.env
@@ -92,7 +107,7 @@ lint: ## Lint Go and web sources (CI gate)
 # versions.env; a prebuilt binary built with an older Go refuses to run against
 # a module targeting a newer one.
 lint-go: ## Run golangci-lint at the pinned version (CI gate)
-	@command -v golangci-lint >/dev/null 2>&1 && [ "$$(golangci-lint version --short 2>/dev/null)" = "$(GOLANGCI_LINT_VERSION)" ] \
+	@test -x $(GOBIN)/golangci-lint && [ "$$($(GOBIN)/golangci-lint version --short 2>/dev/null)" = "$(GOLANGCI_LINT_VERSION)" ] \
 		|| (echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)" \
 		    && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION))
 	@$(GOBIN)/golangci-lint run $(GO_PKGS)
@@ -103,6 +118,12 @@ typecheck: ## Type-check the web workspace (CI gate)
 test: ## Run unit tests (CI gate)
 	@go test -race $(GO_PKGS)
 
+# Integration tests need a migrated database. They skip themselves when
+# TEST_DATABASE_URL is unset, which is what keeps `make test` runnable without
+# Docker.
+test-integration: .env ## Run integration tests against the local database
+	@TEST_DATABASE_URL="$(DATABASE_URL)" go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
+
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)
 	@npm run build
@@ -110,5 +131,34 @@ build: ## Build the API binary and the web application (CI gate)
 tidy: ## Ensure go.mod and go.sum are current
 	@go mod tidy
 
-ci: fmt-check lint lint-go typecheck test build ## Run every local quality gate
+# --- Database ----------------------------------------------------------------
+
+# Installs the pinned tool only when the pinned version is not already present.
+define ensure_tool
+	@command -v $(GOBIN)/$(1) >/dev/null 2>&1 && [ "$$($(GOBIN)/$(1) $(3) 2>/dev/null | grep -o '$(2)')" = "$(2)" ] \
+		|| (echo "Installing $(1) $(2)" && go install $(4)@v$(2))
+endef
+
+# The migration runner is a program in this repository (services/migrate), not
+# the goose CLI: the CLI links every database driver goose supports, which is a
+# large build and dependency surface for a PostgreSQL-only project.
+migrate-up: .env ## Apply all pending database migrations
+	@DATABASE_URL="$(DATABASE_URL)" go run ./services/migrate up
+
+migrate-down: .env ## Roll back the most recent migration
+	@DATABASE_URL="$(DATABASE_URL)" go run ./services/migrate down
+
+migrate-status: .env ## Show which migrations have been applied
+	@DATABASE_URL="$(DATABASE_URL)" go run ./services/migrate status
+
+sqlc: ## Regenerate the database access layer from db/queries
+	$(call ensure_tool,sqlc,$(SQLC_VERSION),version,github.com/sqlc-dev/sqlc/cmd/sqlc)
+	@$(GOBIN)/sqlc generate
+	@echo "Generated internal/adapters/postgres/postgresdb."
+
+sqlc-check: sqlc ## Fail when committed generated code is stale (CI gate)
+	@git diff --exit-code -- internal/adapters/postgres/postgresdb \
+		|| (echo "Generated code is out of date. Commit the result of 'make sqlc'." && exit 1)
+
+ci: fmt-check lint lint-go sqlc-check typecheck test build ## Run every local quality gate
 	@echo "All quality gates passed."
