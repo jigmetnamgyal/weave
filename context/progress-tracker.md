@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M1.1 and M2.1 complete; M2.2 (workspaces and membership) in progress; M2.3 (invitations) next
+- Status: M1.1, M2.1 and M2.2 complete; M2.3 (workspace invitations) next
 
 ## Current Goal
 
@@ -37,33 +37,30 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 - Defined repository code standards and AI implementation workflow.
 - Installed and configured shadcn/ui design system and UI primitives (see Verification Record).
 - Built the repository foundation: monorepo layout, Go API with health probes, local Docker Compose stack, task runner, environment validation, CI quality gates, and OpenTelemetry bootstrap (Unit M1.1 — see Verification Record).
+- Built workspaces and membership: `workspaces`, `workspace_members` and append-only `audit_events`; the owner/admin/developer/viewer role model behind a centralised action-oriented permission matrix; two-step authorization (membership decides visibility, permission decides the operation); workspace-scoped data access with no unscoped reads (Unit M2.2 — see Verification Record). Merged 2026-09-10 in PR #3 after eight review findings were fixed, including a privilege-escalation path and a CHECK constraint that `citext` had silently disabled.
 - Built the authentication baseline: database foundation (goose migrations, sqlc, `users` table), the identity-verifier port with a Clerk JWKS adapter, deny-by-default auth middleware, just-in-time user provisioning, `GET /v1/me`, the first OpenAPI document, and Clerk sign-in with a protected route in the web shell (Unit M2.1 — see Verification Record). Verified end to end on 2026-09-10: sign-in with GitHub through a real Clerk application provisions one `users` row and `GET /v1/me` returns it.
 
 ## In Progress
 
-### Unit M2.2 — Workspaces and Membership
-
-Started 2026-09-10 on `feat/m2.2-workspaces-membership`, branched from `main` (M1.1 and M2.1 already merged).
-
-**Source:** `context/features-specs/04-workspaces-and-membership.md`
-
-**Outcome:** A signed-in user creates a workspace, becomes its owner, and every permission decision is answered from PostgreSQL against that membership. This is the unit that makes tenant isolation real.
-
-**Scope:** `workspaces`, `workspace_members` and `audit_events` tables; the owner/admin/developer/viewer role model with a centralised action-oriented permission matrix; workspace-scoped authorization after authentication; workspace-scoped data access with no unscoped reads; workspace and member endpoints; the authorization matrix test suite.
-
-**Non-scope, and why:**
-
-- **Invitations** move to M2.3. The original M2.2 sketch included them, but token issue, expiry, revocation, acceptance and the already-a-member and wrong-email edges are their own coherent slice. Until then a workspace has exactly one member, which is enough to scope repositories in M3.
-- **Row-level security** is deferred to its own unit and needs the tenancy ADR first. `architecture.md` positions it as defence in depth behind workspace-scoped queries, which this unit establishes; adding it now would mean a non-superuser role, a per-transaction tenant GUC and a migration strategy on top of an already large unit.
-- Repositories, sessions and session revocation on membership change follow in M3 and later.
-
-**Note on ordering:** build this before M3. Repository records are workspace-owned, and connecting a GitHub App installation to a workspace that has no membership model would mean retrofitting authorization onto data that already exists.
+- None.
 
 ## Next Up
 
 ### Unit M2.3 — Workspace Invitations
 
-Follows M2.2. Expected scope: the `workspace_invitations` table; issuing, revoking and accepting an invitation; token expiry; and the edges that make invitations their own slice — already a member, wrong email, expired, revoked, and re-invited after removal.
+**Source:** `context/features-specs/05-workspace-invitations.md`
+
+**Outcome:** A workspace stops being single-player. Someone with `member:invite` issues an invitation, the recipient accepts it, and they join at the role they were invited to.
+
+**Scope:** the `workspace_invitations` table; issue, list, revoke and accept; hashed single-use tokens with expiry; the role-granting rule from M2.2 applied to invitations; the invite and accept surfaces in the web application.
+
+**Non-scope:** email delivery (the inviter shares the link; adding an email provider is its own decision), resend, bulk invite, domain auto-join, and SCIM.
+
+## Next Up (after M2.3)
+
+### Unit M3.1 — GitHub App Installation and Repository Access
+
+Follows M2.3. Expected scope: GitHub App installation bound to a workspace, selected-repository access, repository records scoped by `workspace_id`, and permission/webhook health checks. This is the first unit whose data is workspace-owned, so it is also the trigger named in ADR-010 for revisiting row-level security.
 
 ## Open Questions
 
@@ -109,6 +106,7 @@ Resolve these before the milestone that depends on them:
 
 | Date | Unit | Environment | Commands/tests | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-10 | Workspaces and Membership, Unit M2.2 — review round (PR #3) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; direct `psql` probes of the slug constraint before and after the fix; `go run` probe of int32 narrowing; full CI on the pull request and on `main` | Pass | Eight findings from greptile and CodeRabbit, all verified against the code and all valid. Two were serious: `member:manage` alone let an admin assign the `owner` role and collect `billing:manage` (fixed with a permission-subset grant rule); and `citext` overrides `~` to be case-insensitive, so the slug CHECK accepted `UpperCaseSlug` — proved by inserting one before the `::text` cast and watching it succeed, then fail after. Also fixed a time-of-check/time-of-use window where a removed or demoted actor could still land a privileged write (mutations now re-read the actor's membership under the workspace lock), `int32` truncation that let `4294967297` masquerade as version 1, slug-suffix overflow, and trailing-JSON acceptance. Every fix carries a regression test, including both TOCTOU cases against real PostgreSQL. **Still unverified: the signed-in browser flow**, which needs a GitHub sign-in only the operator can perform. |
 | 2026-09-10 | Workspaces and Membership, Unit M2.2 (`context/features-specs/04-workspaces-and-membership.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-up` / `migrate-down` / `migrate-up`; `psql` probes of the append-only triggers; `curl` of all seven routes unauthenticated; browser check of the signed-out redirect | Pass, with one gap | Authorization matrix pinned by an exhaustiveness test that fails the build when a role or permission is added without deciding every pairing, plus a hand-written expectation table so the matrix cannot be changed without changing the test. HTTP tests cover every workspace-scoped endpoint × every role: a non-member receives 404 on all five (never 403), an unknown workspace is byte-identical to one that is not yours, and a member lacking a permission receives 403. Integration tests against real PostgreSQL prove cross-tenant reads return nothing, the last owner cannot be demoted or removed, two concurrent owner demotions leave exactly one owner (the reason the store takes a row lock), a stale version is rejected, refused changes write no audit row, and audit rows survive deleting the workspace they describe. Append-only is enforced by the database: UPDATE, DELETE and TRUNCATE are all rejected by trigger. All seven routes return 401 unauthenticated while `/health/*` stays public. **Gap: the signed-in browser flow is unverified** — it needs a GitHub sign-in only the operator can perform. |
 | 2026-09-10 | Authentication Baseline, Unit M2.1 (`context/features-specs/03-authentication-baseline.md`) | Local dev, macOS arm64, Go 1.25.14, Node 23.11.0, PostgreSQL 17.2 | `make ci` (now including `sqlc-check` and `lint-go`); `make test-integration` against the compose database; `make migrate-up`; `psql \d users`; `curl` against a running API for every auth path; browser check of the web shell | Pass, with one gap | Migration applied and schema matches the spec. Integration tests against real PostgreSQL prove 16 concurrent first requests create exactly one row, that citext makes email lookup case-insensitive, and that empty profile fields store as NULL. Verifier tests use a locally generated RSA key and an httptest JWKS server — no Clerk network call — covering valid, expired, wrong issuer, wrong audience, unpublished key, tampered payload, malformed, empty, missing-email, and HMAC algorithm confusion. Live API: `/health/*` public and 200; `/v1/me` returns 401 with the standard envelope and an echoed `X-Request-Id` for missing, malformed and wrong-scheme credentials; a well-formed RS256 token against an unreachable issuer returns 503, while `alg:none` returns 401 without any network call. Gap subsequently closed: a real Clerk application was linked, `session.claims` configured, and sign-in with GitHub confirmed to create exactly one `users` row carrying the real email, with `GET /v1/me` returning it. |
 | 2026-09-10 | Repository Foundation, Unit M1.1 (`context/features-specs/02-repository-foundation.md`) | Local dev, macOS arm64, Node 23.11.0, Go 1.25.14, Docker 28.1.1, Compose 2.35.1 | `make check-prereqs`; `make ci` (gofmt, prettier, go vet, eslint, tsc, `go test -race`, go build, next build); `golangci-lint run`; `govulncheck`; `npm audit --audit-level=high`; gitleaks via Docker; `make dev` from a clean checkout (no `.env`, no containers, no volumes); `make health`; per-dependency outage probes; `curl` of both probes and the web shell | Pass | Monorepo layout created and the Next.js app moved to `apps/web` via `git mv` (history preserved); dark-theme tokens verified intact in the browser (`--background #090b10`, `--primary #8b7cff`, `--card #131722`, `--ring #a99fff`). Go API serves `/health/live` (200, no dependency I/O) and `/health/ready` (200 when all up; 503 naming the failing dependency, verified by stopping postgres, redis and nats in turn). Compose stack reports all five services healthy. Config validation fails fast listing every missing variable at once. Local gates all green; **the CI workflow file itself is unverified until first push** — each gate's command was verified locally instead. |
