@@ -2,7 +2,7 @@ import { AlertTriangle } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AcceptInvitationButton } from "@/components/accept-invitation-button";
-import { previewInvitation } from "@/lib/api";
+import { fetchCurrentUser, previewInvitation } from "@/lib/api";
 
 /**
  * The page an invitation link opens.
@@ -16,7 +16,7 @@ import { previewInvitation } from "@/lib/api";
  */
 export default async function InvitationPage({ params }: PageProps<"/invitations/[token]">) {
   const { token } = await params;
-  const preview = await previewInvitation(token);
+  const [preview, currentUser] = await Promise.all([previewInvitation(token), fetchCurrentUser()]);
 
   if (!preview.ok) {
     return (
@@ -55,14 +55,28 @@ export default async function InvitationPage({ params }: PageProps<"/invitations
         <CardHeader>
           <CardTitle>Join {invitation.workspace_name}</CardTitle>
           <CardDescription>
-            {invitation.invited_by_display_name || invitation.invited_by_email} invited{" "}
-            {invitation.email} to join as {invitation.role}.
+            {invitation.invited_by_display_name || invitation.invited_by_email} invited you to join
+            as {invitation.role}.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/*
+            The signed-in address, not the invited one. Naming the invited
+            address here would disclose it to whoever holds a forwarded link;
+            showing the current account tells the legitimate recipient what
+            they need to know — whether to switch accounts — without revealing
+            anything they did not already have.
+          */}
           <p className="text-muted-foreground text-sm">
-            You must be signed in as {invitation.email} to accept. Expires{" "}
-            {new Date(invitation.expires_at).toLocaleDateString()}.
+            {currentUser.ok ? (
+              <>
+                You are signed in as {currentUser.data.email}. The invitation must be accepted by
+                the address it was sent to.
+              </>
+            ) : (
+              <>The invitation must be accepted by the address it was sent to.</>
+            )}{" "}
+            Expires {new Date(invitation.expires_at).toLocaleDateString()}.
           </p>
           <AcceptInvitationButton token={token} workspaceName={invitation.workspace_name} />
         </CardContent>

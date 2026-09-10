@@ -47,9 +47,14 @@ type InvitationRecord struct {
 
 // InvitationPreview is what someone holding a token may learn before
 // accepting: enough to recognise the offer, and nothing else.
+//
+// It deliberately omits the invited address. A token can be forwarded, and
+// whoever ends up holding it should not learn who it was meant for — that is
+// somebody else's email address, disclosed to a party the inviter never chose.
+// The recipient does not need to be told their own address either; the accept
+// flow shows them which account they are signed in as instead.
 type InvitationPreview struct {
 	WorkspaceName        string
-	Email                string
 	Role                 domain.Role
 	InvitedByEmail       string
 	InvitedByDisplayName string
@@ -279,7 +284,6 @@ func (s *InvitationService) Preview(ctx context.Context, token string) (Invitati
 		return InvitationPreview{}, fmt.Errorf("load invitation context: %w", err)
 	}
 
-	preview.Email = invitation.Email
 	preview.Role = invitation.Role
 	preview.ExpiresAt = invitation.ExpiresAt
 	return preview, nil

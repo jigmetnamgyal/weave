@@ -36,7 +36,12 @@ export default async function MembersPage({
     canInvite ? fetchInvitations(workspaceId, "pending") : Promise.resolve(null),
   ]);
 
+  // A failed fetch is not an empty list. Collapsing the two would hide the
+  // pending-invitations card entirely, so an authorised user would see no
+  // outstanding invitations, no way to revoke them, and no error explaining
+  // why.
   const pending = invitations?.ok === true ? invitations.data : [];
+  const invitationsError = invitations?.ok === false ? invitations.message : undefined;
 
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 space-y-6 p-6">
@@ -95,7 +100,23 @@ export default async function MembersPage({
         </CardContent>
       </Card>
 
-      {canInvite && pending.length > 0 ? (
+      {canInvite && invitationsError ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Pending invitations</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p role="alert" className="text-destructive text-sm">
+              {invitationsError}
+            </p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Outstanding invitations could not be loaded, so any that exist are not shown here.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {canInvite && !invitationsError && pending.length > 0 ? (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Pending invitations</CardTitle>

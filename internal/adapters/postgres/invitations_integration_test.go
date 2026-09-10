@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -598,5 +599,50 @@ func TestFilteredStatusSurvivesSerialisation(t *testing.T) {
 			t.Errorf("resolved status %q disagrees with the entity at the same instant",
 				record.Status)
 		}
+	}
+}
+
+// TestPreviewDoesNotDiscloseTheInvitedAddress covers the disclosure a
+// forwarded link would otherwise carry.
+//
+// Preview is authenticated but not membership-scoped — the token is the
+// authorization — so whoever holds a forwarded link can call it. It must tell
+// them what they are joining without telling them who it was meant for.
+func TestPreviewDoesNotDiscloseTheInvitedAddress(t *testing.T) {
+	pool := newPool(t)
+	invitations, _ := invitationServices(pool, time.Now)
+	ctx := context.Background()
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Disclosure Workspace")
+
+	const invited = "secret-recipient@example.com"
+	issued, err := invitations.Issue(ctx, ownerOf(workspace.ID, owner.ID), invited, domain.RoleDeveloper)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	preview, err := invitations.Preview(ctx, issued.Token)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+
+	// What it may say.
+	if preview.WorkspaceName != "Disclosure Workspace" {
+		t.Errorf("WorkspaceName = %q", preview.WorkspaceName)
+	}
+	if preview.Role != domain.RoleDeveloper {
+		t.Errorf("Role = %q, want developer", preview.Role)
+	}
+	if preview.InvitedByEmail != owner.Email {
+		t.Errorf("InvitedByEmail = %q, want the inviter", preview.InvitedByEmail)
+	}
+
+	// What it may not. Serialised in full so a field added later that happens
+	// to carry the address is caught too, not only the one that carried it
+	// before.
+	rendered := fmt.Sprintf("%+v", preview)
+	if strings.Contains(strings.ToLower(rendered), "secret-recipient") {
+		t.Errorf("preview disclosed the invited address: %s", rendered)
 	}
 }

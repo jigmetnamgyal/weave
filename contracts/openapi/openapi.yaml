@@ -509,13 +509,16 @@ components:
     InvitationPreview:
       type: object
       additionalProperties: false
-      required: [workspace_name, email, role, invited_by_email, expires_at]
+      required: [workspace_name, role, invited_by_email, expires_at]
       description: |
         Deliberately narrow. It tells the holder what they are joining and who
         asked, and reveals nothing else about the workspace or its members.
+
+        In particular it does **not** include the invited address. A token can
+        be forwarded, and whoever ends up holding it should not learn who it
+        was meant for.
       properties:
         workspace_name: { type: string }
-        email: { type: string, format: email }
         role: { $ref: "#/components/schemas/Role" }
         invited_by_email: { type: string, format: email }
         invited_by_display_name: { type: string }

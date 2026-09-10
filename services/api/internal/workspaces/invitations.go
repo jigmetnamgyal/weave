@@ -156,9 +156,10 @@ type tokenRequest struct {
 	Token string `json:"token"`
 }
 
+// invitationPreviewResponse carries no invited address — see
+// application.InvitationPreview for why.
 type invitationPreviewResponse struct {
 	WorkspaceName        string    `json:"workspace_name"`
-	Email                string    `json:"email"`
 	Role                 string    `json:"role"`
 	InvitedByEmail       string    `json:"invited_by_email"`
 	InvitedByDisplayName string    `json:"invited_by_display_name,omitempty"`
@@ -189,7 +190,6 @@ func (i *invitationRoutes) preview(w http.ResponseWriter, r *http.Request) {
 
 	httpx.WriteJSON(ctx, w, http.StatusOK, invitationPreviewResponse{
 		WorkspaceName:        preview.WorkspaceName,
-		Email:                preview.Email,
 		Role:                 preview.Role.String(),
 		InvitedByEmail:       preview.InvitedByEmail,
 		InvitedByDisplayName: preview.InvitedByDisplayName,

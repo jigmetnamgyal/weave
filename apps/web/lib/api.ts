@@ -94,10 +94,14 @@ export type Invitation = {
  */
 export type IssuedInvitation = Invitation & { token: string };
 
-/** What the holder of a token may learn before accepting. */
+/**
+ * What the holder of a token may learn before accepting.
+ *
+ * No invited address: a forwarded token must not disclose who it was meant
+ * for. The accept page shows the signed-in account instead.
+ */
 export type InvitationPreview = {
   workspace_name: string;
-  email: string;
   role: Role;
   invited_by_email: string;
   invited_by_display_name?: string;

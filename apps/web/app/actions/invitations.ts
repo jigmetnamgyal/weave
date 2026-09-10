@@ -29,6 +29,18 @@ export async function inviteMemberAction(
   if (email === "") return { error: "Enter an email address." };
   if (!role) return { error: "Choose a role." };
 
+  // Checked before issuing, not after. The token is returned once and only its
+  // hash is stored, so falling back to a default host here would spend the
+  // invitation and hand back a link that goes nowhere — with no way to
+  // re-display the real one. Failing first costs nothing.
+  const base = process.env.NEXT_PUBLIC_APP_URL;
+  if (!base) {
+    return {
+      error:
+        "NEXT_PUBLIC_APP_URL is not set, so the invitation link cannot be built. No invitation was created.",
+    };
+  }
+
   const result = await issueInvitation(workspaceId, email, role);
   if (!result.ok) return { error: result.message };
 
@@ -36,8 +48,7 @@ export async function inviteMemberAction(
 
   // Built here rather than by the API: the API has no idea what host the web
   // application is served from.
-  const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-  return { link: `${base}/invitations/${result.data.token}`, email };
+  return { link: `${base.replace(/\/$/, "")}/invitations/${result.data.token}`, email };
 }
 
 /** Withdraw an outstanding invitation. */
