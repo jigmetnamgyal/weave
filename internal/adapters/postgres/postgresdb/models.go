@@ -43,6 +43,23 @@ type Workspace struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+// Invitations to join a workspace. Only the token hash is stored; the token is shown to the issuer once.
+type WorkspaceInvitation struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Email       string
+	Role        string
+	// SHA-256 of the invitation token. Never store the token itself.
+	TokenHash  []byte
+	InvitedBy  uuid.UUID
+	ExpiresAt  pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+	AcceptedAt pgtype.Timestamptz
+	AcceptedBy pgtype.UUID
+	RevokedAt  pgtype.Timestamptz
+	RevokedBy  pgtype.UUID
+}
+
 // Authorization record: a row here means the user may act in the workspace, at the given role.
 type WorkspaceMember struct {
 	WorkspaceID uuid.UUID

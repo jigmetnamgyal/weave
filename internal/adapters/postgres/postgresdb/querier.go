@@ -13,13 +13,31 @@ import (
 type Querier interface {
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	AppendAuditEvent(ctx context.Context, arg AppendAuditEventParams) (AuditEvent, error)
+	// Single-statement claim: the WHERE clause is what makes the token single
+	// use. Two concurrent accepts race here and exactly one matches a row, so no
+	// lock is needed and no second membership can be created.
+	ClaimInvitation(ctx context.Context, arg ClaimInvitationParams) (WorkspaceInvitation, error)
 	// Test and operator support only; not used on a request path.
 	CountUsers(ctx context.Context) (int64, error)
 	// Used under LockWorkspace to enforce that a workspace never loses its last
 	// owner.
 	CountWorkspaceOwners(ctx context.Context, workspaceID uuid.UUID) (int64, error)
+	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (WorkspaceInvitation, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
+	// Deliberately unscoped by workspace: the token is the only thing the
+	// acceptor holds, and they are not yet a member of anything. The caller
+	// checks status and email before acting on the result.
+	GetInvitationByTokenHash(ctx context.Context, tokenHash []byte) (WorkspaceInvitation, error)
+	// Scoped by workspace so an invitation id from one tenant cannot be revoked
+	// through another.
+	GetInvitationForWorkspace(ctx context.Context, arg GetInvitationForWorkspaceParams) (WorkspaceInvitation, error)
+	// Backing for the preview: the workspace name and who invited you, and
+	// nothing else about either.
+	GetInvitationWorkspaceContext(ctx context.Context, id uuid.UUID) (GetInvitationWorkspaceContextRow, error)
+	// The row occupying the one-outstanding slot, if any. May be expired: the
+	// unique index predicate cannot reference now(), so the caller decides.
+	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
 	GetUserByExternalID(ctx context.Context, externalID string) (User, error)
 	// Scoped by member, not just by id. A caller who is not a member gets no row,
 	// so "not found" and "not yours" are indistinguishable from the outside and
@@ -28,6 +46,7 @@ type Querier interface {
 	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
 	// Operator and test support.
 	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
+	ListInvitationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]ListInvitationsForWorkspaceRow, error)
 	ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUID) ([]ListWorkspaceMembersRow, error)
 	ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) ([]ListWorkspacesForUserRow, error)
 	// Serialises membership changes within a workspace. Taken before any check
@@ -38,6 +57,9 @@ type Querier interface {
 	// version matches no row, which the store reports as a conflict rather than
 	// silently overwriting a concurrent edit.
 	RenameWorkspace(ctx context.Context, arg RenameWorkspaceParams) (Workspace, error)
+	// Only an outstanding invitation can be revoked; revoking an accepted or
+	// already-revoked one matches no row.
+	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
 	SlugExists(ctx context.Context, slug string) (bool, error)
 	UpdateWorkspaceMemberRole(ctx context.Context, arg UpdateWorkspaceMemberRoleParams) (WorkspaceMember, error)
 	// Just-in-time provisioning. ON CONFLICT makes concurrent first requests for

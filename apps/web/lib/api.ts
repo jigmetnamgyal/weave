@@ -65,6 +65,49 @@ export type Workspace = {
 
 type ListResponse<T> = { items: T[] };
 
+/** A workspace member. */
+export type Member = {
+  user_id: string;
+  email: string;
+  display_name?: string;
+  avatar_url?: string;
+  role: Role;
+};
+
+/** An invitation to join a workspace. Never carries the token. */
+export type Invitation = {
+  id: string;
+  email: string;
+  role: Role;
+  status: "pending" | "accepted" | "revoked" | "expired";
+  invited_by_email?: string;
+  invited_by_display_name?: string;
+  expires_at: string;
+  created_at: string;
+};
+
+/**
+ * A freshly issued invitation.
+ *
+ * `token` exists here and nowhere else — only its hash is stored, so it
+ * cannot be fetched again. Surface it immediately.
+ */
+export type IssuedInvitation = Invitation & { token: string };
+
+/**
+ * What the holder of a token may learn before accepting.
+ *
+ * No invited address: a forwarded token must not disclose who it was meant
+ * for. The accept page shows the signed-in account instead.
+ */
+export type InvitationPreview = {
+  workspace_name: string;
+  role: Role;
+  invited_by_email: string;
+  invited_by_display_name?: string;
+  expires_at: string;
+};
+
 /**
  * Fetch the authenticated user from the control-plane API.
  *
@@ -126,6 +169,69 @@ export async function createWorkspace(name: string): Promise<Result<Workspace>> 
   return apiRequest<Workspace>("/v1/workspaces", {
     method: "POST",
     body: JSON.stringify({ name }),
+  });
+}
+
+/** List a workspace's members. */
+export async function fetchMembers(workspaceId: string): Promise<Result<Member[]>> {
+  const result = await apiRequest<ListResponse<Member>>(`/v1/workspaces/${workspaceId}/members`);
+  return result.ok ? { ok: true, data: result.data.items } : result;
+}
+
+/** List a workspace's invitations, optionally narrowed to one status. */
+export async function fetchInvitations(
+  workspaceId: string,
+  status?: Invitation["status"]
+): Promise<Result<Invitation[]>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  const result = await apiRequest<ListResponse<Invitation>>(
+    `/v1/workspaces/${workspaceId}/invitations${query}`
+  );
+  return result.ok ? { ok: true, data: result.data.items } : result;
+}
+
+/** Invite someone to a workspace. The response carries the token, once. */
+export async function issueInvitation(
+  workspaceId: string,
+  email: string,
+  role: Role
+): Promise<Result<IssuedInvitation>> {
+  return apiRequest<IssuedInvitation>(`/v1/workspaces/${workspaceId}/invitations`, {
+    method: "POST",
+    body: JSON.stringify({ email, role }),
+  });
+}
+
+/** Withdraw an outstanding invitation. */
+export async function revokeInvitation(
+  workspaceId: string,
+  invitationId: string
+): Promise<Result<void>> {
+  return apiRequest<void>(`/v1/workspaces/${workspaceId}/invitations/${invitationId}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Describe an invitation to its holder.
+ *
+ * POST, not GET: the token goes in the body, because a token in a query
+ * string ends up in server logs, proxy logs and Referer headers.
+ */
+export async function previewInvitation(token: string): Promise<Result<InvitationPreview>> {
+  return apiRequest<InvitationPreview>("/v1/invitations/preview", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+/** Accept an invitation. */
+export async function acceptInvitation(
+  token: string
+): Promise<Result<{ workspace_id: string; role: Role }>> {
+  return apiRequest<{ workspace_id: string; role: Role }>("/v1/invitations/accept", {
+    method: "POST",
+    body: JSON.stringify({ token }),
   });
 }
 

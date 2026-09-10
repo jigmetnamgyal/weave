@@ -1,5 +1,7 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { fetchWorkspaces } from "@/lib/api";
 
@@ -50,6 +52,21 @@ export default async function WorkspacePage({ params }: PageProps<"/workspaces/[
               </li>
             ))}
           </ul>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Members</CardTitle>
+          <CardDescription>See who is here, and invite your team.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="outline"
+            size="sm"
+            nativeButton={false}
+            render={<Link href={`/workspaces/${workspace.id}/members`}>Manage members</Link>}
+          />
         </CardContent>
       </Card>
 
