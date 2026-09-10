@@ -27,11 +27,12 @@ set -a
 source "${ENV_FILE}"
 set +a
 
-if [ ! -d "${REPO_ROOT}/node_modules" ]; then
-  echo
-  echo "Installing workspace dependencies"
-  npm install
-fi
+# Run unconditionally rather than only when node_modules is absent: after a
+# manifest or lockfile change an existing tree is stale, and npm reuses whatever
+# already satisfies the lockfile, so the no-op case stays cheap.
+echo
+echo "Installing workspace dependencies"
+npm install
 
 echo
 echo "Starting local dependencies"

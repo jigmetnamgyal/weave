@@ -31,9 +31,12 @@ If you use [asdf](https://asdf-vm.com) or [mise](https://mise.jdx.dev),
 `toolchain` directive pins `go1.25.14`, the compiler that actually builds and
 tests the module. They differ on purpose: go1.25.0 ships with known
 standard-library vulnerabilities that `govulncheck` flags, and 1.25.14 is the
-patched release of that line. Go's default `GOTOOLCHAIN=auto` downloads the
-pinned toolchain automatically, so an older base install still builds against
-the right version.
+patched release of that line.
+
+Go's default `GOTOOLCHAIN=auto` downloads the pinned toolchain automatically,
+so an older base install still builds against the right version — and still
+passes `make check-prereqs`, because that check runs `go version` from the
+repository root, where the toolchain directive has already been resolved.
 
 ## Quick start
 

@@ -91,6 +91,30 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
+			name: "required values are trimmed before they are stored",
+			env: func() map[string]string {
+				e := validEnv()
+				for key, value := range e {
+					e[key] = "  " + value + "\t\n"
+				}
+				return e
+			}(),
+			assert: func(t *testing.T, cfg Config) {
+				want := validEnv()
+				got := map[string]string{
+					"DATABASE_URL":       cfg.DatabaseURL,
+					"REDIS_URL":          cfg.RedisURL,
+					"NATS_URL":           cfg.NATSURL,
+					"TEMPORAL_HOST_PORT": cfg.TemporalHostPort,
+				}
+				for key, value := range got {
+					if value != want[key] {
+						t.Errorf("%s = %q, want %q", key, value, want[key])
+					}
+				}
+			},
+		},
+		{
 			name: "unknown exporter is rejected",
 			env: func() map[string]string {
 				e := validEnv()

@@ -72,13 +72,17 @@ func Load() (Config, error) {
 		)
 	}
 
+	// Required values are trimmed for the same reason optional ones are: a
+	// value pasted into .env with surrounding whitespace passed the blank check
+	// above but would then be stored raw, and redis.ParseURL and pgxpool.New
+	// both reject a URL whose scheme is not at the start of the string.
 	cfg := Config{
 		AppEnv:           valueOr("APP_ENV", "development"),
 		HTTPAddr:         valueOr("API_HTTP_ADDR", ":8080"),
-		DatabaseURL:      os.Getenv("DATABASE_URL"),
-		RedisURL:         os.Getenv("REDIS_URL"),
-		NATSURL:          os.Getenv("NATS_URL"),
-		TemporalHostPort: os.Getenv("TEMPORAL_HOST_PORT"),
+		DatabaseURL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		RedisURL:         strings.TrimSpace(os.Getenv("REDIS_URL")),
+		NATSURL:          strings.TrimSpace(os.Getenv("NATS_URL")),
+		TemporalHostPort: strings.TrimSpace(os.Getenv("TEMPORAL_HOST_PORT")),
 		OTelExporter:     valueOr("OTEL_EXPORTER", "none"),
 		OTelServiceName:  valueOr("OTEL_SERVICE_NAME", "weave-api"),
 		ReadinessTimeout: 3 * time.Second,

@@ -5,6 +5,11 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 
 /** Provides selection state and orientation styling for a group of tabs. */
+// Deviation from the generated shadcn source: `orientation` is destructured out
+// of props, so upstream renders only `data-orientation` and Base UI's root never
+// sees it — vertical tabs get the right styling but horizontal arrow-key
+// navigation and `aria-orientation`. Forwarding it fixes both. Re-apply this if
+// the component is ever regenerated.
 function Tabs({
   className,
   orientation = "horizontal",
@@ -13,6 +18,7 @@ function Tabs({
   return (
     <TabsPrimitive.Root
       data-slot="tabs"
+      orientation={orientation}
       data-orientation={orientation}
       className={cn(
         "group/tabs flex gap-2 data-horizontal:flex-col",

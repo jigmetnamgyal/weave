@@ -24,6 +24,8 @@ jobs:
       node: ${{ steps.versions.outputs.node }}
       go: ${{ steps.versions.outputs.go }}
       golangci_lint: ${{ steps.versions.outputs.golangci_lint }}
+      govulncheck: ${{ steps.versions.outputs.govulncheck }}
+      gitleaks: ${{ steps.versions.outputs.gitleaks }}
     steps:
       - uses: actions/checkout@v4
       - id: versions
@@ -33,6 +35,8 @@ jobs:
           echo "node=${NODE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "go=${GO_VERSION}" >> "$GITHUB_OUTPUT"
           echo "golangci_lint=${GOLANGCI_LINT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "govulncheck=${GOVULNCHECK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "gitleaks=${GITLEAKS_VERSION}" >> "$GITHUB_OUTPUT"
 
   web:
     name: Web (format, lint, typecheck, build)
@@ -122,6 +126,7 @@ jobs:
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
+    needs: toolchain
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,11 +134,14 @@ jobs:
           # just the tip.
           fetch-depth: 0
 
+      # Pinned from versions.env rather than :latest — a scanner that gates the
+      # build should be a reviewed version, and a moving tag makes a failure
+      # impossible to reproduce.
       - name: Gitleaks
         run: |
           docker run --rm \
             --volume "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks:latest \
+            zricethezav/gitleaks:v${{ needs.toolchain.outputs.gitleaks }} \
             detect --source=/repo --config=/repo/.gitleaks.toml --redact --verbose
 
   dependency-scan:
@@ -161,7 +169,7 @@ jobs:
 
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v${{ needs.toolchain.outputs.govulncheck }}
           govulncheck ./services/... ./internal/...
 
   compose:

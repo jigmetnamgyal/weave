@@ -17,10 +17,13 @@ paths = [
   '''^\.env\.example$''',
   '''^infra/docker-compose\.yml$''',
 ]
+# Each entry matches one exact synthetic value. Nothing may precede or follow
+# `weave`, so a real credential that merely contains it (`production-weave`,
+# `weave-prod-9f2c`) is still reported.
 regexes = [
-  '''weave:weave''',
-  '''POSTGRES_PASSWORD[=:]\s*\$?\{?[A-Za-z_:\-]*weave\}?''',
-  '''POSTGRES_PWD[=:]\s*\$?\{?[A-Za-z_:\-]*weave\}?''',
+  '''weave:weave@''',
+  '''POSTGRES_PASSWORD[=:]\s*weave\b''',
+  '''POSTGRES_(PASSWORD|PWD)[=:]\s*\$\{POSTGRES_PASSWORD:-weave\}''',
 ]
 
 [[allowlists]]

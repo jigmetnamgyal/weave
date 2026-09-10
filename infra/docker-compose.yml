@@ -13,6 +13,11 @@
 # macOS a host process bound to 127.0.0.1 wins over Docker's 0.0.0.0 publish.
 # Override any port through the matching variable in .env.
 #
+# Every published port is bound to 127.0.0.1 rather than the Compose default
+# of all interfaces. These services use development credentials or none at
+# all, and an unqualified publish reaches past the host firewall to anything
+# that can route to this machine.
+#
 # Start with `make up` from the repository root.
 
 name: weave
@@ -28,7 +33,7 @@ services:
       # Deterministic initialisation regardless of the host locale.
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     ports:
-      - "${POSTGRES_PORT:-55432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -45,7 +50,7 @@ services:
     # so persistence is deliberately disabled locally.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      - "${REDIS_PORT:-56379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-56379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -59,8 +64,8 @@ services:
     # -js enables JetStream; -m exposes the monitoring endpoint used below.
     command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
-      - "${NATS_PORT:-54222}:4222"
-      - "${NATS_MONITORING_PORT:-58222}:8222"
+      - "127.0.0.1:${NATS_PORT:-54222}:4222"
+      - "127.0.0.1:${NATS_MONITORING_PORT:-58222}:8222"
     volumes:
       - nats-data:/data
     healthcheck:
@@ -85,7 +90,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-weave}
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-weave}
     ports:
-      - "${TEMPORAL_PORT:-57233}:7233"
+      - "127.0.0.1:${TEMPORAL_PORT:-57233}:7233"
     healthcheck:
       test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
       interval: 10s
@@ -103,7 +108,7 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3000
     ports:
-      - "${TEMPORAL_UI_PORT:-58233}:8080"
+      - "127.0.0.1:${TEMPORAL_UI_PORT:-58233}:8080"
 
 volumes:
   postgres-data:

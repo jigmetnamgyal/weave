@@ -21,7 +21,16 @@ if [ -f "${ENV_FILE}" ]; then
   set +a
 fi
 
-API_BASE="http://localhost${API_HTTP_ADDR:-:8080}"
+# API_HTTP_ADDR is a Go listen address, so it may be port-only (":8080"), a
+# wildcard host ("0.0.0.0:8080") or an explicit host ("127.0.0.1:8080"). Only
+# the first can be appended to "localhost", and a wildcard is not dialable.
+api_addr="${API_HTTP_ADDR:-:8080}"
+case "${api_addr}" in
+  :*)             API_BASE="http://localhost${api_addr}" ;;
+  0.0.0.0:* | \[::\]:*) API_BASE="http://localhost:${api_addr##*:}" ;;
+  *)              API_BASE="http://${api_addr}" ;;
+esac
+
 failed=0
 
 echo "Docker Compose dependencies"

@@ -187,19 +187,17 @@ func TestReadyRunsProbesConcurrently(t *testing.T) {
 		{Name: "nats", Probe: slowProbe},
 	}
 
-	start := time.Now()
 	rec := httptest.NewRecorder()
 	Ready(discardLogger(), checks...).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
-	elapsed := time.Since(start)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
+	// maxConcurrent is the whole assertion: it observes overlap directly. A
+	// wall-clock comparison would say the same thing less reliably, since a
+	// loaded CI host can exceed any threshold while still running in parallel.
 	if got := maxConcurrent.Load(); got != int64(len(checks)) {
 		t.Errorf("max concurrent probes = %d, want %d", got, len(checks))
-	}
-	if elapsed >= probeDelay*time.Duration(len(checks)) {
-		t.Errorf("probes took %v, which indicates serial execution", elapsed)
 	}
 }
 

@@ -153,12 +153,16 @@ func run() error {
 
 // natsProbe reports NATS reachability with a real round trip, so a connection
 // that is open but unresponsive is treated as unavailable.
+//
+// The round trip is FlushWithContext rather than RTT because RTT flushes with a
+// hardcoded 10s timeout, which outlives cfg.ReadinessTimeout; health.Ready waits
+// for every probe, so one unresponsive server would hold the whole probe open.
 func natsProbe(conn *nats.Conn) health.ProbeFunc {
-	return func(context.Context) error {
+	return func(ctx context.Context) error {
 		if !conn.IsConnected() {
 			return fmt.Errorf("nats connection status %s", conn.Status())
 		}
-		if _, err := conn.RTT(); err != nil {
+		if err := conn.FlushWithContext(ctx); err != nil {
 			return fmt.Errorf("nats round trip: %w", err)
 		}
 		return nil
