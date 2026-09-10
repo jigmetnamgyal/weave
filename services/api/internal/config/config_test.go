@@ -16,6 +16,7 @@ func validEnv() map[string]string {
 	}
 }
 
+// TestLoad verifies required values, defaults, overrides, and invalid configuration.
 func TestLoad(t *testing.T) {
 	tests := []struct {
 		name      string

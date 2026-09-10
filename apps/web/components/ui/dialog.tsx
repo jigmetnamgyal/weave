@@ -7,22 +7,27 @@ import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
 
+/** Provides dialog state and interaction context to its descendants. */
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />
 }
 
+/** Renders the control that opens its associated dialog. */
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
   return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />
 }
 
+/** Mounts dialog content outside the surrounding document flow. */
 function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
 }
 
+/** Renders a control that closes its associated dialog. */
 function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
 }
 
+/** Renders the modal backdrop behind dialog content. */
 function DialogOverlay({
   className,
   ...props
@@ -39,6 +44,7 @@ function DialogOverlay({
   )
 }
 
+/** Composes the dialog portal, backdrop, content surface, and optional close button. */
 function DialogContent({
   className,
   children,
@@ -80,6 +86,7 @@ function DialogContent({
   )
 }
 
+/** Groups a dialog's title and description. */
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -90,6 +97,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
+/** Arranges dialog actions and can provide a standard close action. */
 function DialogFooter({
   className,
   showCloseButton = false,
@@ -117,6 +125,7 @@ function DialogFooter({
   )
 }
 
+/** Renders the accessible title for a dialog. */
 function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
@@ -130,6 +139,7 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   )
 }
 
+/** Renders the accessible supporting description for a dialog. */
 function DialogDescription({
   className,
   ...props

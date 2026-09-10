@@ -4,6 +4,7 @@ import * as React from "react"
 import { ScrollArea as ScrollAreaPrimitive } from "@base-ui/react/scroll-area"
 import { cn } from "cn"
 
+/** Provides a styled viewport for content that can overflow its bounds. */
 function ScrollArea({
   className,
   children,
@@ -27,6 +28,7 @@ function ScrollArea({
   )
 }
 
+/** Renders a horizontal or vertical scrollbar for a scroll area. */
 function ScrollBar({
   className,
   orientation = "vertical",

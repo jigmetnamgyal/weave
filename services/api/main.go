@@ -30,6 +30,7 @@ import (
 // the process exits.
 const shutdownTimeout = 15 * time.Second
 
+// main starts the API process and reports startup failures to standard error.
 func main() {
 	if err := run(); err != nil {
 		// Configuration and bind failures are startup errors: report them on
@@ -39,6 +40,7 @@ func main() {
 	}
 }
 
+// run wires the API dependencies and serves requests until shutdown.
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {

@@ -19,12 +19,15 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// okProbe models a reachable dependency for readiness tests.
 func okProbe(context.Context) error { return nil }
 
+// failProbe models an unreachable dependency without exposing its detail to clients.
 func failProbe(context.Context) error {
 	return errors.New("dial tcp 10.1.2.3:5432: connection refused")
 }
 
+// TestLive verifies that liveness succeeds without reporting dependency state.
 func TestLive(t *testing.T) {
 	rec := httptest.NewRecorder()
 	Live().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/live", nil))
@@ -45,6 +48,7 @@ func TestLive(t *testing.T) {
 	}
 }
 
+// TestReady verifies aggregate and per-dependency readiness responses.
 func TestReady(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -44,6 +44,7 @@ echo "Dependencies are healthy."
 
 pids=()
 
+# shutdown stops child application processes while leaving dependencies running.
 shutdown() {
   echo
   echo "Stopping web and API (dependencies stay up — use 'make down' to stop them)"

@@ -18,6 +18,7 @@ version_gte() {
   [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | head -n1)" = "$2" ]
 }
 
+# require records whether a named tool meets its pinned minimum version.
 require() {
   local name="$1" actual="$2" wanted="$3" hint="$4"
   if [ -z "${actual}" ]; then

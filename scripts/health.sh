@@ -57,6 +57,7 @@ echo
 echo "API probes (${API_BASE})"
 echo "---------------------------"
 
+# probe calls one API health endpoint and records whether it returned HTTP 200.
 probe() {
   local path="$1"
   local code body

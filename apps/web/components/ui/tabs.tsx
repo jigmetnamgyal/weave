@@ -4,6 +4,7 @@ import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 
+/** Provides selection state and orientation styling for a group of tabs. */
 function Tabs({
   className,
   orientation = "horizontal",
@@ -37,6 +38,7 @@ const tabsListVariants = cva(
   }
 )
 
+/** Groups tab triggers using the selected visual variant. */
 function TabsList({
   className,
   variant = "default",
@@ -52,6 +54,7 @@ function TabsList({
   )
 }
 
+/** Renders a control that selects its associated tab panel. */
 function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
   return (
     <TabsPrimitive.Tab
@@ -68,6 +71,7 @@ function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
   )
 }
 
+/** Renders the panel associated with an active tab. */
 function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
   return (
     <TabsPrimitive.Panel

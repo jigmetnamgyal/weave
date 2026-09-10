@@ -92,6 +92,7 @@ Resolve these before the milestone that depends on them:
 | --- | --- | --- | --- | --- | --- |
 | 2026-09-10 | Repository Foundation, Unit M1.1 (`context/features-specs/02-repository-foundation.md`) | Local dev, macOS arm64, Node 23.11.0, Go 1.25.14, Docker 28.1.1, Compose 2.35.1 | `make check-prereqs`; `make ci` (gofmt, prettier, go vet, eslint, tsc, `go test -race`, go build, next build); `golangci-lint run`; `govulncheck`; `npm audit --audit-level=high`; gitleaks via Docker; `make dev` from a clean checkout (no `.env`, no containers, no volumes); `make health`; per-dependency outage probes; `curl` of both probes and the web shell | Pass | Monorepo layout created and the Next.js app moved to `apps/web` via `git mv` (history preserved); dark-theme tokens verified intact in the browser (`--background #090b10`, `--primary #8b7cff`, `--card #131722`, `--ring #a99fff`). Go API serves `/health/live` (200, no dependency I/O) and `/health/ready` (200 when all up; 503 naming the failing dependency, verified by stopping postgres, redis and nats in turn). Compose stack reports all five services healthy. Config validation fails fast listing every missing variable at once. Local gates all green; **the CI workflow file itself is unverified until first push** — each gate's command was verified locally instead. |
 | 2026-09-10 | Design System and UI Primitives (`context/features-specs/design-system.md`) | Local dev, Node 23, Next.js 16.3.4 | `npx tsc --noEmit`, `npx eslint .`, `npm run build`, manual browser check of Button/Card/Dialog/Input/Tabs/Textarea/ScrollArea at `http://localhost:3000` | Pass | shadcn/ui installed (`style: base-nova`, Base UI primitives, not Radix); Button, Card, Dialog, Input, Tabs, Textarea, ScrollArea added via `npx shadcn add`; `lucide-react` installed; `lib/utils.ts` exports `cn()` from the official `cn` package; `app/globals.css` dark-theme tokens replaced with the hex values from `ui-context.md` (background, foreground, card, popover, primary, secondary, muted, accent, destructive, border, ring, sidebar, chart). Verified visually via a temporary route (removed after verification) — correct dark surfaces/borders, purple primary accent, working dialog with backdrop blur, no hydration errors, no default light styling. |
+| 2026-09-10 | Pull request docstring coverage repair | Local sandbox, Node 24.14.1, Go 1.25.14 | `make fmt-check lint typecheck test` | Pass | Documented all 52 top-level functions in the M1.1 pull-request diff. The external docstring coverage gate remains pending its next pull-request run. |
 
 ## Session Notes
 
@@ -114,5 +115,4 @@ Resolve these before the milestone that depends on them:
 ## Last Updated
 
 - Date: 2026-09-10
-- Updated by: Repository Foundation (Unit M1.1) implementation
-
+- Updated by: Pull request docstring coverage repair
