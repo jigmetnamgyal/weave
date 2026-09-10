@@ -81,6 +81,7 @@ Run `make help` for the full list.
 | `make clean`       | Stop containers, delete their volumes and build output |
 | `make ci`          | Run every quality gate the CI workflow runs            |
 | `make fmt`         | Format Go and web sources in place                     |
+| `make lint-go`     | golangci-lint at the pinned version                    |
 | `make test`        | Go unit tests with the race detector                   |
 
 ## Layout
@@ -168,6 +169,13 @@ starting work. In short: read the context documents first, take one bounded
 vertical slice, and update `context/progress-tracker.md` when you begin and
 when you finish.
 
-Run `make ci` before opening a pull request. The same gates run in
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml), plus golangci-lint,
-secret scanning, dependency scanning and a live compose health check.
+Run `make ci` before opening a pull request. It runs formatting, linting
+(including golangci-lint), type checks, unit tests and builds — the same gates
+as [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which additionally
+runs secret scanning, dependency scanning and a live compose health check.
+
+golangci-lint is installed from source at the version pinned in `versions.env`,
+never as a prebuilt binary. A golangci-lint release is compiled with whichever
+Go its maintainers used, and it refuses to run against a module targeting a
+newer Go than that — building it with our own pinned toolchain makes that skew
+impossible.

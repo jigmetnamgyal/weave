@@ -15,10 +15,14 @@ WEB_WORKSPACE := @weave/web
 GO_PKGS := ./services/... ./internal/...
 GO_DIRS := services internal
 
+# Same pinned linter version CI uses, read from the same file.
+GOLANGCI_LINT_VERSION := $(shell . ./versions.env && echo $$GOLANGCI_LINT_VERSION)
+GOBIN := $(shell go env GOPATH)/bin
+
 .DEFAULT_GOAL := help
 
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
-        fmt fmt-check lint typecheck test build ci tidy
+        fmt fmt-check lint lint-go typecheck test build ci tidy
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -84,6 +88,15 @@ lint: ## Lint Go and web sources (CI gate)
 	@echo "==> eslint"
 	@npm run lint
 
+# Installed from source so the linter is always built with the toolchain in
+# versions.env; a prebuilt binary built with an older Go refuses to run against
+# a module targeting a newer one.
+lint-go: ## Run golangci-lint at the pinned version (CI gate)
+	@command -v golangci-lint >/dev/null 2>&1 && [ "$$(golangci-lint version --short 2>/dev/null)" = "$(GOLANGCI_LINT_VERSION)" ] \
+		|| (echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)" \
+		    && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION))
+	@$(GOBIN)/golangci-lint run $(GO_PKGS)
+
 typecheck: ## Type-check the web workspace (CI gate)
 	@npm run typecheck
 
@@ -97,5 +110,5 @@ build: ## Build the API binary and the web application (CI gate)
 tidy: ## Ensure go.mod and go.sum are current
 	@go mod tidy
 
-ci: fmt-check lint typecheck test build ## Run every local quality gate
+ci: fmt-check lint lint-go typecheck test build ## Run every local quality gate
 	@echo "All quality gates passed."
