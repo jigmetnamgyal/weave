@@ -17,6 +17,15 @@ const (
 	CodeUnauthenticated = "unauthenticated"
 	CodeInternal        = "internal_error"
 	CodeNotFound        = "not_found"
+	// CodePermissionDenied means the caller can see the resource but may not
+	// perform this operation on it. Distinct from CodeNotFound, which is what
+	// a caller outside the tenant gets.
+	CodePermissionDenied = "permission_denied"
+	// CodeConflict covers a stale version on update, and a change refused
+	// because it would break an invariant such as the last-owner rule.
+	CodeConflict = "conflict"
+	// CodeInvalidRequest covers malformed bodies and failed validation.
+	CodeInvalidRequest = "invalid_request"
 )
 
 // requestIDHeader is both read from the client and echoed on the response, so

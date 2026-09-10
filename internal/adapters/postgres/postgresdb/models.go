@@ -9,6 +9,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// Append-only security log. Deliberately has no foreign keys so records outlive what they describe.
+type AuditEvent struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	ActorUserID pgtype.UUID
+	Action      string
+	Target      *string
+	Detail      []byte
+	OccurredAt  pgtype.Timestamptz
+}
+
 // Application users. One row per identity-provider subject.
 type User struct {
 	ID uuid.UUID
@@ -17,6 +28,26 @@ type User struct {
 	Email       string
 	DisplayName *string
 	AvatarUrl   *string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+// Tenant boundary. Every tenant-owned table references this.
+type Workspace struct {
+	ID        uuid.UUID
+	Slug      string
+	Name      string
+	CreatedBy uuid.UUID
+	Version   int32
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+// Authorization record: a row here means the user may act in the workspace, at the given role.
+type WorkspaceMember struct {
+	WorkspaceID uuid.UUID
+	UserID      uuid.UUID
+	Role        string
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
 }

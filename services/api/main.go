@@ -30,6 +30,7 @@ import (
 	"github.com/jigmetnamgyal/weave/services/api/internal/httpx"
 	"github.com/jigmetnamgyal/weave/services/api/internal/telemetry"
 	"github.com/jigmetnamgyal/weave/services/api/internal/users"
+	"github.com/jigmetnamgyal/weave/services/api/internal/workspaces"
 )
 
 // shutdownTimeout bounds how long in-flight requests may take to drain before
@@ -127,6 +128,9 @@ func run() error {
 	// default rather than by remembering to protect it.
 	protected := http.NewServeMux()
 	protected.Handle("GET /v1/me", users.Me())
+
+	workspaceService := application.NewWorkspaceService(postgres.NewWorkspaceStore(pool))
+	workspaces.NewHandler(workspaceService, logger).Register(protected)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())

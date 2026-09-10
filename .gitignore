@@ -25,6 +25,10 @@ bin/
 *.test
 *.out
 
+# Scratch output from tooling — the pr-comment-resolving skill writes
+# GitHub API responses here so it can re-read them without re-fetching.
+tmp/
+
 # misc
 .DS_Store
 *.pem
