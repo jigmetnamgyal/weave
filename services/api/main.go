@@ -129,8 +129,14 @@ func run() error {
 	protected := http.NewServeMux()
 	protected.Handle("GET /v1/me", users.Me())
 
-	workspaceService := application.NewWorkspaceService(postgres.NewWorkspaceStore(pool))
-	workspaces.NewHandler(workspaceService, logger).Register(protected)
+	workspaceStore := postgres.NewWorkspaceStore(pool)
+	workspaceService := application.NewWorkspaceService(workspaceStore)
+	invitationService := application.NewInvitationService(
+		postgres.NewInvitationStore(pool), workspaceStore, time.Now)
+
+	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
+	workspaceHandler.Register(protected)
+	workspaceHandler.RegisterInvitations(protected, invitationService)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())

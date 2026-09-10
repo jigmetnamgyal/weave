@@ -426,6 +426,27 @@ func (h *Handler) writeError(ctx context.Context, w http.ResponseWriter, err err
 		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
 			"The workspace changed since you last read it. Reload and try again.")
 
+	case errors.Is(err, domain.ErrInvitationNotUsable):
+		// One response for unknown, expired, revoked and already-accepted.
+		// Distinguishing them would tell someone probing tokens which guesses
+		// were once real.
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound,
+			"This invitation link is not valid. It may have expired or been withdrawn.")
+
+	case errors.Is(err, domain.ErrInvitationWrongRecipient):
+		httpx.WriteError(ctx, w, http.StatusForbidden, httpx.CodePermissionDenied,
+			"This invitation was sent to a different email address. Sign in with that address to accept it.")
+
+	case errors.Is(err, application.ErrInvitationNotFound):
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Invitation not found.")
+
+	case errors.Is(err, application.ErrInvitationOutstanding):
+		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
+			"An invitation to that address is already outstanding. Revoke it first to issue a new one.")
+
+	case errors.Is(err, domain.ErrInvalidInvitation):
+		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
+
 	case errors.Is(err, domain.ErrCannotGrantRole):
 		httpx.WriteError(ctx, w, http.StatusForbidden, httpx.CodePermissionDenied,
 			"You cannot grant a role with more authority than your own.")

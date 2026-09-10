@@ -20,6 +20,12 @@ import (
 // uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint breach.
 const uniqueViolation = "23505"
 
+// isUniqueViolation reports whether err is a unique constraint breach.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation
+}
+
 // WorkspaceStore persists workspaces, membership and audit events.
 type WorkspaceStore struct {
 	pool    *pgxpool.Pool
@@ -72,8 +78,7 @@ func (s *WorkspaceStore) CreateWithOwner(ctx context.Context, workspace domain.W
 			CreatedBy: workspace.CreatedBy,
 		})
 		if err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+			if isUniqueViolation(err) {
 				// The advisory slug check lost a race with a concurrent
 				// creation. Surfacing it as a domain error lets the caller
 				// retry with a different slug rather than see a driver error.

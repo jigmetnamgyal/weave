@@ -25,6 +25,12 @@ servers:
 tags:
   - name: users
     description: The authenticated user.
+  - name: invitations
+    description: |
+      Accepting an invitation is the one workspace operation available to
+      someone who is not yet a member, so these routes sit outside the
+      workspace path and are authorized by the token rather than by
+      membership.
   - name: workspaces
     description: |
       Workspaces are the tenant boundary. Authorization has two steps and the
@@ -153,6 +159,157 @@ paths:
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/WorkspaceNotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/workspaces/{workspaceId}/invitations:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listWorkspaceInvitations
+      tags: [workspaces]
+      summary: List a workspace's invitations
+      description: Requires `member:invite`. Never returns tokens or token hashes.
+      responses:
+        "200":
+          description: Every invitation for the workspace, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invitation" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    post:
+      operationId: issueWorkspaceInvitation
+      tags: [workspaces]
+      summary: Invite someone to the workspace
+      description: |
+        Requires `member:invite`, and the inviter must be able to grant the
+        role — an admin cannot invite an owner, for the same reason an admin
+        cannot promote one.
+
+        **The response carries the token, and it is the only time it ever
+        exists outside the recipient's link.** Only its hash is stored, so it
+        cannot be retrieved afterwards. Surface it immediately or it is lost.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201":
+          description: The invitation, together with its token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuedInvitation" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409":
+          description: The address already belongs to the workspace, or already has an outstanding invitation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/workspaces/{workspaceId}/invitations/{invitationId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - name: invitationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: revokeWorkspaceInvitation
+      tags: [workspaces]
+      summary: Withdraw an invitation
+      description: Requires `member:invite`. Only an outstanding invitation can be revoked.
+      responses:
+        "204": { description: The invitation was withdrawn. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/invitations/preview:
+    post:
+      operationId: previewInvitation
+      tags: [invitations]
+      summary: Describe an invitation to its holder
+      description: |
+        Lets someone see what they are being asked to join before accepting.
+
+        `POST` rather than `GET` because the token travels in the body: a
+        token in a query string ends up in server logs, proxy logs and
+        `Referer` headers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvitationTokenRequest" }
+      responses:
+        "200":
+          description: What the invitation offers, and nothing else about the workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvitationPreview" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/InvitationNotUsable" }
+
+  /v1/invitations/accept:
+    post:
+      operationId: acceptInvitation
+      tags: [invitations]
+      summary: Accept an invitation
+      description: |
+        Requires authentication, but not membership — the caller is not a
+        member yet, and the token is what authorizes them.
+
+        The signed-in account's email must match the invited address. A link
+        that admits whoever opens it would turn a forwarded message into a
+        workspace breach.
+
+        The token is single use: concurrent accepts of one token produce
+        exactly one membership.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvitationTokenRequest" }
+      responses:
+        "200":
+          description: The membership created by accepting.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace_id, role]
+                properties:
+                  workspace_id: { type: string, format: uuid }
+                  role: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: The invitation was issued to a different email address.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/InvitationNotUsable" }
+        "409":
+          description: The caller already belongs to this workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /v1/workspaces/{workspaceId}/members:
     parameters:
@@ -294,6 +451,63 @@ components:
           items: { $ref: "#/components/schemas/Permission" }
         created_at: { type: string, format: date-time }
 
+    Invitation:
+      type: object
+      additionalProperties: false
+      required: [id, email, role, status, expires_at, created_at]
+      description: An offer to join a workspace. Never carries the token or its hash.
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/Role" }
+        status:
+          type: string
+          description: |
+            Derived from the invitation's timestamps rather than stored, so it
+            cannot disagree with them. A terminal state wins over expiry: an
+            invitation accepted while still valid reads as `accepted`.
+          enum: [pending, accepted, revoked, expired]
+        invited_by_email: { type: string, format: email }
+        invited_by_display_name: { type: string }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    IssuedInvitation:
+      allOf:
+        - $ref: "#/components/schemas/Invitation"
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: |
+                **Shown once.** Only a SHA-256 hash is stored, so this value
+                cannot be recovered afterwards — not by this API, and not by
+                anyone with database access. Put it in the invitation link
+                immediately.
+
+    InvitationTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string }
+
+    InvitationPreview:
+      type: object
+      additionalProperties: false
+      required: [workspace_name, email, role, invited_by_email, expires_at]
+      description: |
+        Deliberately narrow. It tells the holder what they are joining and who
+        asked, and reveals nothing else about the workspace or its members.
+      properties:
+        workspace_name: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/Role" }
+        invited_by_email: { type: string, format: email }
+        invited_by_display_name: { type: string }
+        expires_at: { type: string, format: date-time }
+
     Member:
       type: object
       additionalProperties: false
@@ -397,6 +611,18 @@ components:
       description: |
         The request conflicts with the resource's current state — a stale
         `version`, or a change that would leave the workspace with no owner.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    InvitationNotUsable:
+      description: |
+        The invitation cannot be used.
+
+        Returned identically whether the token is unknown, expired, revoked or
+        already accepted. Distinguishing them would tell someone guessing
+        tokens which guesses were once real, turning a brute-force attempt
+        into a search with feedback.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

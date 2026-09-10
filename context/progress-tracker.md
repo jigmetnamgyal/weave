@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M1.1, M2.1 and M2.2 complete; M2.3 (workspace invitations) next
+- Status: M1.1, M2.1, M2.2 and M2.3 complete; M3.1 (GitHub App) next
 
 ## Current Goal
 
@@ -17,7 +17,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 | --- | --- | --- |
 | M0 | Product, UI, architecture, standards, and AI workflow specifications accepted | Complete |
 | M1 | Monorepo, local infrastructure, CI, observability bootstrap, and environment validation | Complete |
-| M2 | Authentication, workspaces, membership, authorization matrix, and tenant isolation | In progress |
+| M2 | Authentication, workspaces, membership, authorization matrix, and tenant isolation | Complete |
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Not started |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Not started |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Not started |
@@ -37,6 +37,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 - Defined repository code standards and AI implementation workflow.
 - Installed and configured shadcn/ui design system and UI primitives (see Verification Record).
 - Built the repository foundation: monorepo layout, Go API with health probes, local Docker Compose stack, task runner, environment validation, CI quality gates, and OpenTelemetry bootstrap (Unit M1.1 — see Verification Record).
+- Built workspace invitations: `workspace_invitations` with hashed single-use tokens, seven-day expiry, issue/list/revoke/accept, the M2.2 grant rule extended to invitations, and the invite and accept surfaces in the web application (Unit M2.3 — see Verification Record and ADR-011).
 - Built workspaces and membership: `workspaces`, `workspace_members` and append-only `audit_events`; the owner/admin/developer/viewer role model behind a centralised action-oriented permission matrix; two-step authorization (membership decides visibility, permission decides the operation); workspace-scoped data access with no unscoped reads (Unit M2.2 — see Verification Record). Merged 2026-09-10 in PR #3 after eight review findings were fixed, including a privilege-escalation path and a CHECK constraint that `citext` had silently disabled.
 - Built the authentication baseline: database foundation (goose migrations, sqlc, `users` table), the identity-verifier port with a Clerk JWKS adapter, deny-by-default auth middleware, just-in-time user provisioning, `GET /v1/me`, the first OpenAPI document, and Clerk sign-in with a protected route in the web shell (Unit M2.1 — see Verification Record). Verified end to end on 2026-09-10: sign-in with GitHub through a real Clerk application provisions one `users` row and `GET /v1/me` returns it.
 
@@ -45,18 +46,6 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 - None.
 
 ## Next Up
-
-### Unit M2.3 — Workspace Invitations
-
-**Source:** `context/features-specs/05-workspace-invitations.md`
-
-**Outcome:** A workspace stops being single-player. Someone with `member:invite` issues an invitation, the recipient accepts it, and they join at the role they were invited to.
-
-**Scope:** the `workspace_invitations` table; issue, list, revoke and accept; hashed single-use tokens with expiry; the role-granting rule from M2.2 applied to invitations; the invite and accept surfaces in the web application.
-
-**Non-scope:** email delivery (the inviter shares the link; adding an email provider is its own decision), resend, bulk invite, domain auto-join, and SCIM.
-
-## Next Up (after M2.3)
 
 ### Unit M3.1 — GitHub App Installation and Repository Access
 
@@ -88,6 +77,7 @@ Resolve these before the milestone that depends on them:
 | ADR-006 | Use one ephemeral isolated environment per session | Strong tenant boundary and deterministic cleanup | Accepted |
 | ADR-007 | Keep provider behavior behind capability-aware adapters | Avoid product coupling to Claude Code or Codex | Accepted |
 | ADR-008 | Bind approvals to immutable proposal hashes | Prevent replay or parameter substitution | Accepted |
+| ADR-011 | Treat invitations as bearer capabilities, storing only a SHA-256 of the token | A link is held by whoever receives it, so the token is 256 random bits, single use, expiring, and matched against the invited address; hashing means a database dump is not a set of working invitations. A password hash would buy nothing against uniform randomness and would put a CPU cost on every acceptance. See `docs/adr/0011-invitation-token-model.md` | Accepted |
 | ADR-010 | Enforce tenancy with workspace-scoped queries; defer row-level security | RLS is defence in depth behind scoped queries, and needs a non-superuser role, a per-transaction tenant GUC and pooling care that would make this unit unreviewable. Gated: **RLS ships before the first external customer.** See `docs/adr/0010-tenancy-and-row-level-security.md` | Accepted |
 | ADR-009 | Use Clerk for authentication only, never for authorization | The Go API can verify Clerk JWTs via cached JWKS without hand-rolling token issuance across the Next.js/Go boundary; keeping workspaces, membership and permissions in PostgreSQL avoids a second source of truth for tenant isolation and keeps Clerk swappable behind the OIDC/JWT boundary | Accepted |
 
@@ -106,6 +96,7 @@ Resolve these before the milestone that depends on them:
 
 | Date | Unit | Environment | Commands/tests | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-11 | Workspace Invitations, Unit M2.3 (`context/features-specs/05-workspace-invitations.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-up`; `curl` of all five invitation routes unauthenticated; grep audit of the API log and of every logger and JSON tag for token material | Pass, with one gap | Domain tests cover the derived status (including terminal states winning over expiry), token entropy and URL-safety across 200 samples, and that the stored hash — raw or hex-encoded — cannot be presented as a token. Integration tests against real PostgreSQL prove: eight concurrent accepts of one token create exactly one membership; unknown, expired, revoked, accepted and empty tokens are indistinguishable from both preview and accept; a forwarded link is refused for the wrong recipient and still works for the right one; email matching is case-insensitive; one outstanding invitation per address, with an expired one superseded rather than blocking and its row kept; re-inviting after removal restores access at the newly invited role; an admin cannot invite an owner; and an invitation id from one tenant cannot be revoked through another. All five routes return 401 unauthenticated while `/health/*` stays public. The API log contains no token material — the only matches are the phrase "bearer token" in auth-failure messages. **Gap: the signed-in browser flow is unverified**, as with M2.2. |
 | 2026-09-10 | Workspaces and Membership, Unit M2.2 — review round (PR #3) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; direct `psql` probes of the slug constraint before and after the fix; `go run` probe of int32 narrowing; full CI on the pull request and on `main` | Pass | Eight findings from greptile and CodeRabbit, all verified against the code and all valid. Two were serious: `member:manage` alone let an admin assign the `owner` role and collect `billing:manage` (fixed with a permission-subset grant rule); and `citext` overrides `~` to be case-insensitive, so the slug CHECK accepted `UpperCaseSlug` — proved by inserting one before the `::text` cast and watching it succeed, then fail after. Also fixed a time-of-check/time-of-use window where a removed or demoted actor could still land a privileged write (mutations now re-read the actor's membership under the workspace lock), `int32` truncation that let `4294967297` masquerade as version 1, slug-suffix overflow, and trailing-JSON acceptance. Every fix carries a regression test, including both TOCTOU cases against real PostgreSQL. **Still unverified: the signed-in browser flow**, which needs a GitHub sign-in only the operator can perform. |
 | 2026-09-10 | Workspaces and Membership, Unit M2.2 (`context/features-specs/04-workspaces-and-membership.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-up` / `migrate-down` / `migrate-up`; `psql` probes of the append-only triggers; `curl` of all seven routes unauthenticated; browser check of the signed-out redirect | Pass, with one gap | Authorization matrix pinned by an exhaustiveness test that fails the build when a role or permission is added without deciding every pairing, plus a hand-written expectation table so the matrix cannot be changed without changing the test. HTTP tests cover every workspace-scoped endpoint × every role: a non-member receives 404 on all five (never 403), an unknown workspace is byte-identical to one that is not yours, and a member lacking a permission receives 403. Integration tests against real PostgreSQL prove cross-tenant reads return nothing, the last owner cannot be demoted or removed, two concurrent owner demotions leave exactly one owner (the reason the store takes a row lock), a stale version is rejected, refused changes write no audit row, and audit rows survive deleting the workspace they describe. Append-only is enforced by the database: UPDATE, DELETE and TRUNCATE are all rejected by trigger. All seven routes return 401 unauthenticated while `/health/*` stays public. **Gap: the signed-in browser flow is unverified** — it needs a GitHub sign-in only the operator can perform. |
 | 2026-09-10 | Authentication Baseline, Unit M2.1 (`context/features-specs/03-authentication-baseline.md`) | Local dev, macOS arm64, Go 1.25.14, Node 23.11.0, PostgreSQL 17.2 | `make ci` (now including `sqlc-check` and `lint-go`); `make test-integration` against the compose database; `make migrate-up`; `psql \d users`; `curl` against a running API for every auth path; browser check of the web shell | Pass, with one gap | Migration applied and schema matches the spec. Integration tests against real PostgreSQL prove 16 concurrent first requests create exactly one row, that citext makes email lookup case-insensitive, and that empty profile fields store as NULL. Verifier tests use a locally generated RSA key and an httptest JWKS server — no Clerk network call — covering valid, expired, wrong issuer, wrong audience, unpublished key, tampered payload, malformed, empty, missing-email, and HMAC algorithm confusion. Live API: `/health/*` public and 200; `/v1/me` returns 401 with the standard envelope and an echoed `X-Request-Id` for missing, malformed and wrong-scheme credentials; a well-formed RS256 token against an unreachable issuer returns 503, while `alg:none` returns 401 without any network call. Gap subsequently closed: a real Clerk application was linked, `session.claims` configured, and sign-in with GitHub confirmed to create exactly one `users` row carrying the real email, with `GET /v1/me` returning it. |
@@ -128,6 +119,9 @@ Resolve these before the milestone that depends on them:
 - The web workspace has **no unit tests**; the `test` gate covers Go only. A web test runner should be added with the first stateful UI logic (reducers, event merging), not before.
 - `/health/ready` probes PostgreSQL, Redis and NATS but **not Temporal**, matching the spec exactly. Temporal runs in the local stack and its host/port is validated config. Add a Temporal probe when the session workflow in M5 makes it a hard serving dependency.
 - Readiness responses report only `ok`/`unavailable` per dependency; the underlying error is logged, never returned, because probe output is unauthenticated and dependency errors embed hostnames and connection strings.
+- **An invitation token is a bearer capability (ADR-011).** Only its SHA-256 is stored, so it is shown once and cannot be re-displayed; the UI says so. Unknown, expired, revoked and already-accepted all return one error, deliberately — do not "improve" the message to distinguish them, because that turns token guessing into a search with feedback. The accepting account's email must match the invited address, which is what makes a forwarded link safe.
+- **Acceptance is a single conditional UPDATE, not a read-then-write.** That statement is what makes the token single use; eight concurrent accepts produce exactly one membership, and there is a test for it.
+- **`make dev` needs `NEXT_PUBLIC_APP_URL`** to build invitation links. The API cannot build them because it does not know the browser-facing host.
 - **The authorization matrix in `internal/domain/authorization.go` is the only place a role implies anything.** Nothing else compares a role name. `TestMatrixIsExhaustive` fails the build if a new role or permission is added without deciding every pairing — including the denials, written out as `false`, because an omission denies at runtime but records no decision.
 - **Non-member is 404, member-without-permission is 403.** A 403 for a workspace that exists but is not yours confirms its existence and turns identifier guessing into tenant enumeration. A test asserts the two responses are indistinguishable; do not "improve" the non-member case to 403.
 - **The last-owner rule is decided under `SELECT ... FOR UPDATE` on the workspace row.** Without the lock two concurrent demotions each observe two owners and each proceed, leaving none — a workspace nobody can administer. There is a test for exactly that race.
@@ -153,4 +147,4 @@ Resolve these before the milestone that depends on them:
 ## Last Updated
 
 - Date: 2026-09-10
-- Updated by: Workspaces and Membership (Unit M2.2) implementation
+- Updated by: Workspace Invitations (Unit M2.3) implementation
