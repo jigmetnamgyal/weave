@@ -107,7 +107,7 @@ lint: ## Lint Go and web sources (CI gate)
 # versions.env; a prebuilt binary built with an older Go refuses to run against
 # a module targeting a newer one.
 lint-go: ## Run golangci-lint at the pinned version (CI gate)
-	@command -v golangci-lint >/dev/null 2>&1 && [ "$$(golangci-lint version --short 2>/dev/null)" = "$(GOLANGCI_LINT_VERSION)" ] \
+	@test -x $(GOBIN)/golangci-lint && [ "$$($(GOBIN)/golangci-lint version --short 2>/dev/null)" = "$(GOLANGCI_LINT_VERSION)" ] \
 		|| (echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)" \
 		    && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION))
 	@$(GOBIN)/golangci-lint run $(GO_PKGS)

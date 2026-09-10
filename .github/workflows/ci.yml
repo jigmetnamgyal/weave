@@ -133,6 +133,11 @@ jobs:
           # Full history so the scan covers every commit on the branch, not
           # just the tip.
           fetch-depth: 0
+          # Checkout otherwise leaves GITHUB_TOKEN in .git/config as an
+          # http.extraheader, and the step below bind-mounts this directory
+          # into a third-party container. Nothing here pushes, so the
+          # credential has no reason to outlive the checkout.
+          persist-credentials: false
 
       # Pinned from versions.env rather than :latest — a scanner that gates the
       # build should be a reviewed version, and a moving tag makes a failure
