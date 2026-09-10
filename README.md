@@ -19,7 +19,7 @@ source of truth and is enforced by `make check-prereqs`.
 | -------------- | ------- | -------------------------------------------------------------- |
 | Node           | 23.11.0 | Also in `.tool-versions` and `package.json` `engines`          |
 | npm            | 10.9.2  | Ships with Node                                                |
-| Go             | 1.25.14 | Also in `go.mod`; see the toolchain note below                 |
+| Go             | 1.26.8  | Also in `go.mod`; see the toolchain note below                 |
 | Docker         | 28.1.1  | Docker Desktop or an equivalent engine, and it must be running |
 | Docker Compose | 2.35.1  | The `docker compose` plugin, not the legacy `docker-compose`   |
 
@@ -27,11 +27,16 @@ If you use [asdf](https://asdf-vm.com) or [mise](https://mise.jdx.dev),
 `.tool-versions` covers Node and Go.
 
 **Go toolchain note:** `go.mod` carries two versions. The `go` directive says
-`1.25.0` — the minimum language version our dependencies require — while the
-`toolchain` directive pins `go1.25.14`, the compiler that actually builds and
-tests the module. They differ on purpose: go1.25.0 ships with known
-standard-library vulnerabilities that `govulncheck` flags, and 1.25.14 is the
+`1.26.0` — the minimum language version our dependencies require — while the
+`toolchain` directive pins `go1.26.8`, the compiler that actually builds and
+tests the module. They differ on purpose: go1.26.0 ships with known
+standard-library vulnerabilities that `govulncheck` flags, and 1.26.8 is the
 patched release of that line.
+
+Watch for this when adding dependencies: `go get` rewrites the `go` directive
+and **drops the `toolchain` line** when a dependency raises the requirement,
+which silently moves the build onto an unpatched release. Re-run
+`govulncheck` after any dependency bump.
 
 Go's default `GOTOOLCHAIN=auto` downloads the pinned toolchain automatically,
 so an older base install still builds against the right version — and still

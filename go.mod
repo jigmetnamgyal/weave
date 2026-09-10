@@ -2,6 +2,16 @@ module github.com/jigmetnamgyal/weave
 
 go 1.26.0
 
+// The `go` directive above is the minimum language version our dependencies
+// require (goose v3.28 raised it to 1.26). This pins the toolchain that
+// actually builds and tests the module: go1.26.0 ships with known
+// standard-library vulnerabilities that govulncheck flags, and 1.26.8 is the
+// current patched release of that line. Keep in sync with versions.env.
+//
+// Note that `go get` rewrites the directive above and drops this one when a
+// dependency raises the requirement. Re-check `govulncheck` after any bump.
+toolchain go1.26.8
+
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
