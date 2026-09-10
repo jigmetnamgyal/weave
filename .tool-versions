@@ -1,0 +1,4 @@
+# asdf / mise toolchain pins. Kept in sync with versions.env, which is the
+# source of truth and also covers Docker and Docker Compose.
+nodejs 23.11.0
+golang 1.25.14

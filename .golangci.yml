@@ -1,0 +1,38 @@
+# golangci-lint configuration for Weave.
+#
+# The enabled set is deliberately small and high-signal for a foundation
+# baseline. Rules are added as the codebase grows rather than enabling
+# everything and suppressing the noise.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck # unchecked errors hide failures
+    - govet # correctness checks from the toolchain
+    - ineffassign # assignments that are never used
+    - staticcheck # correctness, simplification and style
+    - unused # dead code
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Test helpers routinely ignore errors on cleanup paths.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt

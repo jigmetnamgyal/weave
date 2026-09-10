@@ -1,0 +1,110 @@
+# Local development dependencies for Weave.
+#
+# This stack is for local development only. It uses well-known development
+# credentials, exposes ports on localhost, and has no durability or security
+# guarantees. Staging and production are provisioned through Terraform in
+# `infra/` and never from this file.
+#
+# Host ports are deliberately offset from the defaults these services normally
+# use (55432 rather than 5432, and so on). A developer with PostgreSQL or Redis
+# already installed would otherwise see this stack come up "healthy" while the
+# application silently read and wrote the pre-existing local instance: the
+# container healthcheck runs inside the container and passes either way, and on
+# macOS a host process bound to 127.0.0.1 wins over Docker's 0.0.0.0 publish.
+# Override any port through the matching variable in .env.
+#
+# Start with `make up` from the repository root.
+
+name: weave
+
+services:
+  postgres:
+    image: postgres:17.2-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-weave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-weave}
+      POSTGRES_DB: ${POSTGRES_DB:-weave}
+      # Deterministic initialisation regardless of the host locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-weave} -d ${POSTGRES_DB:-weave}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # Redis holds only disposable presence, rate-limit and coordination state,
+    # so persistence is deliberately disabled locally.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  nats:
+    image: nats:2.10.24-alpine
+    restart: unless-stopped
+    # -js enables JetStream; -m exposes the monitoring endpoint used below.
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "${NATS_PORT:-54222}:4222"
+      - "${NATS_MONITORING_PORT:-58222}:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      # The monitoring endpoint enabled by -m above; /healthz reports readiness
+      # including JetStream. The image has no curl, but busybox wget is present.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-weave}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-weave}
+    ports:
+      - "${TEMPORAL_PORT:-57233}:7233"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 40s
+
+  temporal-ui:
+    image: temporalio/ui:2.32.0
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "${TEMPORAL_UI_PORT:-58233}:8080"
+
+volumes:
+  postgres-data:
+  nats-data:

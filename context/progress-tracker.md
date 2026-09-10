@@ -4,19 +4,19 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Phase
 
-- **Phase 0 — Product and architecture specification**
-- Status: Complete
+- **Phase 1 — Engineering foundation**
+- Status: M1.1 complete; ready for M2 (authentication and tenancy)
 
 ## Current Goal
 
-Establish the production repository foundation and verify the local developer experience before implementing customer-facing features.
+Implement authentication, workspaces, and tenant isolation on top of the verified repository foundation.
 
 ## Product Milestones
 
 | Milestone | Outcome | Status |
 | --- | --- | --- |
 | M0 | Product, UI, architecture, standards, and AI workflow specifications accepted | Complete |
-| M1 | Monorepo, local infrastructure, CI, observability bootstrap, and environment validation | Not started |
+| M1 | Monorepo, local infrastructure, CI, observability bootstrap, and environment validation | Complete |
 | M2 | Authentication, workspaces, membership, authorization matrix, and tenant isolation | Not started |
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Not started |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Not started |
@@ -36,6 +36,7 @@ Establish the production repository foundation and verify the local developer ex
 - Defined UI design system and flagship shared-session experience.
 - Defined repository code standards and AI implementation workflow.
 - Installed and configured shadcn/ui design system and UI primitives (see Verification Record).
+- Built the repository foundation: monorepo layout, Go API with health probes, local Docker Compose stack, task runner, environment validation, CI quality gates, and OpenTelemetry bootstrap (Unit M1.1 — see Verification Record).
 
 ## In Progress
 
@@ -43,31 +44,9 @@ Establish the production repository foundation and verify the local developer ex
 
 ## Next Up
 
-### Unit M1.1 — Repository Foundation
+### Unit M2.1 — Authentication Baseline
 
-**Outcome:** A developer can clone the repository, run one documented command, and start the web shell, Go API, PostgreSQL, Redis, NATS, and Temporal development dependencies with health checks.
-
-**Scope:**
-
-- Repository directory structure from `architecture.md`
-- Pinned Node, package-manager, Go, and container tool versions
-- Next.js application shell with design tokens
-- Go API with `/health/live` and `/health/ready`
-- Docker Compose for local PostgreSQL, Redis, NATS JetStream, and Temporal
-- Base Makefile/task runner commands
-- Environment validation and `.env.example` without secrets
-- CI jobs for format, lint, type check, unit test, build, secret scan, and dependency scan
-- OpenTelemetry bootstrap with local no-op or console-safe exporter
-
-**Non-scope:** authentication, tenant data, GitHub integration, agent providers, runners, billing, and production deployment.
-
-**Acceptance:**
-
-1. Fresh setup succeeds from the documented prerequisites.
-2. Web and API health endpoints return successfully.
-3. All local dependencies report healthy.
-4. CI quality gates pass on an empty feature baseline.
-5. No real credential is needed to run the baseline.
+Deferred until M1.1 is verified. Blocked on Open Question 2 (identity provider). Expected scope: Clerk sign-in with GitHub, server-side session verification behind the OIDC/JWT identity boundary, and one protected route. Workspaces, membership, and the authorization matrix follow as separate units.
 
 ## Open Questions
 
@@ -111,6 +90,7 @@ Resolve these before the milestone that depends on them:
 
 | Date | Unit | Environment | Commands/tests | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-10 | Repository Foundation, Unit M1.1 (`context/features-specs/02-repository-foundation.md`) | Local dev, macOS arm64, Node 23.11.0, Go 1.25.14, Docker 28.1.1, Compose 2.35.1 | `make check-prereqs`; `make ci` (gofmt, prettier, go vet, eslint, tsc, `go test -race`, go build, next build); `golangci-lint run`; `govulncheck`; `npm audit --audit-level=high`; gitleaks via Docker; `make dev` from a clean checkout (no `.env`, no containers, no volumes); `make health`; per-dependency outage probes; `curl` of both probes and the web shell | Pass | Monorepo layout created and the Next.js app moved to `apps/web` via `git mv` (history preserved); dark-theme tokens verified intact in the browser (`--background #090b10`, `--primary #8b7cff`, `--card #131722`, `--ring #a99fff`). Go API serves `/health/live` (200, no dependency I/O) and `/health/ready` (200 when all up; 503 naming the failing dependency, verified by stopping postgres, redis and nats in turn). Compose stack reports all five services healthy. Config validation fails fast listing every missing variable at once. Local gates all green; **the CI workflow file itself is unverified until first push** — each gate's command was verified locally instead. |
 | 2026-09-10 | Design System and UI Primitives (`context/features-specs/design-system.md`) | Local dev, Node 23, Next.js 16.3.4 | `npx tsc --noEmit`, `npx eslint .`, `npm run build`, manual browser check of Button/Card/Dialog/Input/Tabs/Textarea/ScrollArea at `http://localhost:3000` | Pass | shadcn/ui installed (`style: base-nova`, Base UI primitives, not Radix); Button, Card, Dialog, Input, Tabs, Textarea, ScrollArea added via `npx shadcn add`; `lucide-react` installed; `lib/utils.ts` exports `cn()` from the official `cn` package; `app/globals.css` dark-theme tokens replaced with the hex values from `ui-context.md` (background, foreground, card, popover, primary, secondary, muted, accent, destructive, border, ring, sidebar, chart). Verified visually via a temporary route (removed after verification) — correct dark surfaces/borders, purple primary accent, working dialog with backdrop blur, no hydration errors, no default light styling. |
 
 ## Session Notes
@@ -120,12 +100,19 @@ Resolve these before the milestone that depends on them:
 - Use a fake deterministic agent adapter before integrating a paid provider; this verifies orchestration, events, approvals, and UI independently.
 - Do not run untrusted code in the control-plane process or through a host Docker socket.
 - Update this file when M1.1 begins, after every meaningful implementation unit, and whenever a blocking decision is discovered.
-- Design system components were installed at the repository root (`components/ui/`, `lib/utils.ts`) rather than under `apps/web/` as named in `architecture.md`, because the `apps/web/` monorepo layout has not been created yet (M1.1, Not started). Reversal cost is low: a mechanical path move once M1.1 establishes the monorepo layout.
+- Design system components have been moved from the repository root to `apps/web/` as part of M1.1, resolving the temporary placement noted during the design-system unit.
+- **Local dependency ports are offset from their defaults** (PostgreSQL 55432, Redis 56379, NATS 54222/58222, Temporal 57233/58233). This was found the hard way: a host Redis already owned 6379, the compose stack still reported healthy because container healthchecks run inside the container, and on macOS a host process bound to `127.0.0.1` wins over Docker's `0.0.0.0` publish — so readiness passed while the API silently talked to the wrong datastore. Do not "simplify" these back to the standard ports.
+- **`go.mod` carries both a `go` directive (1.25.0) and a `toolchain` directive (go1.25.14).** They differ deliberately: 1.25.0 is the minimum language version the dependencies require, and go1.25.0 ships standard-library CVEs that `govulncheck` flags. `golang.org/x/text` was also bumped to v0.39.0 for the same reason. `govulncheck` is clean; re-check it when bumping either.
+- Go commands use explicit package selectors (`./services/... ./internal/...`) rather than `./...`, because npm workspaces hoist `node_modules` to the repository root and one transitive npm package vendors a `.go` file that would otherwise be treated as part of this module.
+- The web workspace has **no unit tests**; the `test` gate covers Go only. A web test runner should be added with the first stateful UI logic (reducers, event merging), not before.
+- `/health/ready` probes PostgreSQL, Redis and NATS but **not Temporal**, matching the spec exactly. Temporal runs in the local stack and its host/port is validated config. Add a Temporal probe when the session workflow in M5 makes it a hard serving dependency.
+- Readiness responses report only `ok`/`unavailable` per dependency; the underlying error is logged, never returned, because probe output is unauthenticated and dependency errors embed hostnames and connection strings.
+- Only the directories the M1.1 spec enumerated were created. `docs/adr/`, `docs/runbooks/`, `test/fixtures/` and `apps/web/features/` are named in `code-standards.md` but were deliberately not scaffolded — create each with its first real occupant rather than as an empty placeholder.
 - `app/globals.css` now carries only the dark-theme token values from `ui-context.md`; light theme and a theme toggle are not implemented. `ui-context.md` requires both themes for the shipped product, so this must be completed before M1.1's "Next.js application shell with design tokens" is considered done, or before any user-facing light/dark toggle ships.
 - shadcn's current CLI (`shadcn@4.x`, `style: base-nova`) generates components on Base UI primitives, not Radix, even though `architecture.md` and `ui-context.md` say "Radix primitives." Behavior and accessibility semantics are equivalent for the primitives installed so far; flag this if a future unit relies on Radix-specific APIs.
 
 ## Last Updated
 
 - Date: 2026-09-10
-- Updated by: Design System and UI Primitives implementation
+- Updated by: Repository Foundation (Unit M1.1) implementation
 
