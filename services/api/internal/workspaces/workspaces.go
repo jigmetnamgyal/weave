@@ -370,13 +370,26 @@ func toMemberResponse(member domain.MemberProfile) memberResponse {
 // --- Plumbing ---------------------------------------------------------------
 
 // decode reads a bounded JSON body, reporting failure to the client itself.
+//
+// MaxBytesReader rather than io.LimitReader: the latter presents the cutoff as
+// a clean EOF, so an oversized body silently decodes whatever fitted instead of
+// being rejected. The trailing-token check then rejects a second JSON value
+// after the first, which Decode alone would ignore.
 func (h *Handler) decode(ctx context.Context, w http.ResponseWriter, r *http.Request, target any) bool {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, maxBodyBytes))
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
+	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(target); err != nil {
 		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest,
 			"The request body could not be read as JSON.")
+		return false
+	}
+
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest,
+			"The request body must contain exactly one JSON value.")
 		return false
 	}
 	return true
@@ -412,6 +425,10 @@ func (h *Handler) writeError(ctx context.Context, w http.ResponseWriter, err err
 	case errors.Is(err, application.ErrVersionConflict):
 		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
 			"The workspace changed since you last read it. Reload and try again.")
+
+	case errors.Is(err, domain.ErrCannotGrantRole):
+		httpx.WriteError(ctx, w, http.StatusForbidden, httpx.CodePermissionDenied,
+			"You cannot grant a role with more authority than your own.")
 
 	case errors.Is(err, domain.ErrLastOwner):
 		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,

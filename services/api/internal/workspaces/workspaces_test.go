@@ -63,15 +63,15 @@ func (f *fakeStore) ListMembers(context.Context, uuid.UUID) ([]domain.MemberProf
 	return nil, nil
 }
 
-func (f *fakeStore) Rename(_ context.Context, _ uuid.UUID, _ int, name string, _ application.AuditEvent) (domain.Workspace, error) {
+func (f *fakeStore) Rename(_ context.Context, _ uuid.UUID, _ application.Actor, _ int, name string, _ application.AuditEvent) (domain.Workspace, error) {
 	return domain.Workspace{ID: workspaceA, Slug: "acme", Name: name, Version: 4}, nil
 }
 
-func (f *fakeStore) ChangeMemberRole(_ context.Context, _, userID uuid.UUID, role domain.Role, _ application.AuditEvent) (domain.Membership, error) {
+func (f *fakeStore) ChangeMemberRole(_ context.Context, _, userID uuid.UUID, _ application.Actor, role domain.Role, _ application.AuditEvent) (domain.Membership, error) {
 	return domain.Membership{WorkspaceID: workspaceA, UserID: userID, Role: role}, nil
 }
 
-func (f *fakeStore) RemoveMember(context.Context, uuid.UUID, uuid.UUID, application.AuditEvent) error {
+func (f *fakeStore) RemoveMember(context.Context, uuid.UUID, uuid.UUID, application.Actor, application.AuditEvent) error {
 	return nil
 }
 
@@ -302,5 +302,73 @@ func TestResponseAdvertisesPermissions(t *testing.T) {
 	}
 	if body.Version != 3 {
 		t.Errorf("version = %d, want 3 — clients need it to send back", body.Version)
+	}
+}
+
+// TestAdminCannotGrantOwnerOverHTTP covers the privilege-escalation finding at
+// the transport layer: member:manage alone must not let an admin mint an owner.
+func TestAdminCannotGrantOwnerOverHTTP(t *testing.T) {
+	path := "/v1/workspaces/" + workspaceA.String() + "/members/" + targetID.String()
+
+	rec := serveAs(t, domain.RoleAdmin, &memberID, http.MethodPatch, path, `{"role":"owner"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("admin granting owner got %d, want %d: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	// An owner may still do it, so the guard is about authority, not the role.
+	rec = serveAs(t, domain.RoleOwner, &memberID, http.MethodPatch, path, `{"role":"owner"}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("owner granting owner got %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// And an admin may still grant roles at or below their own authority.
+	rec = serveAs(t, domain.RoleAdmin, &memberID, http.MethodPatch, path, `{"role":"developer"}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("admin granting developer got %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestOversizedVersionDoesNotBypassConcurrency covers the int32 truncation
+// path at the transport layer.
+func TestOversizedVersionDoesNotBypassConcurrency(t *testing.T) {
+	// The fake workspace is at version 3; int32(4294967299) is also 3.
+	rec := serveAs(t, domain.RoleOwner, &memberID, http.MethodPatch,
+		"/v1/workspaces/"+workspaceA.String(), `{"name":"Hijacked","version":4294967299}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("oversized version got %d, want %d: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	for _, version := range []string{"0", "-1"} {
+		rec := serveAs(t, domain.RoleOwner, &memberID, http.MethodPatch,
+			"/v1/workspaces/"+workspaceA.String(), `{"name":"X","version":`+version+`}`)
+		if rec.Code != http.StatusConflict {
+			t.Errorf("version %s got %d, want %d", version, rec.Code, http.StatusConflict)
+		}
+	}
+}
+
+// TestTrailingJSONIsRejected covers a body carrying a second JSON value after
+// the first, which Decode alone silently ignores.
+func TestTrailingJSONIsRejected(t *testing.T) {
+	rec := serveAs(t, domain.RoleOwner, &memberID, http.MethodPatch,
+		"/v1/workspaces/"+workspaceA.String(),
+		`{"name":"First","version":3}{"name":"Second","version":3}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("trailing JSON got %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// TestOversizedBodyIsRejected covers the limit boundary: io.LimitReader would
+// present the cutoff as a clean EOF and decode whatever fitted.
+func TestOversizedBodyIsRejected(t *testing.T) {
+	padding := strings.Repeat("a", maxBodyBytes)
+	rec := serveAs(t, domain.RoleOwner, &memberID, http.MethodPatch,
+		"/v1/workspaces/"+workspaceA.String(),
+		`{"version":3,"name":"`+padding+`"}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("oversized body got %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

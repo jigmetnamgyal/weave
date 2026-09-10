@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M1.1 and M2.1 complete; next is M2.2 (workspaces and membership)
+- Status: M1.1 and M2.1 complete; M2.2 (workspaces and membership) in progress; M2.3 (invitations) next
 
 ## Current Goal
 

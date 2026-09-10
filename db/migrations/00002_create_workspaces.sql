@@ -21,7 +21,11 @@ CREATE TABLE workspaces (
     CONSTRAINT workspaces_slug_key UNIQUE (slug),
     -- Lowercase, digits and internal hyphens only. Slugs appear in URLs, so
     -- the shape is constrained here rather than trusted from the caller.
-    CONSTRAINT workspaces_slug_format CHECK (slug ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'),
+    --
+    -- The ::text cast is load-bearing. citext overrides ~ to be
+    -- case-insensitive, so without it this pattern accepts 'UpperCaseSlug'
+    -- and the constraint silently does nothing.
+    CONSTRAINT workspaces_slug_format CHECK (slug::text ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'),
     CONSTRAINT workspaces_slug_length CHECK (length(slug::text) BETWEEN 2 AND 64),
     CONSTRAINT workspaces_name_not_blank CHECK (length(btrim(name)) > 0),
     CONSTRAINT workspaces_version_positive CHECK (version > 0)

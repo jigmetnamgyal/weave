@@ -168,3 +168,63 @@ func TestParseRole(t *testing.T) {
 		}
 	}
 }
+
+// TestCanGrantPreventsPrivilegeEscalation covers the escalation path that
+// `member:manage` alone would otherwise open: an admin holds it, so without
+// this rule an admin could promote themselves to owner and pick up
+// `billing:manage` — a permission the matrix deliberately withholds.
+func TestCanGrantPreventsPrivilegeEscalation(t *testing.T) {
+	tests := []struct {
+		actor Role
+		grant Role
+		want  bool
+	}{
+		{RoleOwner, RoleOwner, true},
+		{RoleOwner, RoleAdmin, true},
+		{RoleOwner, RoleDeveloper, true},
+		{RoleOwner, RoleViewer, true},
+
+		// The finding: admin must not be able to mint an owner.
+		{RoleAdmin, RoleOwner, false},
+		{RoleAdmin, RoleAdmin, true},
+		{RoleAdmin, RoleDeveloper, true},
+		{RoleAdmin, RoleViewer, true},
+
+		// Neither holds member:manage, but the rule must still hold if a
+		// future matrix grants it to them.
+		{RoleDeveloper, RoleOwner, false},
+		{RoleDeveloper, RoleAdmin, false},
+		{RoleDeveloper, RoleDeveloper, true},
+		{RoleViewer, RoleDeveloper, false},
+		{RoleViewer, RoleViewer, true},
+
+		{Role("nonsense"), RoleViewer, false},
+		{RoleOwner, Role("nonsense"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.actor)+"->"+string(tt.grant), func(t *testing.T) {
+			if got := tt.actor.CanGrant(tt.grant); got != tt.want {
+				t.Errorf("%s.CanGrant(%s) = %v, want %v", tt.actor, tt.grant, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCanGrantIsConsistentWithTheMatrix guards the rule itself: granting a
+// role must never hand over a permission the granter lacks.
+func TestCanGrantIsConsistentWithTheMatrix(t *testing.T) {
+	for _, actor := range Roles {
+		for _, grant := range Roles {
+			if !actor.CanGrant(grant) {
+				continue
+			}
+			for _, permission := range Permissions {
+				if grant.Can(permission) && !actor.Can(permission) {
+					t.Errorf("%s may grant %s, which holds %s that %s lacks",
+						actor, grant, permission, actor)
+				}
+			}
+		}
+	}
+}

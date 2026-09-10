@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/google/uuid"
@@ -29,6 +30,23 @@ var (
 	// ErrAlreadyMember is returned when adding a user who already belongs.
 	ErrAlreadyMember = errors.New("user is already a member of this workspace")
 )
+
+// Actor identifies who is performing a mutation, and what they must still be
+// entitled to when it commits.
+//
+// The handler already checked permission before calling, but that check reads
+// a snapshot. Between it and the write, the actor can be demoted or removed —
+// so the store re-checks this inside the transaction, under the same lock that
+// serialises membership changes. `architecture.md` requires exactly that:
+// authorization is evaluated when the decision is made, not from a cached
+// claim.
+type Actor struct {
+	UserID uuid.UUID
+	// Required is the permission the actor must still hold. Empty means
+	// membership alone suffices — the self-removal case, where any member may
+	// remove themselves regardless of role.
+	Required domain.Permission
+}
 
 // AuditEvent is a security-relevant change worth keeping a record of.
 type AuditEvent struct {
@@ -80,16 +98,16 @@ type WorkspaceStore interface {
 
 	// Rename applies a new name if expectedVersion still matches, and appends
 	// the audit event atomically. Returns ErrVersionConflict on a mismatch.
-	Rename(ctx context.Context, workspaceID uuid.UUID, expectedVersion int, name string, event AuditEvent) (domain.Workspace, error)
+	Rename(ctx context.Context, workspaceID uuid.UUID, actor Actor, expectedVersion int, name string, event AuditEvent) (domain.Workspace, error)
 
 	// ChangeMemberRole updates a member's role and appends the audit event
 	// atomically. It must refuse to demote the last owner, deciding that under
 	// a lock so two concurrent demotions cannot both succeed.
-	ChangeMemberRole(ctx context.Context, workspaceID, userID uuid.UUID, role domain.Role, event AuditEvent) (domain.Membership, error)
+	ChangeMemberRole(ctx context.Context, workspaceID, userID uuid.UUID, actor Actor, role domain.Role, event AuditEvent) (domain.Membership, error)
 
 	// RemoveMember deletes a membership and appends the audit event
 	// atomically, under the same last-owner rule as ChangeMemberRole.
-	RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID, event AuditEvent) error
+	RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID, actor Actor, event AuditEvent) error
 }
 
 // WorkspaceMembership pairs a workspace with the caller's role in it.
@@ -173,10 +191,14 @@ func (s *WorkspaceService) availableSlug(ctx context.Context, name string, id uu
 		if !taken {
 			return candidate, nil
 		}
-		candidate = fmt.Sprintf("%s-%d", base, attempt+2)
+		suffix := fmt.Sprintf("-%d", attempt+2)
+		candidate = domain.TruncateSlug(base, len(suffix)) + suffix
 	}
 
-	return base + "-" + strings.ToLower(id.String()[:8]), nil
+	// Last resort. The identifier fragment is long enough that a further
+	// collision is not a practical concern.
+	suffix := "-" + strings.ToLower(id.String()[:8])
+	return domain.TruncateSlug(base, len(suffix)) + suffix, nil
 }
 
 // List returns the workspaces a user belongs to.
@@ -225,7 +247,18 @@ func (s *WorkspaceService) Rename(ctx context.Context, actor domain.Membership, 
 		return domain.Workspace{}, err
 	}
 
-	updated, err := s.store.Rename(ctx, actor.WorkspaceID, expectedVersion, validName, AuditEvent{
+	// The version arrives from the client and is narrowed to int32 for the
+	// database column. Reject anything outside that range here rather than
+	// letting the conversion wrap: 2^32+1 truncates to 1, which would match a
+	// workspace still at version 1 and defeat the concurrency check entirely.
+	if expectedVersion < 1 || expectedVersion > math.MaxInt32 {
+		return domain.Workspace{}, ErrVersionConflict
+	}
+
+	updated, err := s.store.Rename(ctx, actor.WorkspaceID, Actor{
+		UserID:   actor.UserID,
+		Required: domain.PermissionWorkspaceManage,
+	}, expectedVersion, validName, AuditEvent{
 		WorkspaceID: actor.WorkspaceID,
 		ActorUserID: actor.UserID,
 		Action:      AuditWorkspaceRenamed,
@@ -246,8 +279,18 @@ func (s *WorkspaceService) ChangeMemberRole(ctx context.Context, actor domain.Me
 	if !role.Valid() {
 		return domain.Membership{}, fmt.Errorf("%w: unknown role %q", domain.ErrInvalidWorkspace, role)
 	}
+	// member:manage alone would let an admin promote anyone — including
+	// themselves — to owner, collecting billing:manage on the way. You cannot
+	// grant authority you do not hold.
+	if !actor.Role.CanGrant(role) {
+		return domain.Membership{}, fmt.Errorf("%w: %s cannot grant %s",
+			domain.ErrCannotGrantRole, actor.Role, role)
+	}
 
-	updated, err := s.store.ChangeMemberRole(ctx, actor.WorkspaceID, targetUserID, role, AuditEvent{
+	updated, err := s.store.ChangeMemberRole(ctx, actor.WorkspaceID, targetUserID, Actor{
+		UserID:   actor.UserID,
+		Required: domain.PermissionMemberManage,
+	}, role, AuditEvent{
 		WorkspaceID: actor.WorkspaceID,
 		ActorUserID: actor.UserID,
 		Action:      AuditMemberRoleChanged,
@@ -266,13 +309,20 @@ func (s *WorkspaceService) ChangeMemberRole(ctx context.Context, actor domain.Me
 // member:manage. Either way the last owner cannot go, which the store decides
 // under a lock.
 func (s *WorkspaceService) RemoveMember(ctx context.Context, actor domain.Membership, targetUserID uuid.UUID) error {
+	// Self-removal needs no permission beyond still being a member; removing
+	// anyone else needs member:manage. The store re-checks whichever applies.
+	required := domain.Permission("")
 	if targetUserID != actor.UserID {
 		if err := require(actor, domain.PermissionMemberManage); err != nil {
 			return err
 		}
+		required = domain.PermissionMemberManage
 	}
 
-	return s.store.RemoveMember(ctx, actor.WorkspaceID, targetUserID, AuditEvent{
+	return s.store.RemoveMember(ctx, actor.WorkspaceID, targetUserID, Actor{
+		UserID:   actor.UserID,
+		Required: required,
+	}, AuditEvent{
 		WorkspaceID: actor.WorkspaceID,
 		ActorUserID: actor.UserID,
 		Action:      AuditMemberRemoved,

@@ -150,6 +150,29 @@ func (r Role) Can(permission Permission) bool {
 	return rolePermissions[r][permission]
 }
 
+// CanGrant reports whether a member holding role r may assign role other to
+// someone.
+//
+// The rule is that you cannot grant authority you do not hold yourself.
+// Without it, `member:manage` alone is a privilege-escalation primitive: an
+// admin holds it, so an admin could promote themselves to owner and pick up
+// `billing:manage` — a permission the matrix deliberately withholds from them.
+//
+// Expressed as a permission subset rather than a role ranking, so it stays
+// correct if a future role is added that is not neatly above or below the
+// others.
+func (r Role) CanGrant(other Role) bool {
+	if !r.Valid() || !other.Valid() {
+		return false
+	}
+	for _, permission := range Permissions {
+		if other.Can(permission) && !r.Can(permission) {
+			return false
+		}
+	}
+	return true
+}
+
 // PermissionsFor returns the permissions a role holds, in the order declared
 // by Permissions. Used to tell a client what it may do without exposing the
 // matrix itself.

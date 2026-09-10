@@ -60,6 +60,11 @@ func addMember(t *testing.T, pool *pgxpool.Pool, workspaceID, userID uuid.UUID, 
 	}
 }
 
+// ownerActor builds the in-transaction authorization check for an owner.
+func ownerActor(userID uuid.UUID) application.Actor {
+	return application.Actor{UserID: userID, Required: domain.PermissionMemberManage}
+}
+
 func auditCount(t *testing.T, pool *pgxpool.Pool, workspaceID uuid.UUID, action string) int {
 	t.Helper()
 	var count int
@@ -145,12 +150,12 @@ func TestLastOwnerCannotBeDemotedOrRemoved(t *testing.T) {
 
 	event := application.AuditEvent{WorkspaceID: workspace.ID, ActorUserID: owner.ID, Action: "test"}
 
-	_, err := store.ChangeMemberRole(ctx, workspace.ID, owner.ID, domain.RoleAdmin, event)
+	_, err := store.ChangeMemberRole(ctx, workspace.ID, owner.ID, ownerActor(owner.ID), domain.RoleAdmin, event)
 	if !errors.Is(err, domain.ErrLastOwner) {
 		t.Errorf("demoting the last owner returned %v, want ErrLastOwner", err)
 	}
 
-	if err := store.RemoveMember(ctx, workspace.ID, owner.ID, event); !errors.Is(err, domain.ErrLastOwner) {
+	if err := store.RemoveMember(ctx, workspace.ID, owner.ID, ownerActor(owner.ID), event); !errors.Is(err, domain.ErrLastOwner) {
 		t.Errorf("removing the last owner returned %v, want ErrLastOwner", err)
 	}
 
@@ -178,7 +183,7 @@ func TestSecondOwnerCanBeDemoted(t *testing.T) {
 	workspace := seedWorkspace(t, pool, owner, "Shared Workspace")
 	addMember(t, pool, workspace.ID, second.ID, domain.RoleOwner)
 
-	updated, err := store.ChangeMemberRole(ctx, workspace.ID, second.ID, domain.RoleDeveloper,
+	updated, err := store.ChangeMemberRole(ctx, workspace.ID, second.ID, ownerActor(owner.ID), domain.RoleDeveloper,
 		application.AuditEvent{WorkspaceID: workspace.ID, ActorUserID: owner.ID, Action: application.AuditMemberRoleChanged})
 	if err != nil {
 		t.Fatalf("demoting a second owner failed: %v", err)
@@ -212,7 +217,7 @@ func TestConcurrentOwnerDemotionsKeepOneOwner(t *testing.T) {
 			defer wg.Done()
 			<-start
 			_, errs[i] = store.ChangeMemberRole(context.Background(), workspace.ID, target,
-				domain.RoleDeveloper,
+				ownerActor(first.ID), domain.RoleDeveloper,
 				application.AuditEvent{WorkspaceID: workspace.ID, ActorUserID: first.ID, Action: application.AuditMemberRoleChanged})
 		}()
 	}
@@ -242,7 +247,7 @@ func TestRenameHonoursVersion(t *testing.T) {
 	workspace := seedWorkspace(t, pool, owner, "Original Name")
 	event := application.AuditEvent{WorkspaceID: workspace.ID, ActorUserID: owner.ID, Action: application.AuditWorkspaceRenamed}
 
-	renamed, err := store.Rename(ctx, workspace.ID, workspace.Version, "New Name", event)
+	renamed, err := store.Rename(ctx, workspace.ID, ownerActor(owner.ID), workspace.Version, "New Name", event)
 	if err != nil {
 		t.Fatalf("rename with the current version failed: %v", err)
 	}
@@ -254,7 +259,7 @@ func TestRenameHonoursVersion(t *testing.T) {
 	}
 
 	// The original version is now stale.
-	if _, err := store.Rename(ctx, workspace.ID, workspace.Version, "Third Name", event); !errors.Is(err, application.ErrVersionConflict) {
+	if _, err := store.Rename(ctx, workspace.ID, ownerActor(owner.ID), workspace.Version, "Third Name", event); !errors.Is(err, application.ErrVersionConflict) {
 		t.Errorf("stale rename returned %v, want ErrVersionConflict", err)
 	}
 
@@ -363,7 +368,7 @@ func TestRemoveMemberIsScopedToWorkspace(t *testing.T) {
 	addMember(t, pool, workspaceA.ID, member.ID, domain.RoleDeveloper)
 
 	// Ask workspace B to remove a member who only belongs to workspace A.
-	err := store.RemoveMember(ctx, workspaceB.ID, member.ID,
+	err := store.RemoveMember(ctx, workspaceB.ID, member.ID, ownerActor(ownerB.ID),
 		application.AuditEvent{WorkspaceID: workspaceB.ID, ActorUserID: ownerB.ID, Action: application.AuditMemberRemoved})
 	if !errors.Is(err, application.ErrMemberNotFound) {
 		t.Errorf("cross-workspace removal returned %v, want ErrMemberNotFound", err)
@@ -371,5 +376,136 @@ func TestRemoveMemberIsScopedToWorkspace(t *testing.T) {
 
 	if _, err := store.GetMembership(ctx, workspaceA.ID, member.ID); err != nil {
 		t.Errorf("membership in workspace A was affected: %v", err)
+	}
+}
+
+// TestRemovedActorCannotCompleteAMutation covers the time-of-check /
+// time-of-use window: the handler authorizes from a snapshot, and between that
+// read and the write the actor can be removed. The store re-checks inside the
+// transaction, so a stale snapshot cannot land a privileged change.
+func TestRemovedActorCannotCompleteAMutation(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewWorkspaceStore(pool)
+	ctx := context.Background()
+
+	owner := seedUser(t, pool)
+	admin := seedUser(t, pool)
+	target := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "TOCTOU Workspace")
+	addMember(t, pool, workspace.ID, admin.ID, domain.RoleAdmin)
+	addMember(t, pool, workspace.ID, target.ID, domain.RoleViewer)
+
+	// The admin is removed after a handler would have loaded their membership.
+	if _, err := pool.Exec(ctx,
+		"DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
+		workspace.ID, admin.ID); err != nil {
+		t.Fatalf("remove admin: %v", err)
+	}
+
+	event := application.AuditEvent{WorkspaceID: workspace.ID, ActorUserID: admin.ID, Action: "test.toctou"}
+
+	if _, err := store.ChangeMemberRole(ctx, workspace.ID, target.ID, ownerActor(admin.ID),
+		domain.RoleDeveloper, event); !errors.Is(err, application.ErrPermissionDenied) {
+		t.Errorf("removed actor changed a role: %v", err)
+	}
+	if err := store.RemoveMember(ctx, workspace.ID, target.ID, ownerActor(admin.ID), event); !errors.Is(err, application.ErrPermissionDenied) {
+		t.Errorf("removed actor removed a member: %v", err)
+	}
+	if _, err := store.Rename(ctx, workspace.ID,
+		application.Actor{UserID: admin.ID, Required: domain.PermissionWorkspaceManage},
+		workspace.Version, "Renamed", event); !errors.Is(err, application.ErrPermissionDenied) {
+		t.Errorf("removed actor renamed the workspace: %v", err)
+	}
+
+	// The target is untouched, and nothing was audited.
+	membership, err := store.GetMembership(ctx, workspace.ID, target.ID)
+	if err != nil || membership.Role != domain.RoleViewer {
+		t.Errorf("target membership changed: role=%q err=%v", membership.Role, err)
+	}
+	if got := auditCount(t, pool, workspace.ID, "test.toctou"); got != 0 {
+		t.Errorf("refused mutations wrote %d audit rows, want 0", got)
+	}
+}
+
+// TestDemotedActorCannotCompleteAMutation is the same window, but the actor is
+// demoted rather than removed — they are still a member, just no longer
+// entitled.
+func TestDemotedActorCannotCompleteAMutation(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewWorkspaceStore(pool)
+	ctx := context.Background()
+
+	owner := seedUser(t, pool)
+	admin := seedUser(t, pool)
+	target := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Demotion Workspace")
+	addMember(t, pool, workspace.ID, admin.ID, domain.RoleAdmin)
+	addMember(t, pool, workspace.ID, target.ID, domain.RoleViewer)
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE workspace_members SET role = 'viewer' WHERE workspace_id = $1 AND user_id = $2",
+		workspace.ID, admin.ID); err != nil {
+		t.Fatalf("demote admin: %v", err)
+	}
+
+	event := application.AuditEvent{WorkspaceID: workspace.ID, ActorUserID: admin.ID, Action: "test.demoted"}
+
+	if _, err := store.ChangeMemberRole(ctx, workspace.ID, target.ID, ownerActor(admin.ID),
+		domain.RoleDeveloper, event); !errors.Is(err, application.ErrPermissionDenied) {
+		t.Errorf("demoted actor changed a role: %v", err)
+	}
+	if got := auditCount(t, pool, workspace.ID, "test.demoted"); got != 0 {
+		t.Errorf("refused mutation wrote %d audit rows, want 0", got)
+	}
+}
+
+// TestAdminCannotGrantOwner covers the privilege-escalation path at the store
+// layer, so the guard holds even if a future caller forgets to check.
+func TestAdminCannotGrantOwner(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewWorkspaceStore(pool)
+	ctx := context.Background()
+
+	owner := seedUser(t, pool)
+	admin := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Escalation Workspace")
+	addMember(t, pool, workspace.ID, admin.ID, domain.RoleAdmin)
+
+	// The admin tries to promote themselves.
+	_, err := store.ChangeMemberRole(ctx, workspace.ID, admin.ID, ownerActor(admin.ID),
+		domain.RoleOwner,
+		application.AuditEvent{WorkspaceID: workspace.ID, ActorUserID: admin.ID, Action: application.AuditMemberRoleChanged})
+	if !errors.Is(err, domain.ErrCannotGrantRole) {
+		t.Errorf("admin promoted themselves to owner: %v", err)
+	}
+
+	membership, err := store.GetMembership(ctx, workspace.ID, admin.ID)
+	if err != nil || membership.Role != domain.RoleAdmin {
+		t.Errorf("admin role changed: role=%q err=%v", membership.Role, err)
+	}
+}
+
+// TestOversizedVersionIsRejected covers the int32 truncation path: 2^32+1
+// narrows to 1, which would match a workspace still at version 1.
+func TestOversizedVersionIsRejected(t *testing.T) {
+	pool := newPool(t)
+	service := application.NewWorkspaceService(postgres.NewWorkspaceStore(pool))
+	ctx := context.Background()
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Truncation Workspace")
+	actor := domain.Membership{WorkspaceID: workspace.ID, UserID: owner.ID, Role: domain.RoleOwner}
+
+	// The workspace is at version 1; int32(4294967297) is also 1.
+	if _, err := service.Rename(ctx, actor, 4294967297, "Hijacked"); !errors.Is(err, application.ErrVersionConflict) {
+		t.Errorf("oversized version was accepted: %v", err)
+	}
+
+	current, err := service.Get(ctx, workspace.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if current.Name != "Truncation Workspace" {
+		t.Errorf("name = %q — the truncated version bypassed the concurrency check", current.Name)
 	}
 }

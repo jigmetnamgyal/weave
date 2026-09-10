@@ -20,6 +20,10 @@ var (
 	// owner. A workspace with no owner cannot be administered or deleted by
 	// anyone, so this is refused rather than repaired afterwards.
 	ErrLastOwner = errors.New("workspace must keep at least one owner")
+	// ErrCannotGrantRole is returned when an actor tries to assign a role
+	// holding permissions the actor does not hold — an admin promoting someone
+	// to owner, for instance.
+	ErrCannotGrantRole = errors.New("cannot grant a role with more authority than your own")
 )
 
 // Workspace name and slug bounds. The slug bounds match the CHECK constraints
@@ -106,6 +110,26 @@ func ValidateSlug(slug string) error {
 			ErrInvalidWorkspace)
 	}
 	return nil
+}
+
+// TruncateSlug shortens a slug so that appending a suffix of suffixLen
+// characters still fits within the maximum length.
+//
+// Needed because SlugFromName may already return the full 64 characters, and
+// naively appending "-2" to disambiguate a collision would produce a slug the
+// database rejects — turning a duplicate name into an error instead of a
+// disambiguated slug.
+func TruncateSlug(slug string, suffixLen int) string {
+	limit := workspaceSlugMaxLen - suffixLen
+	if limit < 1 {
+		return ""
+	}
+	if len(slug) <= limit {
+		return strings.TrimRight(slug, "-")
+	}
+	// TrimRight because cutting mid-slug can leave a trailing hyphen, which
+	// the format constraint rejects.
+	return strings.TrimRight(slug[:limit], "-")
 }
 
 // SlugFromName derives a URL-safe slug from a workspace name.

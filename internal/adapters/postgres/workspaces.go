@@ -194,13 +194,19 @@ func (s *WorkspaceStore) ListMembers(ctx context.Context, workspaceID uuid.UUID)
 }
 
 // Rename applies a new name under optimistic concurrency.
-func (s *WorkspaceStore) Rename(ctx context.Context, workspaceID uuid.UUID, expectedVersion int, name string, event application.AuditEvent) (domain.Workspace, error) {
+func (s *WorkspaceStore) Rename(ctx context.Context, workspaceID uuid.UUID, actor application.Actor, expectedVersion int, name string, event application.AuditEvent) (domain.Workspace, error) {
 	var updated domain.Workspace
 
 	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		if err := authorizeActor(ctx, q, workspaceID, actor); err != nil {
+			return err
+		}
+
+		// The caller bounds expectedVersion to int32 before reaching here, so
+		// this conversion cannot wrap.
 		row, err := q.RenameWorkspace(ctx, postgresdb.RenameWorkspaceParams{
 			ID:      workspaceID,
-			Version: int32(expectedVersion), //nolint:gosec // bounded by the version CHECK
+			Version: int32(expectedVersion), //nolint:gosec // range-checked in WorkspaceService.Rename
 			Name:    name,
 		})
 		if err != nil {
@@ -226,12 +232,18 @@ func (s *WorkspaceStore) Rename(ctx context.Context, workspaceID uuid.UUID, expe
 }
 
 // ChangeMemberRole updates a member's role, refusing to remove the last owner.
-func (s *WorkspaceStore) ChangeMemberRole(ctx context.Context, workspaceID, userID uuid.UUID, role domain.Role, event application.AuditEvent) (domain.Membership, error) {
+func (s *WorkspaceStore) ChangeMemberRole(ctx context.Context, workspaceID, userID uuid.UUID, actor application.Actor, role domain.Role, event application.AuditEvent) (domain.Membership, error) {
 	var updated domain.Membership
 
 	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
 		current, err := lockAndLoadMember(ctx, q, workspaceID, userID)
 		if err != nil {
+			return err
+		}
+
+		// Under the lock taken above, so a concurrent demotion of the actor
+		// either completes before this check or waits behind it.
+		if err := authorizeActorLocked(ctx, q, workspaceID, actor, role); err != nil {
 			return err
 		}
 
@@ -265,10 +277,14 @@ func (s *WorkspaceStore) ChangeMemberRole(ctx context.Context, workspaceID, user
 }
 
 // RemoveMember deletes a membership, refusing to remove the last owner.
-func (s *WorkspaceStore) RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID, event application.AuditEvent) error {
+func (s *WorkspaceStore) RemoveMember(ctx context.Context, workspaceID, userID uuid.UUID, actor application.Actor, event application.AuditEvent) error {
 	return s.inTx(ctx, func(q *postgresdb.Queries) error {
 		current, err := lockAndLoadMember(ctx, q, workspaceID, userID)
 		if err != nil {
+			return err
+		}
+
+		if err := authorizeActorLocked(ctx, q, workspaceID, actor, ""); err != nil {
 			return err
 		}
 
@@ -317,6 +333,53 @@ func lockAndLoadMember(ctx context.Context, q *postgresdb.Queries, workspaceID, 
 		return postgresdb.WorkspaceMember{}, fmt.Errorf("select member: %w", err)
 	}
 	return member, nil
+}
+
+// authorizeActor takes the workspace lock and then re-checks the actor.
+func authorizeActor(ctx context.Context, q *postgresdb.Queries, workspaceID uuid.UUID, actor application.Actor) error {
+	if _, err := q.LockWorkspace(ctx, workspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return application.ErrWorkspaceNotFound
+		}
+		return fmt.Errorf("lock workspace: %w", err)
+	}
+	return authorizeActorLocked(ctx, q, workspaceID, actor, "")
+}
+
+// authorizeActorLocked re-reads the actor's membership inside the transaction
+// and confirms they are still entitled to act.
+//
+// The handler authorized the actor from a snapshot read before the
+// transaction opened. Without this, a member removed or demoted in that window
+// could still land a privileged write — using authority they no longer hold.
+//
+// grant, when non-empty, is the role being assigned; the actor must be
+// entitled to grant it, re-checked here for the same reason.
+func authorizeActorLocked(ctx context.Context, q *postgresdb.Queries, workspaceID uuid.UUID, actor application.Actor, grant domain.Role) error {
+	if actor.UserID == uuid.Nil {
+		return application.ErrPermissionDenied
+	}
+
+	member, err := q.GetWorkspaceMember(ctx, postgresdb.GetWorkspaceMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      actor.UserID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Removed since the handler read them.
+			return application.ErrPermissionDenied
+		}
+		return fmt.Errorf("re-read actor membership: %w", err)
+	}
+
+	role := domain.Role(member.Role)
+	if actor.Required != "" && !role.Can(actor.Required) {
+		return application.ErrPermissionDenied
+	}
+	if grant != "" && !role.CanGrant(grant) {
+		return domain.ErrCannotGrantRole
+	}
+	return nil
 }
 
 // ensureAnotherOwnerExists fails when the workspace has only one owner.
