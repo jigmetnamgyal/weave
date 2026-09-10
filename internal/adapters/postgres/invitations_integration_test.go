@@ -417,11 +417,11 @@ func TestListNeverReturnsTokenMaterial(t *testing.T) {
 	// check available is that the token cannot be reconstructed from what a
 	// caller receives.
 	record := records[0]
-	if record.Email != "listed@example.com" || record.Role != domain.RoleViewer {
+	if record.Invitation.Email != "listed@example.com" || record.Invitation.Role != domain.RoleViewer {
 		t.Errorf("listed invitation = %+v", record)
 	}
-	if record.Status(time.Now()) != domain.InvitationPending {
-		t.Errorf("status = %q, want pending", record.Status(time.Now()))
+	if record.Status != domain.InvitationPending {
+		t.Errorf("status = %q, want pending", record.Status)
 	}
 	_ = issued
 }
@@ -515,8 +515,11 @@ func TestListFiltersByStatus(t *testing.T) {
 				t.Errorf("List(%q) returned %d, want %d", status, len(records), want)
 			}
 			for _, record := range records {
-				if got := record.Status(clock); got != status {
-					t.Errorf("List(%q) included an invitation with status %q", status, got)
+				// The resolved status the service returned — the same value
+				// the response is serialised from, so a mismatch here is a
+				// mismatch the caller would see.
+				if record.Status != status {
+					t.Errorf("List(%q) included an invitation with status %q", status, record.Status)
 				}
 			}
 		})
@@ -529,5 +532,71 @@ func TestListFiltersByStatus(t *testing.T) {
 	}
 	if len(all) != 4 {
 		t.Errorf("unfiltered List returned %d, want 4", len(all))
+	}
+}
+
+// TestFilteredStatusSurvivesSerialisation covers the two-clock defect: the
+// service filtered with its own clock while the handler recomputed the status
+// with time.Now(), so an invitation could be returned under ?status=pending
+// carrying the label "expired".
+//
+// A fake clock makes this deterministic rather than a race. Before the fix the
+// filter used the frozen clock and the response used real time, so every
+// record in this test disagreed — not merely one caught in a narrow window.
+func TestFilteredStatusSurvivesSerialisation(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Serialisation Workspace")
+
+	// A clock held in the past. Everything issued "now" in real time is still
+	// comfortably pending by this clock.
+	frozen := time.Now()
+	invitations, _ := invitationServices(pool, func() time.Time { return frozen })
+	actor := ownerOf(workspace.ID, owner.ID)
+
+	if _, err := invitations.Issue(ctx, actor, "serialised@example.com", domain.RoleViewer); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Move the clock past expiry. The row is untouched; only the instant the
+	// status is resolved against has changed.
+	frozen = frozen.Add(domain.InvitationLifetime + time.Hour)
+
+	pending, err := invitations.List(ctx, actor, domain.InvitationPending)
+	if err != nil {
+		t.Fatalf("List(pending): %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("List(pending) returned %d after the clock passed expiry, want 0", len(pending))
+	}
+
+	expired, err := invitations.List(ctx, actor, domain.InvitationExpired)
+	if err != nil {
+		t.Fatalf("List(expired): %v", err)
+	}
+	if len(expired) != 1 {
+		t.Fatalf("List(expired) returned %d, want 1", len(expired))
+	}
+
+	// The resolved status travels with the record, so what the handler
+	// serialises is the same value the filter matched on. Recomputing here
+	// would be asking a different question.
+	if expired[0].Status != domain.InvitationExpired {
+		t.Errorf("record carries status %q but was returned under the expired filter",
+			expired[0].Status)
+	}
+
+	// And the unfiltered list agrees with the filtered one.
+	all, err := invitations.List(ctx, actor, "")
+	if err != nil {
+		t.Fatalf("List(all): %v", err)
+	}
+	for _, record := range all {
+		if record.Status != record.Invitation.Status(frozen) {
+			t.Errorf("resolved status %q disagrees with the entity at the same instant",
+				record.Status)
+		}
 	}
 }

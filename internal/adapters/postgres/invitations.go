@@ -129,6 +129,8 @@ func (s *InvitationStore) ListForWorkspace(ctx context.Context, workspaceID uuid
 	records := make([]application.InvitationRecord, 0, len(rows))
 	for _, row := range rows {
 		records = append(records, application.InvitationRecord{
+			// Status is left unset: only the service knows which instant to
+			// resolve it against.
 			Invitation: domain.Invitation{
 				ID:          row.ID,
 				WorkspaceID: row.WorkspaceID,

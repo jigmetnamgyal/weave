@@ -30,8 +30,17 @@ const (
 
 // InvitationRecord is an invitation together with who issued it, which a
 // member list needs and a second lookup would otherwise cost.
+//
+// Status is a resolved value rather than the embedded Invitation.Status
+// method, and the distinction matters: status depends on the clock, so a
+// caller that recomputed it would be answering a slightly later question than
+// the one the list was filtered by. A pending invitation that expires between
+// the two would come back labelled `expired` under `?status=pending`.
+// Resolving it once, here, is what keeps the filter and the label the same
+// answer.
 type InvitationRecord struct {
-	domain.Invitation
+	Invitation           domain.Invitation
+	Status               domain.InvitationStatus
 	InvitedByEmail       string
 	InvitedByDisplayName string
 }
@@ -107,7 +116,10 @@ func NewInvitationService(invitations InvitationStore, workspaces WorkspaceStore
 // the caller must surface immediately because it is never recoverable.
 type IssuedInvitation struct {
 	Invitation domain.Invitation
-	Token      string
+	// Status resolved against the service's clock, for the same reason
+	// InvitationRecord carries one.
+	Status domain.InvitationStatus
+	Token  string
 }
 
 // Issue creates an invitation to a workspace.
@@ -189,7 +201,11 @@ func (s *InvitationService) Issue(ctx context.Context, actor domain.Membership, 
 		return IssuedInvitation{}, err
 	}
 
-	return IssuedInvitation{Invitation: created, Token: token.Plaintext}, nil
+	return IssuedInvitation{
+		Invitation: created,
+		Status:     created.Status(s.now()),
+		Token:      token.Plaintext,
+	}, nil
 }
 
 // List returns a workspace's invitations, optionally narrowed to one status.
@@ -208,14 +224,22 @@ func (s *InvitationService) List(ctx context.Context, actor domain.Membership, s
 	if err != nil {
 		return nil, fmt.Errorf("list invitations: %w", err)
 	}
+
+	// Resolve every status against one instant, before filtering. Everything
+	// downstream — the filter here, the response the handler writes — reads
+	// this value rather than asking the clock again.
+	now := s.now()
+	for i := range records {
+		records[i].Status = records[i].Invitation.Status(now)
+	}
+
 	if status == "" {
 		return records, nil
 	}
 
-	now := s.now()
 	filtered := make([]InvitationRecord, 0, len(records))
 	for _, record := range records {
-		if record.Status(now) == status {
+		if record.Status == status {
 			filtered = append(filtered, record)
 		}
 	}

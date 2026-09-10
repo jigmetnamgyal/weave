@@ -89,7 +89,7 @@ func (i *invitationRoutes) issue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(ctx, w, http.StatusCreated, issuedInvitationResponse{
-		invitationResponse: toInvitationResponse(issued.Invitation, "", ""),
+		invitationResponse: toInvitationResponse(issued.Invitation, issued.Status, "", ""),
 		Token:              issued.Token,
 	})
 }
@@ -124,7 +124,8 @@ func (i *invitationRoutes) list(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]invitationResponse, 0, len(records))
 	for _, record := range records {
-		items = append(items, toInvitationResponse(record.Invitation, record.InvitedByEmail, record.InvitedByDisplayName))
+		items = append(items, toInvitationResponse(
+			record.Invitation, record.Status, record.InvitedByEmail, record.InvitedByDisplayName))
 	}
 	httpx.WriteJSON(ctx, w, http.StatusOK, listResponse[invitationResponse]{Items: items})
 }
@@ -230,14 +231,18 @@ func (i *invitationRoutes) accept(w http.ResponseWriter, r *http.Request) {
 
 // toInvitationResponse converts an invitation for the wire.
 //
+// The status is supplied rather than computed. Asking the clock here would
+// answer a slightly later question than the one the list was filtered by, so
+// a response to `?status=pending` could contain an item labelled `expired`.
+//
 // It carries no token and no hash: the token exists on the wire exactly once,
 // in the response to issuing.
-func toInvitationResponse(invitation domain.Invitation, invitedByEmail, invitedByDisplayName string) invitationResponse {
+func toInvitationResponse(invitation domain.Invitation, status domain.InvitationStatus, invitedByEmail, invitedByDisplayName string) invitationResponse {
 	return invitationResponse{
 		ID:                   invitation.ID.String(),
 		Email:                invitation.Email,
 		Role:                 invitation.Role.String(),
-		Status:               string(invitation.Status(time.Now())),
+		Status:               string(status),
 		InvitedByEmail:       invitedByEmail,
 		InvitedByDisplayName: invitedByDisplayName,
 		ExpiresAt:            invitation.ExpiresAt,
