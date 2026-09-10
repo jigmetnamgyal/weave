@@ -29,21 +29,10 @@ func NewInvitationStore(pool *pgxpool.Pool) *InvitationStore {
 	return &InvitationStore{pool: pool, queries: postgresdb.New(pool)}
 }
 
-// inTx runs fn inside a transaction, rolling back on error or panic.
+// inTx runs fn inside a transaction carrying the caller's tenant context.
+// Reads go through it too — see WorkspaceStore.inTx.
 func (s *InvitationStore) inTx(ctx context.Context, fn func(*postgresdb.Queries) error) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := fn(s.queries.WithTx(tx)); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-	return nil
+	return inTenantTx(ctx, s.pool, fn)
 }
 
 // Create records an invitation, superseding an expired one if it holds the
@@ -106,24 +95,36 @@ func (s *InvitationStore) Create(ctx context.Context, invitation domain.Invitati
 
 // Outstanding returns the invitation holding the one-outstanding slot.
 func (s *InvitationStore) Outstanding(ctx context.Context, workspaceID uuid.UUID, email string) (domain.Invitation, error) {
-	row, err := s.queries.GetOutstandingInvitationForEmail(ctx, postgresdb.GetOutstandingInvitationForEmailParams{
-		WorkspaceID: workspaceID,
-		Email:       email,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Invitation{}, application.ErrInvitationNotFound
+	var invitation domain.Invitation
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		row, err := q.GetOutstandingInvitationForEmail(ctx, postgresdb.GetOutstandingInvitationForEmailParams{
+			WorkspaceID: workspaceID,
+			Email:       email,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrInvitationNotFound
+			}
+			return fmt.Errorf("select outstanding invitation: %w", err)
 		}
-		return domain.Invitation{}, fmt.Errorf("select outstanding invitation: %w", err)
-	}
-	return invitationToDomain(row), nil
+		invitation = invitationToDomain(row)
+		return nil
+	})
+	return invitation, err
 }
 
 // ListForWorkspace returns a workspace's invitations, newest first.
 func (s *InvitationStore) ListForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]application.InvitationRecord, error) {
-	rows, err := s.queries.ListInvitationsForWorkspace(ctx, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("list invitations: %w", err)
+	var rows []postgresdb.ListInvitationsForWorkspaceRow
+	if err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		found, err := q.ListInvitationsForWorkspace(ctx, workspaceID)
+		if err != nil {
+			return fmt.Errorf("list invitations: %w", err)
+		}
+		rows = found
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	records := make([]application.InvitationRecord, 0, len(rows))
@@ -176,56 +177,68 @@ func (s *InvitationStore) Revoke(ctx context.Context, workspaceID, invitationID 
 }
 
 // ByTokenHash looks an invitation up by its token hash.
+// ByTokenHash looks an invitation up by its token hash.
+//
+// This is the one read that cannot be workspace-scoped: the caller is not a
+// member of anything, and the token is the authorization. It therefore goes
+// through weave_invitation_by_token, a SECURITY DEFINER function that returns
+// exactly the row whose hash was presented — a deliberate, single-row hole in
+// the policies rather than a general exemption.
 func (s *InvitationStore) ByTokenHash(ctx context.Context, tokenHash []byte) (domain.Invitation, error) {
-	row, err := s.queries.GetInvitationByTokenHash(ctx, tokenHash)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Invitation{}, application.ErrInvitationNotFound
+	var invitation domain.Invitation
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		row, err := q.GetInvitationByTokenHash(ctx, tokenHash)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrInvitationNotFound
+			}
+			return fmt.Errorf("select invitation by token: %w", err)
 		}
-		return domain.Invitation{}, fmt.Errorf("select invitation by token: %w", err)
-	}
-	return invitationToDomain(row), nil
+		invitation = invitationToDomain(row)
+		return nil
+	})
+	return invitation, err
 }
 
 // Context returns the workspace name and inviter behind an invitation.
 func (s *InvitationStore) Context(ctx context.Context, invitationID uuid.UUID) (application.InvitationPreview, error) {
-	row, err := s.queries.GetInvitationWorkspaceContext(ctx, invitationID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return application.InvitationPreview{}, application.ErrInvitationNotFound
+	var preview application.InvitationPreview
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		row, err := q.GetInvitationWorkspaceContext(ctx, invitationID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrInvitationNotFound
+			}
+			return fmt.Errorf("select invitation context: %w", err)
 		}
-		return application.InvitationPreview{}, fmt.Errorf("select invitation context: %w", err)
-	}
-	return application.InvitationPreview{
-		WorkspaceName:        row.WorkspaceName,
-		InvitedByEmail:       row.InvitedByEmail,
-		InvitedByDisplayName: derefText(row.InvitedByDisplayName),
-	}, nil
+		preview = application.InvitationPreview{
+			WorkspaceName:        row.WorkspaceName,
+			InvitedByEmail:       row.InvitedByEmail,
+			InvitedByDisplayName: derefText(row.InvitedByDisplayName),
+		}
+		return nil
+	})
+	return preview, err
 }
 
 // Accept claims the invitation and creates the membership.
-func (s *InvitationStore) Accept(ctx context.Context, invitationID, userID uuid.UUID, role domain.Role, event application.AuditEvent) (domain.Membership, error) {
+func (s *InvitationStore) Accept(ctx context.Context, invitationID, workspaceID, userID uuid.UUID, role domain.Role, event application.AuditEvent) (domain.Membership, error) {
 	var membership domain.Membership
 
 	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
-		// The claim comes first and is conditional on the invitation still
-		// being usable. Two concurrent accepts race on this single statement;
-		// exactly one matches a row, so exactly one membership is created.
-		claimed, err := q.ClaimInvitation(ctx, postgresdb.ClaimInvitationParams{
-			ID:         invitationID,
-			AcceptedBy: pgtype.UUID{Bytes: userID, Valid: true},
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				// Someone else claimed it, or it expired or was revoked
-				// between the read and here.
-				return domain.ErrInvitationNotUsable
-			}
-			return fmt.Errorf("claim invitation: %w", err)
-		}
-
+		// Membership is inserted before the invitation is claimed, and the
+		// order is required by the policies rather than chosen for style.
+		// Acceptance runs with no workspace context — the acceptor is not a
+		// member yet — so the invitation and audit policies authorise through
+		// weave_is_member, which only becomes true once this row exists. The
+		// insert is visible to the rest of this transaction immediately.
+		//
+		// Single use is unaffected: the claim below is still conditional, and
+		// the membership primary key settles concurrent accepts just as
+		// firmly. Either way exactly one succeeds, and a failure at the claim
+		// rolls the membership back with it.
 		if _, err := q.AddWorkspaceMember(ctx, postgresdb.AddWorkspaceMemberParams{
-			WorkspaceID: claimed.WorkspaceID,
+			WorkspaceID: workspaceID,
 			UserID:      userID,
 			Role:        string(role),
 		}); err != nil {
@@ -235,6 +248,19 @@ func (s *InvitationStore) Accept(ctx context.Context, invitationID, userID uuid.
 				return application.ErrAlreadyMember
 			}
 			return fmt.Errorf("insert membership: %w", err)
+		}
+
+		claimed, err := q.ClaimInvitation(ctx, postgresdb.ClaimInvitationParams{
+			ID:         invitationID,
+			AcceptedBy: pgtype.UUID{Bytes: userID, Valid: true},
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Claimed by someone else, or expired or revoked since the
+				// read. The membership above rolls back with it.
+				return domain.ErrInvitationNotUsable
+			}
+			return fmt.Errorf("claim invitation: %w", err)
 		}
 
 		if err := appendAudit(ctx, q, event); err != nil {

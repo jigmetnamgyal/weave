@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/internal/domain"
 	"github.com/jigmetnamgyal/weave/services/api/internal/auth"
@@ -95,6 +96,14 @@ func (h *Handler) requireMembership(next http.Handler) http.Handler {
 			h.notFound(ctx, w)
 			return
 		}
+
+		// Narrow the tenant context to this workspace before the membership
+		// lookup, so the policies apply to that lookup too — the check that
+		// decides whether the caller is a member is itself tenant-scoped.
+		ctx = postgres.WithTenant(ctx, postgres.TenantContext{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+		})
 
 		membership, err := h.service.Membership(ctx, workspaceID, user.ID)
 		if err != nil {

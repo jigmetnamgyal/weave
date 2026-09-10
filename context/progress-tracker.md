@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0 (row-level security) next, then M3.1 (GitHub App)
+- Status: M2 complete; M3.0 (row-level security) complete; M3.1 (GitHub App) next
 
 ## Current Goal
 
@@ -28,6 +28,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Completed
 
+- Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
 - Defined developer-first MVP and long-term multiplayer-agent product boundary.
 - Defined modular control plane and isolated execution plane.
 - Selected initial technology stack and service boundaries.
@@ -43,25 +44,18 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-- None.
+Nothing in progress. M3.0 is complete and awaiting review; M3.1 is next.
 
 ## Next Up
 
-### Unit M3.0 — Row-Level Security
-
-**Source:** `context/features-specs/06-row-level-security.md`
-
-**Outcome:** PostgreSQL refuses to return another tenant's rows regardless of what the query asked for, so a store method written without its workspace filter is caught by the database rather than shipped.
-
-**Scope:** a non-owning `weave_app` role the API connects as; transaction-scoped tenant context via `SET LOCAL`; enabled and forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`; `SECURITY DEFINER` functions for the two lookups that legitimately cannot be workspace-scoped; and tests that remove a filter on purpose to prove the policies carry the isolation.
-
-**Why now, ahead of M3.1:** none of ADR-010's three triggers had fired — the tables were added by the same author, through sqlc, with no external customers — so deferring further would have been consistent with the ADR. Doing it here is a deliberate choice: M3.1 roughly doubles the tenant-owned surface, and four tables are easier to convert than eight.
-
-**Note on size:** the pooling hazard is the sharp edge. `SET LOCAL` is transaction-scoped, so every tenant read must move inside a transaction — several currently are not. Expect the refactor to be wider than the migration.
-
 ### Unit M3.1 — GitHub App Installation and Repository Access
 
-Follows M3.0. Expected scope: GitHub App installation bound to a workspace, selected-repository access, repository records scoped by `workspace_id`, and permission/webhook health checks. Its tables are workspace-owned and will be created under the policies M3.0 establishes. It also needs a real GitHub App, which is an account action only the operator can perform.
+Expected scope: GitHub App installation bound to a workspace, selected-repository access, repository records scoped by `workspace_id`, and permission/webhook health checks.
+
+**Two things carry over from M3.0.** Its tables are workspace-owned, so each one needs `ENABLE`/`FORCE ROW LEVEL SECURITY` and its own policies in the same migration that creates it — a table added without them is silently unprotected, since RLS is off by default. And every read of them must run inside `inTenantTx`; a read outside a transaction has no context, and by design returns nothing rather than everything.
+
+**Blocked on an operator action:** it needs a real GitHub App, which only the account owner can create.
+
 
 ## Open Questions
 
@@ -90,7 +84,8 @@ Resolve these before the milestone that depends on them:
 | ADR-007 | Keep provider behavior behind capability-aware adapters | Avoid product coupling to Claude Code or Codex | Accepted |
 | ADR-008 | Bind approvals to immutable proposal hashes | Prevent replay or parameter substitution | Accepted |
 | ADR-011 | Treat invitations as bearer capabilities, storing only a SHA-256 of the token | A link is held by whoever receives it, so the token is 256 random bits, single use, expiring, and matched against the invited address; hashing means a database dump is not a set of working invitations. A password hash would buy nothing against uniform randomness and would put a CPU cost on every acceptance. See `docs/adr/0011-invitation-token-model.md` | Accepted |
-| ADR-010 | Enforce tenancy with workspace-scoped queries; defer row-level security | RLS is defence in depth behind scoped queries, and needs a non-superuser role, a per-transaction tenant GUC and pooling care that would make this unit unreviewable. Gated: **RLS ships before the first external customer.** See `docs/adr/0010-tenancy-and-row-level-security.md` | Accepted |
+| ADR-010 | Enforce tenancy with workspace-scoped queries; defer row-level security | RLS is defence in depth behind scoped queries, and needs a non-superuser role, a per-transaction tenant GUC and pooling care that would make this unit unreviewable. Gated: **RLS ships before the first external customer.** See `docs/adr/0010-tenancy-and-row-level-security.md` | Accepted; superseded in part by ADR-012 |
+| ADR-012 | Row-level security enforced through a non-owning application role, transaction-scoped context, and fail-closed policies | `FORCE` does nothing against a superuser or `BYPASSRLS` role, so what carries isolation is the API connecting as `weave_app`, which is neither. Context is set with `SET LOCAL` because a session-scoped `SET` would hand one request's tenant to the next borrower of a pooled connection. Absent context matches no row: RLS that fails open looks like protection and is not. See `docs/adr/0012-row-level-security-implementation.md` | Accepted |
 | ADR-009 | Use Clerk for authentication only, never for authorization | The Go API can verify Clerk JWTs via cached JWKS without hand-rolling token issuance across the Next.js/Go boundary; keeping workspaces, membership and permissions in PostgreSQL avoids a second source of truth for tenant isolation and keeps Clerk swappable behind the OIDC/JWT boundary | Accepted |
 
 ## Risks
@@ -108,6 +103,7 @@ Resolve these before the milestone that depends on them:
 
 | Date | Unit | Environment | Commands/tests | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-11 | Row-Level Security, Unit M3.0 (`context/features-specs/06-row-level-security.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-up` / `migrate-down` / `migrate-up`; direct `pgxpool` connection as `weave_app` asserting `rolsuper`/`rolbypassrls`; live API health probe | Pass, with one gap | Six RLS tests connect as `weave_app` and **refuse to run at all if the role can bypass RLS** — a test that silently ran as superuser would pass while proving nothing. They prove: an unfiltered `SELECT id FROM workspaces`, with the workspace filter removed on purpose, returns only the current tenant's rows; naming another tenant's `workspace_id` explicitly returns nothing; with no context set every tenant table returns nothing; and, on a deliberately pinned single connection, a transaction that set context leaves none behind for the next — which is the pooling hazard the whole design turns on. Writes are constrained too, and `weave_invitation_by_token` returns exactly one row and cannot be widened. Every pre-existing test passes unchanged, so the convention and the policies agree. `APP_DATABASE_URL` confirmed to connect as `weave_app` with `rolsuper=false, rolbypassrls=false`. Correction to ADR-010's framing: `FORCE` does **not** subject a superuser or `BYPASSRLS` role — the local `weave` owner is a superuser and still reads every row — so the control carrying isolation is the application's role, not `FORCE`. **Gap: the signed-in browser flow remains unverified**, as with M2.2 and M2.3. |
 | 2026-09-11 | Workspace Invitations, Unit M2.3 (`context/features-specs/05-workspace-invitations.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-up`; `curl` of all five invitation routes unauthenticated; grep audit of the API log and of every logger and JSON tag for token material | Pass, with one gap | Domain tests cover the derived status (including terminal states winning over expiry), token entropy and URL-safety across 200 samples, and that the stored hash — raw or hex-encoded — cannot be presented as a token. Integration tests against real PostgreSQL prove: eight concurrent accepts of one token create exactly one membership; unknown, expired, revoked, accepted and empty tokens are indistinguishable from both preview and accept; a forwarded link is refused for the wrong recipient and still works for the right one; email matching is case-insensitive; one outstanding invitation per address, with an expired one superseded rather than blocking and its row kept; re-inviting after removal restores access at the newly invited role; an admin cannot invite an owner; and an invitation id from one tenant cannot be revoked through another. All five routes return 401 unauthenticated while `/health/*` stays public. The API log contains no token material — the only matches are the phrase "bearer token" in auth-failure messages. **Gap: the signed-in browser flow is unverified**, as with M2.2. |
 | 2026-09-10 | Workspaces and Membership, Unit M2.2 — review round (PR #3) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; direct `psql` probes of the slug constraint before and after the fix; `go run` probe of int32 narrowing; full CI on the pull request and on `main` | Pass | Eight findings from greptile and CodeRabbit, all verified against the code and all valid. Two were serious: `member:manage` alone let an admin assign the `owner` role and collect `billing:manage` (fixed with a permission-subset grant rule); and `citext` overrides `~` to be case-insensitive, so the slug CHECK accepted `UpperCaseSlug` — proved by inserting one before the `::text` cast and watching it succeed, then fail after. Also fixed a time-of-check/time-of-use window where a removed or demoted actor could still land a privileged write (mutations now re-read the actor's membership under the workspace lock), `int32` truncation that let `4294967297` masquerade as version 1, slug-suffix overflow, and trailing-JSON acceptance. Every fix carries a regression test, including both TOCTOU cases against real PostgreSQL. **Still unverified: the signed-in browser flow**, which needs a GitHub sign-in only the operator can perform. |
 | 2026-09-10 | Workspaces and Membership, Unit M2.2 (`context/features-specs/04-workspaces-and-membership.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-up` / `migrate-down` / `migrate-up`; `psql` probes of the append-only triggers; `curl` of all seven routes unauthenticated; browser check of the signed-out redirect | Pass, with one gap | Authorization matrix pinned by an exhaustiveness test that fails the build when a role or permission is added without deciding every pairing, plus a hand-written expectation table so the matrix cannot be changed without changing the test. HTTP tests cover every workspace-scoped endpoint × every role: a non-member receives 404 on all five (never 403), an unknown workspace is byte-identical to one that is not yours, and a member lacking a permission receives 403. Integration tests against real PostgreSQL prove cross-tenant reads return nothing, the last owner cannot be demoted or removed, two concurrent owner demotions leave exactly one owner (the reason the store takes a row lock), a stale version is rejected, refused changes write no audit row, and audit rows survive deleting the workspace they describe. Append-only is enforced by the database: UPDATE, DELETE and TRUNCATE are all rejected by trigger. All seven routes return 401 unauthenticated while `/health/*` stays public. **Gap: the signed-in browser flow is unverified** — it needs a GitHub sign-in only the operator can perform. |
@@ -158,5 +154,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-- Date: 2026-09-10
-- Updated by: Workspace Invitations (Unit M2.3) implementation
+2026-09-11 — Unit M3.0 (row-level security) complete.

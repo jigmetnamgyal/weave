@@ -10,6 +10,7 @@ import (
 func validEnv() map[string]string {
 	return map[string]string{
 		"DATABASE_URL":       "postgres://weave:weave@localhost:5432/weave?sslmode=disable",
+		"APP_DATABASE_URL":   "postgres://weave_app:weave_app@localhost:5432/weave?sslmode=disable",
 		"REDIS_URL":          "redis://localhost:6379/0",
 		"NATS_URL":           "nats://localhost:4222",
 		"TEMPORAL_HOST_PORT": "localhost:7233",
@@ -57,7 +58,7 @@ func TestLoad(t *testing.T) {
 			env:       map[string]string{},
 			unset:     requiredKeys,
 			wantErr:   ErrMissingConfig,
-			errSubstr: []string{"CLERK_ISSUER", "DATABASE_URL", "NATS_URL", "REDIS_URL", "TEMPORAL_HOST_PORT"},
+			errSubstr: []string{"APP_DATABASE_URL", "CLERK_ISSUER", "DATABASE_URL", "NATS_URL", "REDIS_URL", "TEMPORAL_HOST_PORT"},
 		},
 		{
 			name: "blank value counts as missing",

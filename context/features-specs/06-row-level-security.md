@@ -17,9 +17,10 @@ tenant-owned tables rather than eight.
 ## Decisions this unit locks in
 
 - **Two roles.** Migrations and operations connect as the table owner.
-  The API connects as a separate, non-owning role that policies apply
-  to. An owner bypasses RLS by default, so an application running as
-  owner would have policies that silently do nothing.
+  The API connects as a separate role that is neither the owner, a
+  superuser, nor `BYPASSRLS` — those three all ignore policies, so an
+  application connecting as any of them would have policies that
+  silently do nothing.
 - **Tenant context is transaction-scoped**, set with `SET LOCAL`. It is
   discarded at commit or rollback, so a pooled connection cannot carry
   one request's tenant into the next.
@@ -57,9 +58,11 @@ tenant-owned tables rather than eight.
 
 Enable and **force** row-level security on `workspaces`,
 `workspace_members`, `workspace_invitations` and `audit_events`.
-`FORCE` matters: without it the owner still bypasses, and a future
-change that runs the application as owner would disable every policy
-without failing anything.
+`FORCE` subjects a table's owner to its policies. Be precise about what
+that buys: it does nothing about a superuser or a `BYPASSRLS` role,
+which ignore RLS regardless. The control carrying isolation is the
+application connecting as a role that is none of those; `FORCE` is the
+second layer, for environments whose owner is not a superuser.
 
 Each policy reads the context through a helper that returns NULL when
 the setting is absent, so an unset context matches no row.
@@ -117,10 +120,11 @@ application, so test it by making that mistake on purpose:
 ## Migration safety
 
 - The migration must be deployable while the previous application
-  version is still running. That version connects as the owner, which
-  `FORCE` would newly subject to policies, so ordering matters: create
-  the role and grant it first, ship the application change that uses it,
-  then enable and force policies.
+  version is still running. Ship the configuration change pointing the
+  API at `APP_DATABASE_URL` first, then apply the migration. Where the
+  owner happens to be a superuser the old version would survive either
+  order, but that is a property of one deployment and not something to
+  depend on.
 - State the ordering in the migration's comments and in the tracker. If
   it cannot be made safe in one step, split it and say so.
 

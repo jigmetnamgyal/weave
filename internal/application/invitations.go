@@ -97,7 +97,7 @@ type InvitationStore interface {
 	//
 	// The claim must be conditional on the invitation still being usable, so
 	// that two concurrent accepts of one token produce exactly one membership.
-	Accept(ctx context.Context, invitationID, userID uuid.UUID, role domain.Role, event AuditEvent) (domain.Membership, error)
+	Accept(ctx context.Context, invitationID, workspaceID, userID uuid.UUID, role domain.Role, event AuditEvent) (domain.Membership, error)
 }
 
 // InvitationService holds the invitation use cases.
@@ -310,7 +310,7 @@ func (s *InvitationService) Accept(ctx context.Context, user domain.User, token 
 		return domain.Membership{}, fmt.Errorf("check membership: %w", err)
 	}
 
-	membership, err := s.invitations.Accept(ctx, invitation.ID, user.ID, invitation.Role, AuditEvent{
+	membership, err := s.invitations.Accept(ctx, invitation.ID, invitation.WorkspaceID, user.ID, invitation.Role, AuditEvent{
 		WorkspaceID: invitation.WorkspaceID,
 		ActorUserID: user.ID,
 		Action:      AuditInvitationAccepted,

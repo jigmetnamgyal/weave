@@ -40,30 +40,15 @@ func NewWorkspaceStore(pool *pgxpool.Pool) *WorkspaceStore {
 	return &WorkspaceStore{pool: pool, queries: postgresdb.New(pool)}
 }
 
-// inTx runs fn inside a transaction, rolling back on error or panic.
+// inTx runs fn inside a transaction carrying the caller's tenant context.
 //
-// Every method that changes state and writes an audit row goes through here,
-// which is what makes the port's atomicity promise true: the change and its
-// record commit together or not at all.
+// Every method goes through here, reads included. Writes need it for
+// atomicity — a change and its audit row commit together or not at all — and
+// reads need it because row-level security reads the tenant context from the
+// transaction. A read issued outside one matches no policy and returns
+// nothing.
 func (s *WorkspaceStore) inTx(ctx context.Context, fn func(*postgresdb.Queries) error) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() {
-		// Rollback after a successful commit is a no-op, so this is safe to
-		// run unconditionally and covers the panic path too.
-		_ = tx.Rollback(ctx)
-	}()
-
-	if err := fn(s.queries.WithTx(tx)); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-	return nil
+	return inTenantTx(ctx, s.pool, fn)
 }
 
 // CreateWithOwner creates a workspace, its owner membership and the audit row.
@@ -111,33 +96,50 @@ func (s *WorkspaceStore) CreateWithOwner(ctx context.Context, workspace domain.W
 
 // SlugExists reports whether a slug is already in use.
 func (s *WorkspaceStore) SlugExists(ctx context.Context, slug string) (bool, error) {
-	exists, err := s.queries.SlugExists(ctx, slug)
-	if err != nil {
-		return false, fmt.Errorf("check slug: %w", err)
-	}
-	return exists, nil
+	var exists bool
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		found, err := q.SlugExists(ctx, slug)
+		if err != nil {
+			return fmt.Errorf("check slug: %w", err)
+		}
+		exists = found
+		return nil
+	})
+	return exists, err
 }
 
 // GetForMember returns a workspace only when the user is a member.
 func (s *WorkspaceStore) GetForMember(ctx context.Context, workspaceID, userID uuid.UUID) (domain.Workspace, error) {
-	row, err := s.queries.GetWorkspaceForMember(ctx, postgresdb.GetWorkspaceForMemberParams{
-		ID:     workspaceID,
-		UserID: userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Workspace{}, application.ErrWorkspaceNotFound
+	var workspace domain.Workspace
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		row, err := q.GetWorkspaceForMember(ctx, postgresdb.GetWorkspaceForMemberParams{
+			ID:     workspaceID,
+			UserID: userID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrWorkspaceNotFound
+			}
+			return fmt.Errorf("select workspace: %w", err)
 		}
-		return domain.Workspace{}, fmt.Errorf("select workspace: %w", err)
-	}
-	return workspaceToDomain(row), nil
+		workspace = workspaceToDomain(row)
+		return nil
+	})
+	return workspace, err
 }
 
 // ListForUser returns the workspaces a user belongs to, with their role.
 func (s *WorkspaceStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]application.WorkspaceMembership, error) {
-	rows, err := s.queries.ListWorkspacesForUser(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list workspaces: %w", err)
+	var rows []postgresdb.ListWorkspacesForUserRow
+	if err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		found, err := q.ListWorkspacesForUser(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("list workspaces: %w", err)
+		}
+		rows = found
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	result := make([]application.WorkspaceMembership, 0, len(rows))
@@ -160,24 +162,36 @@ func (s *WorkspaceStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]a
 
 // GetMembership returns a user's membership in a workspace.
 func (s *WorkspaceStore) GetMembership(ctx context.Context, workspaceID, userID uuid.UUID) (domain.Membership, error) {
-	row, err := s.queries.GetWorkspaceMember(ctx, postgresdb.GetWorkspaceMemberParams{
-		WorkspaceID: workspaceID,
-		UserID:      userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Membership{}, application.ErrMemberNotFound
+	var membership domain.Membership
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		row, err := q.GetWorkspaceMember(ctx, postgresdb.GetWorkspaceMemberParams{
+			WorkspaceID: workspaceID,
+			UserID:      userID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrMemberNotFound
+			}
+			return fmt.Errorf("select membership: %w", err)
 		}
-		return domain.Membership{}, fmt.Errorf("select membership: %w", err)
-	}
-	return membershipToDomain(row), nil
+		membership = membershipToDomain(row)
+		return nil
+	})
+	return membership, err
 }
 
 // ListMembers returns every member of a workspace.
 func (s *WorkspaceStore) ListMembers(ctx context.Context, workspaceID uuid.UUID) ([]domain.MemberProfile, error) {
-	rows, err := s.queries.ListWorkspaceMembers(ctx, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("list members: %w", err)
+	var rows []postgresdb.ListWorkspaceMembersRow
+	if err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		found, err := q.ListWorkspaceMembers(ctx, workspaceID)
+		if err != nil {
+			return fmt.Errorf("list members: %w", err)
+		}
+		rows = found
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	members := make([]domain.MemberProfile, 0, len(rows))

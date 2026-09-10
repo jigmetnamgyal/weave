@@ -76,11 +76,21 @@ func run() error {
 	// Dependency clients are constructed eagerly but connect lazily. The
 	// service must start even when a dependency is down: that is precisely
 	// the state readiness exists to report.
+	// Two pools, deliberately. The readiness probe connects as the owner so a
+	// policy misconfiguration cannot make the service look unhealthy; every
+	// request goes through appPool, which authenticates as a role that
+	// row-level security applies to.
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("configure postgres pool: %w", err)
 	}
 	defer pool.Close()
+
+	appPool, err := pgxpool.New(ctx, cfg.AppDatabaseURL)
+	if err != nil {
+		return fmt.Errorf("configure application postgres pool: %w", err)
+	}
+	defer appPool.Close()
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
@@ -119,7 +129,9 @@ func run() error {
 		return fmt.Errorf("configure identity verifier: %w", err)
 	}
 
-	provisioner := application.NewUserProvisioner(postgres.NewUserStore(pool))
+	// users carries no workspace_id and has no policy, so provisioning uses
+	// the application pool like everything else.
+	provisioner := application.NewUserProvisioner(postgres.NewUserStore(appPool))
 	authMiddleware := auth.NewMiddleware(verifier, provisioner, logger)
 
 	// Every product route lives under /v1 and the whole subtree is wrapped in
@@ -129,10 +141,10 @@ func run() error {
 	protected := http.NewServeMux()
 	protected.Handle("GET /v1/me", users.Me())
 
-	workspaceStore := postgres.NewWorkspaceStore(pool)
+	workspaceStore := postgres.NewWorkspaceStore(appPool)
 	workspaceService := application.NewWorkspaceService(workspaceStore)
 	invitationService := application.NewInvitationService(
-		postgres.NewInvitationStore(pool), workspaceStore, time.Now)
+		postgres.NewInvitationStore(appPool), workspaceStore, time.Now)
 
 	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
 	workspaceHandler.Register(protected)

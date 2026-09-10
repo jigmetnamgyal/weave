@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/internal/domain"
 	"github.com/jigmetnamgyal/weave/services/api/internal/httpx"
@@ -92,7 +93,15 @@ func (m *Middleware) Require(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, userKey, user)))
+		// The tenant context travels with the request from here. Row-level
+		// security reads app.user_id from it, and a request that reached a
+		// store without it would read nothing rather than another tenant's
+		// rows — but establishing it once, at the edge, is what keeps that
+		// from happening at all.
+		ctx = context.WithValue(ctx, userKey, user)
+		ctx = postgres.WithTenant(ctx, postgres.TenantContext{UserID: user.ID})
+
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -118,7 +127,8 @@ func UserFrom(ctx context.Context) (domain.User, bool) {
 // authentication can be tested at their own boundary, standing in for the
 // middleware rather than reconstructing a signed token to get past it.
 func ContextWithUser(ctx context.Context, user domain.User) context.Context {
-	return context.WithValue(ctx, userKey, user)
+	ctx = context.WithValue(ctx, userKey, user)
+	return postgres.WithTenant(ctx, postgres.TenantContext{UserID: user.ID})
 }
 
 // bearerToken extracts the credential from the Authorization header.
