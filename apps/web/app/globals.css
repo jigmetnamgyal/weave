@@ -1,6 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+/* Maps Clerk's hosted components onto the shadcn tokens below, so sign-in and
+   the user button inherit the Weave dark theme instead of rendering as a light
+   card on a dark page. */
+@import "@clerk/ui/themes/shadcn.css";
 
 @custom-variant dark (&:is(.dark *));
 

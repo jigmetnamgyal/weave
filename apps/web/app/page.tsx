@@ -18,13 +18,18 @@ export default function Home() {
       {/*
         These primitives are Base UI based, so composition uses `render`
         rather than Radix's `asChild`.
+
+        `nativeButton={false}` tells Base UI the rendered element is an <a>,
+        not a <button>. Without it Base UI applies native button semantics to
+        a link, which breaks keyboard and screen-reader behaviour — Enter and
+        Space do different things on the two elements.
       */}
       <Show when="signed-out">
-        <Button render={<Link href="/sign-in">Sign in with GitHub</Link>} />
+        <Button nativeButton={false} render={<Link href="/sign-in">Sign in with GitHub</Link>} />
       </Show>
 
       <Show when="signed-in">
-        <Button render={<Link href="/dashboard">Go to dashboard</Link>} />
+        <Button nativeButton={false} render={<Link href="/dashboard">Go to dashboard</Link>} />
       </Show>
     </main>
   );

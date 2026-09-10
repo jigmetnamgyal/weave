@@ -1,0 +1,11 @@
+{
+  "session": {
+    "allowed_clock_skew": 5,
+    "claims": {
+      "email": "{{user.primary_email_address}}",
+      "image_url": "{{user.image_url}}",
+      "name": "{{user.full_name}}"
+    },
+    "lifetime": 60
+  }
+}
