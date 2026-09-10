@@ -1,0 +1,36 @@
+# Gitleaks configuration for Weave.
+#
+# Starts from the upstream default ruleset and allowlists only the local
+# development credentials that are intentionally committed. Every allowlist
+# entry must be narrow: a path plus the exact literal, never a blanket rule.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+Local development credentials for the Docker Compose stack. These grant access
+only to containers bound to localhost on a developer machine, are identical for
+every developer, and are documented as intentionally weak in .env.example.
+"""
+paths = [
+  '''^\.env\.example$''',
+  '''^infra/docker-compose\.yml$''',
+]
+# Each entry matches one exact synthetic value. Nothing may precede or follow
+# `weave`, so a real credential that merely contains it (`production-weave`,
+# `weave-prod-9f2c`) is still reported.
+regexes = [
+  '''weave:weave@''',
+  '''POSTGRES_PASSWORD[=:]\s*weave\b''',
+  '''POSTGRES_(PASSWORD|PWD)[=:]\s*\$\{POSTGRES_PASSWORD:-weave\}''',
+]
+
+[[allowlists]]
+description = "Test fixtures use obviously synthetic connection strings."
+paths = [
+  '''_test\.go$''',
+]
+regexes = [
+  '''postgres://weave:weave@localhost''',
+]

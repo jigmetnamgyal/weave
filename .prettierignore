@@ -1,0 +1,20 @@
+node_modules/
+.next/
+out/
+build/
+coverage/
+
+# Generated shadcn/ui primitives are not edited by hand, and that includes
+# reformatting them. See context/code-standards.md (Styling).
+apps/web/components/ui/
+
+# Authored specification documents. Their line wrapping is deliberate and
+# rewrapping them produces large, meaningless diffs.
+context/
+
+# Lockfiles and generated manifests
+package-lock.json
+
+# Go owns its own formatting via gofmt.
+*.go
+go.sum

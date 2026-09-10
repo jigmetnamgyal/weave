@@ -1,0 +1,136 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+ * Dark theme tokens from context/ui-context.md. Dark is the default and
+ * only theme for now; light mode is deferred (see progress-tracker.md).
+ */
+:root {
+  --background: #090b10;
+  --foreground: #f4f6fb;
+  --card: #131722;
+  --card-foreground: #f4f6fb;
+  --popover: #171b27;
+  --popover-foreground: #f4f6fb;
+  --primary: #8b7cff;
+  --primary-foreground: #090b10;
+  --secondary: #191e2b;
+  --secondary-foreground: #f4f6fb;
+  --muted: #131722;
+  --muted-foreground: #7d8798;
+  --accent: #20263a;
+  --accent-foreground: #f4f6fb;
+  --destructive: #ff6b7a;
+  --destructive-foreground: #090b10;
+  --border: #252b38;
+  --input: #252b38;
+  --ring: #a99fff;
+  --chart-1: #8b7cff;
+  --chart-2: #35d4b3;
+  --chart-3: #62a8ff;
+  --chart-4: #f3b95f;
+  --chart-5: #ff6b7a;
+  --radius: 0.5rem;
+  --sidebar: #0e1118;
+  --sidebar-foreground: #f4f6fb;
+  --sidebar-primary: #8b7cff;
+  --sidebar-primary-foreground: #090b10;
+  --sidebar-accent: #20263a;
+  --sidebar-accent-foreground: #f4f6fb;
+  --sidebar-border: #252b38;
+  --sidebar-ring: #a99fff;
+}
+
+.dark {
+  --background: #090b10;
+  --foreground: #f4f6fb;
+  --card: #131722;
+  --card-foreground: #f4f6fb;
+  --popover: #171b27;
+  --popover-foreground: #f4f6fb;
+  --primary: #8b7cff;
+  --primary-foreground: #090b10;
+  --secondary: #191e2b;
+  --secondary-foreground: #f4f6fb;
+  --muted: #131722;
+  --muted-foreground: #7d8798;
+  --accent: #20263a;
+  --accent-foreground: #f4f6fb;
+  --destructive: #ff6b7a;
+  --destructive-foreground: #090b10;
+  --border: #252b38;
+  --input: #252b38;
+  --ring: #a99fff;
+  --chart-1: #8b7cff;
+  --chart-2: #35d4b3;
+  --chart-3: #62a8ff;
+  --chart-4: #f3b95f;
+  --chart-5: #ff6b7a;
+  --sidebar: #0e1118;
+  --sidebar-foreground: #f4f6fb;
+  --sidebar-primary: #8b7cff;
+  --sidebar-primary-foreground: #090b10;
+  --sidebar-accent: #20263a;
+  --sidebar-accent-foreground: #f4f6fb;
+  --sidebar-border: #252b38;
+  --sidebar-ring: #a99fff;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

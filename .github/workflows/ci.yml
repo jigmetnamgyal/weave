@@ -1,0 +1,215 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push to the same ref makes the in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Reads the pinned toolchain from versions.env so this workflow and
+  # scripts/check-prereqs.sh can never disagree about versions.
+  toolchain:
+    name: Resolve toolchain
+    runs-on: ubuntu-latest
+    outputs:
+      node: ${{ steps.versions.outputs.node }}
+      go: ${{ steps.versions.outputs.go }}
+      golangci_lint: ${{ steps.versions.outputs.golangci_lint }}
+      govulncheck: ${{ steps.versions.outputs.govulncheck }}
+      gitleaks: ${{ steps.versions.outputs.gitleaks }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: versions
+        run: |
+          set -euo pipefail
+          source versions.env
+          echo "node=${NODE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "go=${GO_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "golangci_lint=${GOLANGCI_LINT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "govulncheck=${GOVULNCHECK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "gitleaks=${GITLEAKS_VERSION}" >> "$GITHUB_OUTPUT"
+
+  web:
+    name: Web (format, lint, typecheck, build)
+    runs-on: ubuntu-latest
+    needs: toolchain
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.toolchain.outputs.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  api:
+    name: API (format, vet, test, build)
+    runs-on: ubuntu-latest
+    needs: toolchain
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.toolchain.outputs.go }}
+          cache: true
+
+      - name: Verify go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Format check
+        run: |
+          unformatted="$(gofmt -l services internal)"
+          if [ -n "${unformatted}" ]; then
+            echo "These files are not gofmt-formatted:" >&2
+            echo "${unformatted}" >&2
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./services/... ./internal/...
+
+      - name: Unit tests
+        run: go test -race ./services/... ./internal/...
+
+      - name: Build
+        run: go build ./services/... ./internal/...
+
+  golangci-lint:
+    name: API (golangci-lint)
+    runs-on: ubuntu-latest
+    needs: toolchain
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.toolchain.outputs.go }}
+          cache: true
+
+      # Built from source rather than installed as a prebuilt binary (or via
+      # golangci-lint-action). A golangci-lint release is compiled with
+      # whichever Go its maintainers used, and it refuses to run against a
+      # module that targets a newer Go than that. Building it here with the
+      # toolchain from versions.env makes that skew impossible by construction.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${{ needs.toolchain.outputs.golangci_lint }}
+
+      - name: Lint
+        run: golangci-lint run ./services/... ./internal/...
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    needs: toolchain
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the scan covers every commit on the branch, not
+          # just the tip.
+          fetch-depth: 0
+
+      # Pinned from versions.env rather than :latest — a scanner that gates the
+      # build should be a reviewed version, and a moving tag makes a failure
+      # impossible to reproduce.
+      - name: Gitleaks
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/repo" \
+            zricethezav/gitleaks:v${{ needs.toolchain.outputs.gitleaks }} \
+            detect --source=/repo --config=/repo/.gitleaks.toml --redact --verbose
+
+  dependency-scan:
+    name: Dependency scan
+    runs-on: ubuntu-latest
+    needs: toolchain
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.toolchain.outputs.node }}
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.toolchain.outputs.go }}
+          cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v${{ needs.toolchain.outputs.govulncheck }}
+          govulncheck ./services/... ./internal/...
+
+  compose:
+    name: Local stack health
+    runs-on: ubuntu-latest
+    needs: toolchain
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.toolchain.outputs.go }}
+          cache: true
+
+      - name: Create .env from template
+        run: cp .env.example .env
+
+      - name: Start dependencies
+        run: docker compose --file infra/docker-compose.yml --env-file .env up --detach --wait
+
+      - name: Start API
+        run: |
+          set -a && source .env && set +a
+          go run ./services/api &
+          echo "API_PID=$!" >> "$GITHUB_ENV"
+          # Give the server a moment to bind before probing.
+          for _ in $(seq 1 30); do
+            if curl --silent --fail http://localhost:8080/health/live >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Health check
+        run: ./scripts/health.sh
+
+      - name: Dependency logs on failure
+        if: failure()
+        run: docker compose --file infra/docker-compose.yml --env-file .env logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose --file infra/docker-compose.yml --env-file .env down --volumes
