@@ -47,7 +47,19 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ### Unit M2.2 — Workspaces and Membership
 
-Follows M2.1. Expected scope: `workspaces`, `workspace_members` and `workspace_invitations` tables; workspace creation and the invitation flow; the owner/admin/developer/viewer role model; and workspace-scoped repository access checks. The authorization matrix and its test suite land with it.
+**Source:** `context/features-specs/04-workspaces-and-membership.md`
+
+**Outcome:** A signed-in user creates a workspace, becomes its owner, and every permission decision is answered from PostgreSQL against that membership. This is the unit that makes tenant isolation real.
+
+**Scope:** `workspaces`, `workspace_members` and `audit_events` tables; the owner/admin/developer/viewer role model with a centralised action-oriented permission matrix; workspace-scoped authorization after authentication; workspace-scoped data access with no unscoped reads; workspace and member endpoints; the authorization matrix test suite.
+
+**Non-scope, and why:**
+
+- **Invitations** move to M2.3. The original M2.2 sketch included them, but token issue, expiry, revocation, acceptance and the already-a-member and wrong-email edges are their own coherent slice. Until then a workspace has exactly one member, which is enough to scope repositories in M3.
+- **Row-level security** is deferred to its own unit and needs the tenancy ADR first. `architecture.md` positions it as defence in depth behind workspace-scoped queries, which this unit establishes; adding it now would mean a non-superuser role, a per-transaction tenant GUC and a migration strategy on top of an already large unit.
+- Repositories, sessions and session revocation on membership change follow in M3 and later.
+
+**Note on ordering:** build this before M3. Repository records are workspace-owned, and connecting a GitHub App installation to a workspace that has no membership model would mean retrofitting authorization onto data that already exists.
 
 ## Open Questions
 
