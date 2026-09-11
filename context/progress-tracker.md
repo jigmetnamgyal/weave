@@ -50,12 +50,19 @@ Nothing in progress. M3.0 merged in PR #5 on 2026-09-11 after two review rounds;
 
 ### Unit M3.1 — GitHub App Installation and Repository Access
 
-Expected scope: GitHub App installation bound to a workspace, selected-repository access, repository records scoped by `workspace_id`, and permission/webhook health checks.
+**Source:** `context/features-specs/07-github-app-installation.md` (written 2026-09-11)
 
-**Two things carry over from M3.0.** Its tables are workspace-owned, so each one needs `ENABLE`/`FORCE ROW LEVEL SECURITY` and its own policies in the same migration that creates it — a table added without them is silently unprotected, since RLS is off by default. And every read of them must run inside `inTenantTx`; a read outside a transaction has no context, and by design returns nothing rather than everything.
+**Outcome:** a workspace installs the Weave GitHub App, selects repositories, and Weave records that grant well enough to authorize later work against it — correctly, and without another tenant being able to borrow it.
 
-**Blocked on an operator action:** it needs a real GitHub App, which only the account owner can create.
+**Scope boundary:** installation binding, repository records, installation-lifecycle webhooks, reconciliation and a health check. Cloning, branches, commits, pull requests and code webhooks are M3.2 — a unit that both establishes access and starts using it would be too large to review, and this is the half where a mistake is worse.
 
+**The security boundary is the installation-to-workspace binding.** GitHub returns an `installation_id` and nothing identifying the workspace, so a single-use expiring state token carries that, the actor's permission is re-checked on callback, and an installation already bound elsewhere is refused rather than rebound.
+
+**Carried from M3.0, and easy to lose:** all three new tables are workspace-owned, so `ENABLE`/`FORCE ROW LEVEL SECURITY` and policies belong in the same migration that creates them — RLS is off by default and a table added without them is silently unprotected. Every read goes through `inTenantTx`.
+
+**Blocked on an operator action:** the GitHub App must be created in the account settings first — only the account owner can do it. The spec lists the exact settings, permissions and events. It yields an App ID, client ID and secret, webhook secret and private key.
+
+**Also produces** `docs/adr/0005-github-app-credentials.md`, which is currently a tracker row with no document behind it.
 
 ## Open Questions
 
