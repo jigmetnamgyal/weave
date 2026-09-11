@@ -235,6 +235,110 @@ export async function acceptInvitation(
   });
 }
 
+/** A GitHub App installation bound to a workspace. */
+export type Installation = {
+  id: string;
+  account_login: string;
+  account_type: "User" | "Organization";
+  repository_selection: "all" | "selected";
+  suspended: boolean;
+  suspended_at?: string;
+  created_at: string;
+};
+
+/**
+ * A repository an installation grants.
+ *
+ * `granted` can be false. Withdrawn repositories are returned rather than
+ * filtered out so the interface can say access was removed, instead of
+ * silently losing something a member used yesterday.
+ */
+export type Repository = {
+  id: string;
+  owner: string;
+  name: string;
+  full_name: string;
+  default_branch: string;
+  private: boolean;
+  granted: boolean;
+};
+
+/** What an installation can and cannot currently do. */
+export type InstallationHealth = {
+  installation_id: string;
+  account_login: string;
+  reachable: boolean;
+  suspended: boolean;
+  /** Named, as "permission:access", so the fix is obvious. */
+  missing_permissions: string[];
+  granted_repositories: number;
+  error?: string;
+};
+
+/**
+ * Start connecting GitHub, returning the URL to send the browser to.
+ *
+ * The server records which workspace this is for before answering, keyed by a
+ * single-use value in the returned URL. That is the whole mechanism: GitHub
+ * hands back an installation id and nothing identifying the workspace, so the
+ * workspace cannot be taken from the callback.
+ */
+export async function beginGitHubInstall(
+  workspaceId: string
+): Promise<Result<{ install_url: string }>> {
+  return apiRequest<{ install_url: string }>(`/v1/workspaces/${workspaceId}/github/install`, {
+    method: "POST",
+  });
+}
+
+/** Finish connecting GitHub after the browser returns from the setup URL. */
+export async function completeGitHubInstall(
+  state: string,
+  installationId: number
+): Promise<Result<Installation>> {
+  return apiRequest<Installation>("/v1/github/installations", {
+    method: "POST",
+    body: JSON.stringify({ state, installation_id: installationId }),
+  });
+}
+
+/** List a workspace's GitHub installations. */
+export async function fetchInstallations(workspaceId: string): Promise<Result<Installation[]>> {
+  const result = await apiRequest<{ installations: Installation[] }>(
+    `/v1/workspaces/${workspaceId}/github/installations`
+  );
+  return result.ok ? { ok: true, data: result.data.installations } : result;
+}
+
+/** List a workspace's repositories, withdrawn ones included. */
+export async function fetchRepositories(workspaceId: string): Promise<Result<Repository[]>> {
+  const result = await apiRequest<{ repositories: Repository[] }>(
+    `/v1/workspaces/${workspaceId}/repositories`
+  );
+  return result.ok ? { ok: true, data: result.data.repositories } : result;
+}
+
+/** Check one installation against GitHub. */
+export async function fetchInstallationHealth(
+  workspaceId: string,
+  installationId: string
+): Promise<Result<InstallationHealth>> {
+  return apiRequest<InstallationHealth>(
+    `/v1/workspaces/${workspaceId}/github/installations/${installationId}/health`
+  );
+}
+
+/** Pull the current repository set from GitHub. */
+export async function reconcileInstallation(
+  workspaceId: string,
+  installationId: string
+): Promise<Result<void>> {
+  return apiRequest<void>(
+    `/v1/workspaces/${workspaceId}/github/installations/${installationId}/reconcile`,
+    { method: "POST" }
+  );
+}
+
 /**
  * Issue a request to the control-plane API with the caller's session token.
  *

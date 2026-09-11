@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { GitHubSection } from "./github-section";
 import { fetchWorkspaces } from "@/lib/api";
 
 /**
@@ -54,6 +55,8 @@ export default async function WorkspacePage({ params }: PageProps<"/workspaces/[
           </ul>
         </CardContent>
       </Card>
+
+      <GitHubSection workspace={workspace} />
 
       <Card>
         <CardHeader>

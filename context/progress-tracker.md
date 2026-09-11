@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0 merged 2026-09-11; M3.1 (GitHub App installation) in progress
+- Status: M2 complete; M3.0 merged 2026-09-11; M3.1 complete and awaiting review; M3.2 (repository operations) next
 
 ## Current Goal
 
@@ -28,6 +28,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Completed
 
+- Built GitHub App installation and repository access: `github_installations`, `repositories`, `repository_permissions` and a delivery log, all with row-level security in the creating migration; installation binding authorized by a single-use state recorded before the redirect; signature-verified, deduplicated webhooks; reconciliation before use; and a health check that names the missing permission (Unit M3.1 — see Verification Record and ADR-005).
 - Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Merged 2026-09-11 in PR #5 after two review rounds and eleven findings, including a live defect that made the invitation preview 404 for every legitimate invitee. Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
 - Defined developer-first MVP and long-term multiplayer-agent product boundary.
 - Defined modular control plane and isolated execution plane.
@@ -44,33 +45,17 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-### Unit M3.1 — GitHub App Installation and Repository Access
-
-Started 2026-09-11 on `feat/m3.1-github-app-installation`, branched from `main`.
-
-**Source:** `context/features-specs/07-github-app-installation.md`
-
-**Outcome:** a workspace installs the Weave GitHub App, selects repositories, and the grant is recorded well enough to authorize later work against it — and cannot be borrowed by another tenant.
-
-**The App exists and is verified** (`weave-ai-dev-jaggle`, id 4906626). Credentials, permissions and webhook config all confirmed against GitHub's API on 2026-09-11.
+Nothing in progress. M3.1 is complete and awaiting review.
 
 ## Next Up
 
-### Unit M3.1 — GitHub App Installation and Repository Access
+### Unit M3.2 — Repository Operations
 
-**Source:** `context/features-specs/07-github-app-installation.md` (written 2026-09-11)
+Follows M3.1. Expected scope: cloning, branches, commits, pull requests, and the push and pull-request webhooks that M3.1 deliberately left unsubscribed.
 
-**Outcome:** a workspace installs the Weave GitHub App, selects repositories, and Weave records that grant well enough to authorize later work against it — correctly, and without another tenant being able to borrow it.
+**Carried from M3.1:** anything acting on a repository goes through `RepositoryForUse`, which reconciles with GitHub before answering. A stored `granted` flag is a belief, and acting on a stale one is how a revoked grant reaches a clone.
 
-**Scope boundary:** installation binding, repository records, installation-lifecycle webhooks, reconciliation and a health check. Cloning, branches, commits, pull requests and code webhooks are M3.2 — a unit that both establishes access and starts using it would be too large to review, and this is the half where a mistake is worse.
-
-**The security boundary is the installation-to-workspace binding.** GitHub returns an `installation_id` and nothing identifying the workspace, so a single-use expiring state token carries that, the actor's permission is re-checked on callback, and an installation already bound elsewhere is refused rather than rebound.
-
-**Carried from M3.0, and easy to lose:** all three new tables are workspace-owned, so `ENABLE`/`FORCE ROW LEVEL SECURITY` and policies belong in the same migration that creates them — RLS is off by default and a table added without them is silently unprotected. Every read goes through `inTenantTx`.
-
-**Operator action done, 2026-09-11.** The App `weave-ai-dev-jaggle` (id 4906626, owner `jigmetnamgyal`) exists and its credentials are verified: an App JWT minted from the private key was accepted by `GET /app`, permissions are exactly `contents:write`, `metadata:read`, `pull_requests:write`, and the webhook URL matches the smee channel in `.env`. No OAuth client secret was generated, deliberately — see the spec. Remaining before implementation: subscribe the App to the Installation target and Repository events, which was left empty at creation. Whether the webhook secret on GitHub matches `.env` cannot be checked through the API; the first delivery's signature will prove it.
-
-**Also produces** `docs/adr/0005-github-app-credentials.md`, which is currently a tracker row with no document behind it.
+**Before subscribing to push or pull-request events,** move the webhook URL off the public smee.io channel. Those payloads carry commit messages, author email addresses and file paths, and a smee channel is readable by anyone holding its URL.
 
 ## Open Questions
 
@@ -94,7 +79,7 @@ Resolve these before the milestone that depends on them:
 | ADR-002 | Use PostgreSQL as product source of truth | Strong transactions, mature operations, and tenant controls | Accepted |
 | ADR-003 | Use Temporal for session workflows | Durable timers, signals, retries, cancellation, and recovery for long-running sessions | Accepted |
 | ADR-004 | Use NATS JetStream for runner event transport | Durable at-least-once transport and horizontal fan-out | Accepted |
-| ADR-005 | Use GitHub App credentials | Repository-scoped, revocable access without long-lived personal tokens | Accepted |
+| ADR-005 | Use GitHub App credentials, and bind an installation to a tenant by state recorded before the redirect | A PAT carries one person's access, lives until revoked, and is invisible to the organisation; an App installation is granted, scoped, revocable and auditable by the account itself. The private key is environment configuration and never database content; installation tokens are cached in Redis and never persisted. GitHub returns an installation id and nothing naming the workspace, so the workspace comes from a single-use value recorded before the redirect, never from the callback. See `docs/adr/0005-github-app-credentials.md` | Accepted |
 | ADR-006 | Use one ephemeral isolated environment per session | Strong tenant boundary and deterministic cleanup | Accepted |
 | ADR-007 | Keep provider behavior behind capability-aware adapters | Avoid product coupling to Claude Code or Codex | Accepted |
 | ADR-008 | Bind approvals to immutable proposal hashes | Prevent replay or parameter substitution | Accepted |
@@ -118,6 +103,7 @@ Resolve these before the milestone that depends on them:
 
 | Date | Unit | Environment | Commands/tests | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-11 | GitHub App Installation, Unit M3.1 (`context/features-specs/07-github-app-installation.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2; real GitHub App `weave-ai-dev-jaggle` (id 4906626) | `make ci`; `make test-integration`; `make migrate-up` / `migrate-down` / `migrate-up`; live `curl` of the webhook endpoint with genuine and forged HMAC signatures; `psql` as `weave_app` against the three new tables | Pass, with one gap | Credentials verified against GitHub's own API before any code depended on them: an App JWT minted from the private key was accepted by `GET /app`, confirming the App id and key are a matching pair, the slug, and that permissions are exactly `contents:write`, `metadata:read`, `pull_requests:write`. Webhook endpoint exercised live against the running API: a genuine signature is accepted (204), a replayed delivery id produces exactly one row, an unknown event type and an installation we have no record of are both ignored rather than failing, and absent, wrong and post-signing-altered signatures are all refused (401). The three new tables return nothing to `weave_app` without tenant context, and nothing when another tenant's context names this workspace explicitly. Integration tests prove an installation cannot be bound twice and that the refusal leaves the first binding untouched, that another tenant's installation is absent rather than forbidden, that a deselected repository is withdrawn and kept rather than deleted, that a rename keeps one row because the GitHub id is the identity, and that a suspension keeps the repository records. GitHub is faked at the HTTP boundary, which is what makes the App JWT itself assertable — `iat` backdated against clock skew, validity inside GitHub's ten-minute maximum. **Gap: the signed-in browser flow is still unverified**, now across M2.2, M2.3 and M3.1 — including the actual install round trip, which needs a GitHub sign-in only the operator can perform. |
 | 2026-09-11 | Row-Level Security, Unit M3.0 — second review round (PR #5) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-down` / `migrate-up`; full CI on the pull request | Pass | One further finding, applied although its stated consequence did not hold: `weave_invitation_preview_by_token` matched on token hash alone, but `Preview` refuses expired, revoked and accepted tokens before reaching the store, and a test already covered all three. The check is now repeated inside the function regardless, because it is a `SECURITY DEFINER` hole and what it returns is reachable by any future caller that forgets the gate. The new test calls the store directly, skipping the service, with a usable-token control so it cannot pass vacuously. `now()` inside the function is a second clock, accepted here because skew can only withhold a preview the service would have allowed, never disclose one it would have refused. Also repaired ADR-012, which had never received content an earlier commit message claimed for it — two edits written from the same unmodified string, the second discarding the first, leaving the file saying to keep to one `SECURITY DEFINER` function while the code had three. |
 | 2026-09-11 | Row-Level Security, Unit M3.0 — review round (PR #5) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-down` / `migrate-up`; `psql` as `weave_app` running the pre-fix preview query; full CI on the pull request | Pass | Ten findings from CodeRabbit and greptile, all verified against the code and all valid. One was a live defect, found independently by both: the invitation preview reads the invitation joined to its workspace, and the viewer is by definition not yet a member, so with no workspace context both policies matched nothing and every legitimate invitee was told their invitation did not exist. Proved rather than assumed — the old query as `weave_app` returns 0 rows. **The suite could not have caught it**: the existing integration tests connect as the owner, a superuser locally, so they bypass RLS and test the application's filtering rather than the policies. The regression test runs as the application role. Also fixed: `weave_app`'s attributes are now normalised unconditionally, since `CREATE ROLE` runs only when absent and a leftover role carrying `BYPASSRLS` would bypass every policy while looking correct; the three `SECURITY DEFINER` functions are owned by a `NOLOGIN BYPASSRLS` role, because owned by the table owner they would be filtered by the policies they exist to look past wherever the owner is subject to `FORCE` — invisible locally, fatal to invitations elsewhere; `EXECUTE` is revoked from `PUBLIC` before being granted; readiness probes the application pool and asserts its role cannot bypass RLS, replacing a check that had been run by hand; `migrate app-role` refuses any username but `weave_app`; and `make test-integration` fails when either URL is empty rather than skipping every RLS test and reporting success. CI also now migrates before the stack health check — the job had been starting the API against an unmigrated database, which only passed because readiness probed the owner pool alone. |
 | 2026-09-11 | Row-Level Security, Unit M3.0 (`context/features-specs/06-row-level-security.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-up` / `migrate-down` / `migrate-up`; direct `pgxpool` connection as `weave_app` asserting `rolsuper`/`rolbypassrls`; live API health probe | Pass, with one gap | Six RLS tests connect as `weave_app` and **refuse to run at all if the role can bypass RLS** — a test that silently ran as superuser would pass while proving nothing. They prove: an unfiltered `SELECT id FROM workspaces`, with the workspace filter removed on purpose, returns only the current tenant's rows; naming another tenant's `workspace_id` explicitly returns nothing; with no context set every tenant table returns nothing; and, on a deliberately pinned single connection, a transaction that set context leaves none behind for the next — which is the pooling hazard the whole design turns on. Writes are constrained too, and `weave_invitation_by_token` returns exactly one row and cannot be widened. Every pre-existing test passes unchanged, so the convention and the policies agree. `APP_DATABASE_URL` confirmed to connect as `weave_app` with `rolsuper=false, rolbypassrls=false`. Correction to ADR-010's framing: `FORCE` does **not** subject a superuser or `BYPASSRLS` role — the local `weave` owner is a superuser and still reads every row — so the control carrying isolation is the application's role, not `FORCE`. **Gap: the signed-in browser flow remains unverified**, as with M2.2 and M2.3. |
@@ -171,4 +157,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-11 — Unit M3.0 merged. Next: M3.1, blocked on creating the GitHub App.
+2026-09-11 — Unit M3.1 complete, awaiting review. Next: M3.2, repository operations.
