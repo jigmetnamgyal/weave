@@ -133,6 +133,19 @@ $$;
 -- Without this the preview reads workspace_invitations joined to workspaces
 -- with no workspace context, both policies match nothing, and a legitimate
 -- invitee is told their invitation does not exist.
+--
+-- The usable-state predicates are a backstop, not the decision. The service
+-- resolves usability against its own clock and refuses an unusable token
+-- before reaching here. They are repeated because this function is a hole in
+-- the policies, and the premise of this unit is that a hole should not depend
+-- on its caller checking first: a future caller that forgets would otherwise
+-- disclose the workspace name and inviter behind a revoked token.
+--
+-- now() here is a second clock, which is normally worth avoiding — a filtered
+-- list recomputing status against a different clock is a defect fixed earlier
+-- in this codebase. It is acceptable in this one direction: a skewed clock can
+-- only withhold a preview the service would have allowed, never disclose one
+-- it would have refused, and the authoritative answer stays in the domain.
 CREATE FUNCTION weave_invitation_preview_by_token(presented_hash bytea)
 RETURNS TABLE (
     workspace_name text,
@@ -146,7 +159,10 @@ AS $$
     FROM workspace_invitations i
     JOIN workspaces w ON w.id = i.workspace_id
     JOIN users u ON u.id = i.invited_by
-    WHERE i.token_hash = presented_hash;
+    WHERE i.token_hash = presented_hash
+      AND i.accepted_at IS NULL
+      AND i.revoked_at IS NULL
+      AND i.expires_at > now();
 $$;
 
 -- The three SECURITY DEFINER functions are owned by the bypass role so their

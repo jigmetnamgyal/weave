@@ -423,3 +423,70 @@ func TestPreviewReachesANonMember(t *testing.T) {
 		}
 	}
 }
+
+// TestPreviewRefusesAnUnusableTokenWithoutTheService checks the backstop
+// rather than the gate.
+//
+// InvitationService.Preview already refuses an expired, revoked or accepted
+// token before reaching the store, and there are tests for that. This one
+// deliberately skips the service and calls the store directly, because
+// weave_invitation_preview_by_token is a SECURITY DEFINER hole in the
+// policies: what it returns is reachable by any future caller, including one
+// that forgets the check. A hole that depends on its caller checking first is
+// not a hole anyone can reason about.
+func TestPreviewRefusesAnUnusableTokenWithoutTheService(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	ctx := context.Background()
+
+	owner := seedUser(t, ownerPool)
+	stranger := seedUser(t, ownerPool)
+	workspace := seedWorkspace(t, ownerPool, owner, "Backstop Workspace")
+	invitations, _ := invitationServices(ownerPool, time.Now)
+	actor := ownerOf(workspace.ID, owner.ID)
+	tenantCtx := postgres.WithTenant(ctx, postgres.TenantContext{UserID: owner.ID, WorkspaceID: workspace.ID})
+
+	revoked, err := invitations.Issue(tenantCtx, actor, "revoked@example.com", domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("Issue revoked: %v", err)
+	}
+	if err := invitations.Revoke(tenantCtx, actor, revoked.Invitation.ID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	accepted, err := invitations.Issue(tenantCtx, actor, stranger.Email, domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("Issue accepted: %v", err)
+	}
+	if _, err := invitations.Accept(
+		postgres.WithTenant(ctx, postgres.TenantContext{UserID: stranger.ID}),
+		stranger, accepted.Token); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	store := postgres.NewInvitationStore(appPool)
+	viewerCtx := postgres.WithTenant(ctx, postgres.TenantContext{UserID: seedUser(t, ownerPool).ID})
+
+	for name, token := range map[string]string{
+		"revoked":  revoked.Token,
+		"accepted": accepted.Token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			preview, err := store.Context(viewerCtx, domain.HashInvitationToken(token))
+			if err == nil {
+				t.Fatalf("a %s token disclosed workspace %q and inviter %q, want not found",
+					name, preview.WorkspaceName, preview.InvitedByEmail)
+			}
+		})
+	}
+
+	// The control: an invitation that is still usable does resolve, so the
+	// test above is measuring the predicates and not a broken lookup.
+	usable, err := invitations.Issue(tenantCtx, actor, "usable@example.com", domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("Issue usable: %v", err)
+	}
+	if _, err := store.Context(viewerCtx, domain.HashInvitationToken(usable.Token)); err != nil {
+		t.Fatalf("a usable token was refused: %v", err)
+	}
+}

@@ -58,7 +58,7 @@ another tenant's data.
 
 ## The deliberate holes
 
-Two operations genuinely cannot be workspace-scoped, and each is a named
+Three operations genuinely cannot be workspace-scoped, and each is a named
 function rather than a blanket exemption:
 
 - **`weave_is_member(uuid)`** — `SECURITY DEFINER`, because a policy on
@@ -67,8 +67,33 @@ function rather than a blanket exemption:
 - **`weave_invitation_by_token(bytea)`** — `SECURITY DEFINER`, returning
   exactly the row whose token hash was presented. Accepting an invitation is
   the one operation available to someone in no workspace; the token is the
-  authorization. Keep this to one function. If a second such function is ever
-  proposed, that is the moment to ask whether the model is still right.
+  authorization.
+- **`weave_invitation_preview_by_token(bytea)`** — the same shape, returning
+  the workspace name and inviter behind an invitation link. Added after review
+  found the preview otherwise 404s for every legitimate invitee: it reads the
+  invitation joined to its workspace, and the viewer is by definition not a
+  member yet, so both policies matched nothing. It repeats the usable-state
+  check the service already performs, so a caller that forgot the check could
+  not disclose the workspace behind a revoked token — a hole that depends on
+  its caller checking first is not one anyone can reason about.
+
+This ADR originally said to keep this to a single function, and to treat a
+second as the moment to re-examine the model. That re-examination happened and
+the model held. The principle was never the count — it is that each hole is
+**keyed by the presented token** and returns a **fixed, minimal shape** that
+cannot be widened into enumeration. What would justify revisiting is a function
+keyed by something the caller can vary at will, or one returning whole rows
+where display fields would do.
+
+All three are owned by `weave_rls_bypass`, a `NOLOGIN` role with `BYPASSRLS`
+and `SELECT` on only the four tables they read. Owned by the table owner
+instead, their own reads would be filtered by the very policies they exist to
+look past wherever the owner is subject to them — which is exactly what `FORCE`
+arranges. Locally the owner is a superuser, so this is invisible; anywhere else
+it would silently break every invitation. `EXECUTE` is revoked from `PUBLIC`
+before being granted, because `CREATE FUNCTION` grants it by default, and for a
+`SECURITY DEFINER` function that hands every role in the database a route past
+the policies.
 
 ## Consequences
 
