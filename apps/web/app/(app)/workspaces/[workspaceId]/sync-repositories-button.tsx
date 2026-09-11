@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { refreshRepositoriesAction } from "@/app/actions/github";
+import { refreshRepositoriesAction, type SyncState } from "@/app/actions/github";
 
 /**
  * Pull the current repository set from GitHub.
@@ -22,8 +22,11 @@ export function SyncRepositoriesButton({
   installationId: string;
   label: string;
 }) {
-  const [state, action, pending] = useActionState<{ error?: string }, FormData>(
-    async () => refreshRepositoriesAction(workspaceId, installationId),
+  // Bound, not wrapped. A closure around the action would still run it, but
+  // Next would not treat the result as an action response and the router would
+  // never re-render — the sync would work and the page would not move.
+  const [state, action, pending] = useActionState<SyncState, FormData>(
+    refreshRepositoriesAction.bind(null, workspaceId, installationId),
     {}
   );
 

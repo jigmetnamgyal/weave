@@ -30,15 +30,30 @@ export async function connectGitHubAction(
   redirect(result.data.install_url);
 }
 
-/** Pull the current repository set from GitHub. */
+/** What the sync control reports back. */
+export type SyncState = { error?: string; synced?: boolean };
+
+/**
+ * Pull the current repository set from GitHub.
+ *
+ * The signature ends in `(previous, formData)` so this can be passed to
+ * `useActionState` as a bound server action rather than called from inside a
+ * client closure. That distinction is not cosmetic: calling a server action
+ * from a wrapper function runs it, and `revalidatePath` does invalidate the
+ * server cache — but the client router is never told, so the page keeps
+ * rendering what it already had. The work succeeds and the screen does not
+ * change, which is indistinguishable from a button that does nothing.
+ */
 export async function refreshRepositoriesAction(
   workspaceId: string,
-  installationId: string
-): Promise<{ error?: string }> {
+  installationId: string,
+  _previous: SyncState,
+  _formData: FormData
+): Promise<SyncState> {
   const result = await reconcileInstallation(workspaceId, installationId);
   if (!result.ok) {
     return { error: result.message };
   }
   revalidatePath(`/workspaces/${workspaceId}`);
-  return {};
+  return { synced: true };
 }

@@ -37,7 +37,25 @@ export async function GitHubSection({ workspace }: { workspace: Workspace }) {
   }
 
   const connected = installations.data;
-  const all = repositories.ok ? repositories.data : [];
+
+  // A failed repository fetch is reported, not swallowed. Treating it as an
+  // empty list renders "no repositories from this account yet" — which is a
+  // statement about GitHub, not about our own API having failed, and sends
+  // whoever is debugging it in precisely the wrong direction.
+  if (!repositories.ok) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">GitHub</CardTitle>
+          <CardDescription>
+            {connected.length} connected {connected.length === 1 ? "account" : "accounts"}, but the
+            repository list could not be loaded: {repositories.message}
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+  const all = repositories.data;
 
   if (connected.length === 0) {
     return (
@@ -82,6 +100,24 @@ export async function GitHubSection({ workspace }: { workspace: Workspace }) {
             canManage={canManage}
           />
         ))}
+
+        {/*
+          Repositories that match no connected account. This should be empty,
+          and saying so out loud is the point: the alternative is that they are
+          filtered into nothing and every account reads as empty, which is what
+          a stale API build looked like exactly once.
+        */}
+        {(() => {
+          const orphaned = all.filter(
+            (r) => !connected.some((installation) => installation.id === r.installation_id)
+          );
+          return orphaned.length > 0 ? (
+            <p className="text-destructive text-sm">
+              {orphaned.length} repositories could not be matched to a connected account. This
+              usually means the API and the web application are running different builds.
+            </p>
+          ) : null;
+        })()}
 
         {canManage ? (
           <ConnectGitHubButton
