@@ -22,7 +22,9 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/clerk"
+	githubadapter "github.com/jigmetnamgyal/weave/internal/adapters/github"
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
+	weaveredis "github.com/jigmetnamgyal/weave/internal/adapters/redis"
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/services/api/internal/auth"
 	"github.com/jigmetnamgyal/weave/services/api/internal/config"
@@ -150,13 +152,31 @@ func run() error {
 	invitationService := application.NewInvitationService(
 		postgres.NewInvitationStore(appPool), workspaceStore, time.Now)
 
+	githubClient, err := githubadapter.NewClient(
+		cfg.GitHubAppID, cfg.GitHubAppPrivateKeyPath, weaveredis.NewTokenCache(redisClient))
+	if err != nil {
+		return fmt.Errorf("configure github client: %w", err)
+	}
+	installationService := application.NewInstallationService(
+		postgres.NewInstallationStore(appPool),
+		weaveredis.NewInstallStateStore(redisClient),
+		githubadapter.NewPort(githubClient),
+		postgres.WithTenantWorkspace,
+		cfg.GitHubAppSlug,
+	)
+
 	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
 	workspaceHandler.Register(protected)
 	workspaceHandler.RegisterInvitations(protected, invitationService)
+	workspaceHandler.RegisterGitHub(protected, installationService, cfg.GitHubWebhookSecret)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())
 	mux.Handle("GET /health/ready", withTimeout(cfg.ReadinessTimeout, health.Ready(logger, checks...)))
+	// Mounted before the authenticated subtree so its specific pattern wins
+	// over the "/v1/" prefix below. GitHub authenticates with a signature, not
+	// a token.
+	workspaceHandler.RegisterGitHubWebhook(mux, installationService, cfg.GitHubWebhookSecret)
 	mux.Handle("/v1/", authMiddleware.Require(protected))
 
 	server := &http.Server{
