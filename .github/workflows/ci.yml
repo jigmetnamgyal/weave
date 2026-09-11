@@ -199,6 +199,16 @@ jobs:
       # `migrate app-role` gives a password. Without this the application pool
       # cannot connect and readiness reports postgres-app unavailable — which
       # is the probe doing its job, not a flake.
+      # The API reads the GitHub App private key at startup, deliberately, so
+      # that a missing key fails at deployment rather than the first time
+      # someone connects a repository. CI therefore needs one. A throwaway key
+      # generated here exercises the real load path without any real
+      # credential existing in the repository or its secrets.
+      - name: Generate a throwaway GitHub App key
+        run: |
+          mkdir -p secrets
+          openssl genrsa -out secrets/github-app.pem 2048
+
       - name: Apply migrations and provision the application role
         run: make migrate-up
 
