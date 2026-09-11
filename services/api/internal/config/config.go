@@ -122,6 +122,20 @@ func Load() (Config, error) {
 	// value pasted into .env with surrounding whitespace passed the blank check
 	// above but would then be stored raw, and redis.ParseURL and pgxpool.New
 	// both reject a URL whose scheme is not at the start of the string.
+	// Placeholder values are refused rather than accepted.
+	//
+	// .env.example must carry non-empty values so the required-key check has
+	// something to pass on in CI, but a template copied unchanged would then
+	// start an API whose webhook secret is a string published in this
+	// repository — and anyone could forge a signed delivery. Empty fails the
+	// check above; this fails the ones that look filled in but are not.
+	for _, key := range []string{"GITHUB_APP_WEBHOOK_SECRET", "GITHUB_APP_SLUG", "GITHUB_APP_ID"} {
+		if isPlaceholder(os.Getenv(key)) {
+			return Config{}, fmt.Errorf(
+				"%s still holds a placeholder from .env.example. Set a real value; see .env.example for where it comes from", key)
+		}
+	}
+
 	cfg := Config{
 		AppEnv:           valueOr("APP_ENV", "development"),
 		HTTPAddr:         valueOr("API_HTTP_ADDR", ":8080"),
@@ -160,4 +174,17 @@ func valueOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// placeholders are the template values .env.example ships with.
+var placeholders = map[string]bool{
+	"replace-me": true,
+	"000000":     true,
+	"changeme":   true,
+	"secret":     true,
+}
+
+// isPlaceholder reports whether a value is one of the template's own.
+func isPlaceholder(value string) bool {
+	return placeholders[strings.ToLower(strings.TrimSpace(value))]
 }

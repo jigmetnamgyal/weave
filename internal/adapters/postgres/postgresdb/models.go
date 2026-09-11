@@ -29,6 +29,7 @@ type GithubInstallation struct {
 	RepositorySelection  string
 	ConnectedBy          uuid.UUID
 	SuspendedAt          pgtype.Timestamptz
+	DeletedAt            pgtype.Timestamptz
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
 }

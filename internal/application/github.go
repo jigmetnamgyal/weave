@@ -45,12 +45,14 @@ type InstallationRepository interface {
 	Get(ctx context.Context, installationID, workspaceID uuid.UUID) (domain.Installation, error)
 	List(ctx context.Context, workspaceID uuid.UUID) ([]domain.Installation, error)
 	SetSuspended(ctx context.Context, installationID, workspaceID uuid.UUID, suspendedAt *time.Time, event AuditEvent) error
-	Delete(ctx context.Context, installationID, workspaceID uuid.UUID, event AuditEvent) error
+	MarkDeleted(ctx context.Context, installationID, workspaceID uuid.UUID, event AuditEvent) error
 	Reconcile(ctx context.Context, installationID, workspaceID uuid.UUID, selection domain.RepositorySelection, repositories []domain.Repository, permissions map[string]string) error
 	ListRepositories(ctx context.Context, workspaceID uuid.UUID) ([]domain.Repository, error)
 	GetRepository(ctx context.Context, repositoryID, workspaceID uuid.UUID) (domain.Repository, error)
 	ListPermissions(ctx context.Context, installationID, workspaceID uuid.UUID) (map[string]string, error)
 	RecordDelivery(ctx context.Context, deliveryID, event, action string) (bool, error)
+	ForgetDelivery(ctx context.Context, deliveryID string) error
+	PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error)
 }
 
 // RemoteInstallation is what GitHub reports about an installation.
@@ -228,6 +230,31 @@ func (s *InstallationService) CompleteInstall(
 				"repository_selection": string(selection),
 			},
 		})
+	if errors.Is(err, domain.ErrInstallationBoundElsewhere) {
+		// Not necessarily another tenant. The same flow is used to *change*
+		// which repositories an existing installation shares, and GitHub sends
+		// the browser back with the installation id it already has — so the
+		// insert collides with the row we put there ourselves.
+		//
+		// Which of the two it is turns on the workspace, and the workspace
+		// comes from the state we recorded before the redirect, never from the
+		// callback. If they match, this is an update and the right response is
+		// to reconcile. If they differ, it is the cross-tenant rebind the
+		// unique index exists to refuse.
+		existing, resolveErr := s.installations.Resolve(ctx, githubInstallationID)
+		if resolveErr != nil || existing.WorkspaceID != state.WorkspaceID {
+			return domain.Installation{}, domain.ErrInstallationBoundElsewhere
+		}
+
+		current, getErr := s.installations.Get(tenantCtx, existing.InstallationID, state.WorkspaceID)
+		if getErr != nil {
+			return domain.Installation{}, getErr
+		}
+		if reconcileErr := s.reconcile(tenantCtx, current, &remote); reconcileErr != nil {
+			return domain.Installation{}, fmt.Errorf("reconcile after access change: %w", reconcileErr)
+		}
+		return current, nil
+	}
 	if err != nil {
 		return domain.Installation{}, err
 	}
@@ -447,14 +474,26 @@ func (s *InstallationService) HandleWebhook(ctx context.Context, deliveryID, eve
 		return nil
 	}
 
+	// From here on the delivery record is provisional. Any path that returns
+	// an error removes it, so GitHub's retry is processed rather than
+	// collapsed into the record of an attempt that failed.
+	applied := false
+	defer func() {
+		if !applied {
+			_ = s.installations.ForgetDelivery(ctx, deliveryID)
+		}
+	}()
+
 	var payload webhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		// Malformed JSON that carried a valid signature is strange enough to
-		// report, but not something a retry would fix.
+		// report, but not something a retry would fix, so the record stands.
+		applied = true
 		return nil
 	}
 	if payload.Installation.ID == 0 {
 		// Events that name no installation are not ours to act on.
+		applied = true
 		return nil
 	}
 
@@ -464,7 +503,9 @@ func (s *InstallationService) HandleWebhook(ctx context.Context, deliveryID, eve
 			// Expected, and not an error. `installation.created` routinely
 			// arrives before the browser completes the callback that binds it,
 			// and an installation belonging to no workspace here is simply not
-			// ours to act on. Failing would make GitHub retry forever.
+			// ours to act on. Failing would make GitHub retry forever, so the
+			// record stands and the retry stays collapsed.
+			applied = true
 			return nil
 		}
 		return fmt.Errorf("resolve installation: %w", err)
@@ -474,7 +515,11 @@ func (s *InstallationService) HandleWebhook(ctx context.Context, deliveryID, eve
 
 	switch event {
 	case "installation":
-		return s.handleInstallationEvent(ctx, ref, payload)
+		if err := s.handleInstallationEvent(ctx, ref, payload); err != nil {
+			return err
+		}
+		applied = true
+		return nil
 	case "installation_repositories", "repository":
 		// Which repositories changed does not matter: reconciliation replaces
 		// the whole set, which also catches anything an earlier missed
@@ -483,21 +528,32 @@ func (s *InstallationService) HandleWebhook(ctx context.Context, deliveryID, eve
 		if err != nil {
 			return err
 		}
-		return s.reconcile(ctx, installation, nil)
+		if err := s.reconcile(ctx, installation, nil); err != nil {
+			return err
+		}
+		applied = true
+		return nil
 	default:
 		// Unknown events are ignored deliberately rather than by accident. An
 		// App's subscriptions can be widened in GitHub's settings without any
 		// code change here, and the first symptom must not be a stream of
-		// failing deliveries.
+		// failing deliveries. Nothing was applied, but nothing needs to be, so
+		// the record stands.
+		applied = true
 		return nil
 	}
+}
+
+// PruneDeliveries drops delivery records past the retention window.
+func (s *InstallationService) PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error) {
+	return s.installations.PruneDeliveries(ctx, retention)
 }
 
 // handleInstallationEvent applies the installation lifecycle.
 func (s *InstallationService) handleInstallationEvent(ctx context.Context, ref InstallationRef, payload webhookPayload) error {
 	switch payload.Action {
 	case "deleted":
-		return s.installations.Delete(ctx, ref.InstallationID, ref.WorkspaceID, AuditEvent{
+		return s.installations.MarkDeleted(ctx, ref.InstallationID, ref.WorkspaceID, AuditEvent{
 			WorkspaceID: ref.WorkspaceID,
 			Action:      AuditInstallationDeleted,
 			Target:      fmt.Sprintf("%d", payload.Installation.ID),

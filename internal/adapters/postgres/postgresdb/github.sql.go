@@ -32,7 +32,7 @@ INSERT INTO github_installations (
     id, workspace_id, github_installation_id, account_login, account_type,
     repository_selection, connected_by
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, created_at, updated_at
+RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at
 `
 
 type ConnectInstallationParams struct {
@@ -71,31 +71,15 @@ func (q *Queries) ConnectInstallation(ctx context.Context, arg ConnectInstallati
 		&i.RepositorySelection,
 		&i.ConnectedBy,
 		&i.SuspendedAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const deleteInstallation = `-- name: DeleteInstallation :exec
-DELETE FROM github_installations
-WHERE id = $1 AND workspace_id = $2
-`
-
-type DeleteInstallationParams struct {
-	ID          uuid.UUID
-	WorkspaceID uuid.UUID
-}
-
-// Used when GitHub reports the installation deleted. The repositories cascade;
-// the audit trail of the connection lives in audit_events and survives.
-func (q *Queries) DeleteInstallation(ctx context.Context, arg DeleteInstallationParams) error {
-	_, err := q.db.Exec(ctx, deleteInstallation, arg.ID, arg.WorkspaceID)
-	return err
-}
-
 const getInstallationByGitHubIDForWorkspace = `-- name: GetInstallationByGitHubIDForWorkspace :one
-SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, created_at, updated_at FROM github_installations
+SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at FROM github_installations
 WHERE github_installation_id = $1 AND workspace_id = $2
 `
 
@@ -116,6 +100,7 @@ func (q *Queries) GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg
 		&i.RepositorySelection,
 		&i.ConnectedBy,
 		&i.SuspendedAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -123,7 +108,7 @@ func (q *Queries) GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg
 }
 
 const getInstallationForWorkspace = `-- name: GetInstallationForWorkspace :one
-SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, created_at, updated_at FROM github_installations
+SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at FROM github_installations
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -146,6 +131,7 @@ func (q *Queries) GetInstallationForWorkspace(ctx context.Context, arg GetInstal
 		&i.RepositorySelection,
 		&i.ConnectedBy,
 		&i.SuspendedAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -181,6 +167,46 @@ func (q *Queries) GetRepositoryForWorkspace(ctx context.Context, arg GetReposito
 	return i, err
 }
 
+const listActiveInstallationsForWorkspace = `-- name: ListActiveInstallationsForWorkspace :many
+SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at FROM github_installations
+WHERE workspace_id = $1 AND deleted_at IS NULL
+ORDER BY created_at
+`
+
+// What the workspace currently has connected. Removed installations are kept
+// for their repository history but are not connections any more.
+func (q *Queries) ListActiveInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error) {
+	rows, err := q.db.Query(ctx, listActiveInstallationsForWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubInstallation{}
+	for rows.Next() {
+		var i GithubInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.GithubInstallationID,
+			&i.AccountLogin,
+			&i.AccountType,
+			&i.RepositorySelection,
+			&i.ConnectedBy,
+			&i.SuspendedAt,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInstallationPermissions = `-- name: ListInstallationPermissions :many
 SELECT installation_id, workspace_id, permission, access, recorded_at FROM repository_permissions
 WHERE installation_id = $1 AND workspace_id = $2
@@ -207,43 +233,6 @@ func (q *Queries) ListInstallationPermissions(ctx context.Context, arg ListInsta
 			&i.Permission,
 			&i.Access,
 			&i.RecordedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listInstallationsForWorkspace = `-- name: ListInstallationsForWorkspace :many
-SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, created_at, updated_at FROM github_installations
-WHERE workspace_id = $1
-ORDER BY created_at
-`
-
-func (q *Queries) ListInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error) {
-	rows, err := q.db.Query(ctx, listInstallationsForWorkspace, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GithubInstallation{}
-	for rows.Next() {
-		var i GithubInstallation
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.GithubInstallationID,
-			&i.AccountLogin,
-			&i.AccountType,
-			&i.RepositorySelection,
-			&i.ConnectedBy,
-			&i.SuspendedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -294,6 +283,28 @@ func (q *Queries) ListRepositoriesForWorkspace(ctx context.Context, workspaceID 
 		return nil, err
 	}
 	return items, nil
+}
+
+const markInstallationDeleted = `-- name: MarkInstallationDeleted :exec
+UPDATE github_installations
+SET deleted_at = now(), suspended_at = COALESCE(suspended_at, now()), updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+`
+
+type MarkInstallationDeletedParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+// Used when GitHub reports the installation removed.
+//
+// The row is marked, not deleted. Deleting it cascades to the repositories,
+// and those rows are the record that access once existed — which is what makes
+// an old audit entry or a finished session readable. Withdrawing the
+// repositories is a separate statement in the same transaction.
+func (q *Queries) MarkInstallationDeleted(ctx context.Context, arg MarkInstallationDeletedParams) error {
+	_, err := q.db.Exec(ctx, markInstallationDeleted, arg.ID, arg.WorkspaceID)
+	return err
 }
 
 const pruneWebhookDeliveries = `-- name: PruneWebhookDeliveries :exec
@@ -367,7 +378,7 @@ const setInstallationSelection = `-- name: SetInstallationSelection :one
 UPDATE github_installations
 SET repository_selection = $3, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, created_at, updated_at
+RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at
 `
 
 type SetInstallationSelectionParams struct {
@@ -388,6 +399,7 @@ func (q *Queries) SetInstallationSelection(ctx context.Context, arg SetInstallat
 		&i.RepositorySelection,
 		&i.ConnectedBy,
 		&i.SuspendedAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -398,7 +410,7 @@ const setInstallationSuspended = `-- name: SetInstallationSuspended :one
 UPDATE github_installations
 SET suspended_at = $3, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, created_at, updated_at
+RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at
 `
 
 type SetInstallationSuspendedParams struct {
@@ -422,6 +434,7 @@ func (q *Queries) SetInstallationSuspended(ctx context.Context, arg SetInstallat
 		&i.RepositorySelection,
 		&i.ConnectedBy,
 		&i.SuspendedAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

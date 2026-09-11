@@ -168,7 +168,27 @@ function InstallationBlock({
         </p>
       </div>
 
-      {granted.length > 0 ? (
+      {/*
+        A suspension keeps the repository rows and their granted flag, which is
+        what makes unsuspending a restore rather than a fresh install. It would
+        be actively misleading to list them as available directly beneath a
+        line saying the installation grants nothing, so while suspended they
+        are shown as unavailable.
+      */}
+      {installation.suspended && granted.length > 0 ? (
+        <div className="space-y-1">
+          <p className="text-muted-foreground text-xs">
+            Unavailable while the installation is suspended:
+          </p>
+          <ul className="grid gap-1">
+            {granted.map((repository) => (
+              <li key={repository.id} className="text-muted-foreground font-mono text-xs">
+                {repository.full_name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : granted.length > 0 ? (
         <ul className="grid gap-1">
           {granted.map((repository) => (
             <li key={repository.id} className="flex items-center gap-2">

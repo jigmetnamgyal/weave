@@ -18,7 +18,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 | M0 | Product, UI, architecture, standards, and AI workflow specifications accepted | Complete |
 | M1 | Monorepo, local infrastructure, CI, observability bootstrap, and environment validation | Complete |
 | M2 | Authentication, workspaces, membership, authorization matrix, and tenant isolation | Complete |
-| M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Not started |
+| M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | In progress |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Not started |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Not started |
 | M6 | Claude Code adapter, normalized events, live session room, and reconnect | Not started |

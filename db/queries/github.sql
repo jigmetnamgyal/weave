@@ -21,10 +21,7 @@ WHERE id = $1 AND workspace_id = $2;
 SELECT * FROM github_installations
 WHERE github_installation_id = $1 AND workspace_id = $2;
 
--- name: ListInstallationsForWorkspace :many
-SELECT * FROM github_installations
-WHERE workspace_id = $1
-ORDER BY created_at;
+
 
 -- name: SetInstallationSuspended :one
 -- Suspension is recorded, never deleted. Unsuspending must restore the
@@ -41,11 +38,23 @@ SET repository_selection = $3, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;
 
--- name: DeleteInstallation :exec
--- Used when GitHub reports the installation deleted. The repositories cascade;
--- the audit trail of the connection lives in audit_events and survives.
-DELETE FROM github_installations
+-- name: MarkInstallationDeleted :exec
+-- Used when GitHub reports the installation removed.
+--
+-- The row is marked, not deleted. Deleting it cascades to the repositories,
+-- and those rows are the record that access once existed — which is what makes
+-- an old audit entry or a finished session readable. Withdrawing the
+-- repositories is a separate statement in the same transaction.
+UPDATE github_installations
+SET deleted_at = now(), suspended_at = COALESCE(suspended_at, now()), updated_at = now()
 WHERE id = $1 AND workspace_id = $2;
+
+-- name: ListActiveInstallationsForWorkspace :many
+-- What the workspace currently has connected. Removed installations are kept
+-- for their repository history but are not connections any more.
+SELECT * FROM github_installations
+WHERE workspace_id = $1 AND deleted_at IS NULL
+ORDER BY created_at;
 
 -- name: UpsertRepository :one
 -- Reconciliation writes every repository GitHub currently grants.

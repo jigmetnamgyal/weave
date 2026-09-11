@@ -96,8 +96,12 @@ type Installation struct {
 	RepositorySelection RepositorySelection
 	ConnectedBy         uuid.UUID
 	SuspendedAt         *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// DeletedAt is set when GitHub reports the installation removed. The row
+	// survives so its repositories can, and those are what make an old audit
+	// entry or a finished session readable.
+	DeletedAt *time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Suspended reports whether GitHub has suspended the installation.
@@ -106,6 +110,9 @@ type Installation struct {
 // previous state rather than require a fresh install, so the rows are the
 // thing that makes that possible.
 func (i Installation) Suspended() bool { return i.SuspendedAt != nil }
+
+// Removed reports whether GitHub has deleted the installation.
+func (i Installation) Removed() bool { return i.DeletedAt != nil }
 
 // Repository is a repository an installation grants, as we last understood it.
 //

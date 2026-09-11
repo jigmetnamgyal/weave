@@ -204,10 +204,17 @@ jobs:
       # someone connects a repository. CI therefore needs one. A throwaway key
       # generated here exercises the real load path without any real
       # credential existing in the repository or its secrets.
-      - name: Generate a throwaway GitHub App key
+      - name: Generate throwaway GitHub App credentials
         run: |
           mkdir -p secrets
           openssl genrsa -out secrets/github-app.pem 2048
+          # The template ships placeholders so the required-key check has
+          # something to pass on, and configuration refuses them at startup so
+          # a copied template cannot run with a published webhook secret.
+          # CI therefore substitutes synthetic values of its own.
+          sed -i'' -e 's/^GITHUB_APP_ID=.*/GITHUB_APP_ID=1/' \
+                   -e 's/^GITHUB_APP_SLUG=.*/GITHUB_APP_SLUG=weave-ci/' \
+                   -e "s/^GITHUB_APP_WEBHOOK_SECRET=.*/GITHUB_APP_WEBHOOK_SECRET=$(openssl rand -hex 32)/" .env
 
       - name: Apply migrations and provision the application role
         run: make migrate-up

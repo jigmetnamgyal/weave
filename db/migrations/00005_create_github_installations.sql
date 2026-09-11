@@ -28,6 +28,13 @@ CREATE TABLE github_installations (
     repository_selection   text        NOT NULL,
     connected_by           uuid        NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
     suspended_at           timestamptz,
+    -- When GitHub reports the installation removed.
+    --
+    -- Recorded rather than deleting the row, because deleting it would cascade
+    -- to the repositories, and those rows are what make an old audit entry or
+    -- a finished session readable later. GitHub issues a new installation id
+    -- for a reinstall, so keeping the old row cannot collide with one.
+    deleted_at             timestamptz,
     created_at             timestamptz NOT NULL DEFAULT now(),
     updated_at             timestamptz NOT NULL DEFAULT now(),
 

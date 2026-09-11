@@ -33,9 +33,6 @@ type Querier interface {
 	CountWorkspaceOwners(ctx context.Context, workspaceID uuid.UUID) (int64, error)
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (WorkspaceInvitation, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
-	// Used when GitHub reports the installation deleted. The repositories cascade;
-	// the audit trail of the connection lives in audit_events and survives.
-	DeleteInstallation(ctx context.Context, arg DeleteInstallationParams) error
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
 	GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg GetInstallationByGitHubIDForWorkspaceParams) (GithubInstallation, error)
 	// Scoped by workspace, so an installation id from one tenant cannot be read
@@ -63,10 +60,12 @@ type Querier interface {
 	// workspace identifiers cannot be probed.
 	GetWorkspaceForMember(ctx context.Context, arg GetWorkspaceForMemberParams) (Workspace, error)
 	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
+	// What the workspace currently has connected. Removed installations are kept
+	// for their repository history but are not connections any more.
+	ListActiveInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error)
 	// Operator and test support.
 	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
 	ListInstallationPermissions(ctx context.Context, arg ListInstallationPermissionsParams) ([]RepositoryPermission, error)
-	ListInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error)
 	ListInvitationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]ListInvitationsForWorkspaceRow, error)
 	// Withdrawn repositories are returned too, with granted = false, so the
 	// interface can say "access was removed" rather than silently dropping a
@@ -78,6 +77,13 @@ type Querier interface {
 	// that counts owners, so two concurrent demotions cannot both observe two
 	// owners and both proceed.
 	LockWorkspace(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Used when GitHub reports the installation removed.
+	//
+	// The row is marked, not deleted. Deleting it cascades to the repositories,
+	// and those rows are the record that access once existed — which is what makes
+	// an old audit entry or a finished session readable. Withdrawing the
+	// repositories is a separate statement in the same transaction.
+	MarkInstallationDeleted(ctx context.Context, arg MarkInstallationDeletedParams) error
 	// Deliveries are only needed while deduplication might see a retry. GitHub
 	// gives up well inside this window.
 	PruneWebhookDeliveries(ctx context.Context, retention pgtype.Interval) error

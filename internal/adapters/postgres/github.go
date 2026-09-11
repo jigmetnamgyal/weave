@@ -130,7 +130,7 @@ func (s *InstallationStore) Get(ctx context.Context, installationID, workspaceID
 func (s *InstallationStore) List(ctx context.Context, workspaceID uuid.UUID) ([]domain.Installation, error) {
 	var installations []domain.Installation
 	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
-		rows, err := q.ListInstallationsForWorkspace(ctx, workspaceID)
+		rows, err := q.ListActiveInstallationsForWorkspace(ctx, workspaceID)
 		if err != nil {
 			return fmt.Errorf("list installations: %w", err)
 		}
@@ -169,18 +169,32 @@ func (s *InstallationStore) SetSuspended(
 	})
 }
 
-// Delete removes an installation GitHub reports as deleted.
-func (s *InstallationStore) Delete(
+// MarkDeleted records that GitHub removed an installation.
+//
+// The row is marked rather than deleted, and its repositories are withdrawn
+// rather than removed. Deleting the installation would cascade to the
+// repositories, and those rows are the record that access once existed —
+// which is what makes an old audit entry or a finished session readable
+// afterwards. Both statements share one transaction, so the workspace never
+// observes an installation that is gone while its repositories still read as
+// granted.
+func (s *InstallationStore) MarkDeleted(
 	ctx context.Context,
 	installationID, workspaceID uuid.UUID,
 	event application.AuditEvent,
 ) error {
 	return s.inTx(ctx, func(q *postgresdb.Queries) error {
-		if err := q.DeleteInstallation(ctx, postgresdb.DeleteInstallationParams{
+		if err := q.WithdrawAllRepositories(ctx, postgresdb.WithdrawAllRepositoriesParams{
+			InstallationID: installationID,
+			WorkspaceID:    workspaceID,
+		}); err != nil {
+			return fmt.Errorf("withdraw repositories: %w", err)
+		}
+		if err := q.MarkInstallationDeleted(ctx, postgresdb.MarkInstallationDeletedParams{
 			ID:          installationID,
 			WorkspaceID: workspaceID,
 		}); err != nil {
-			return fmt.Errorf("delete installation: %w", err)
+			return fmt.Errorf("mark installation deleted: %w", err)
 		}
 		return appendAudit(ctx, q, event)
 	})
@@ -249,6 +263,18 @@ func (s *InstallationStore) Reconcile(
 			GrantedIds:     grantedIDs,
 		}); err != nil {
 			return fmt.Errorf("withdraw repositories: %w", err)
+		}
+
+		// Replace rather than merge. Upserting only what GitHub currently
+		// reports leaves a permission that was revoked sitting in the table,
+		// and Health falls back to these rows when GitHub is unreachable — so
+		// the fallback would report a permission the installation no longer
+		// holds, which is the one moment it most needs to be right.
+		if err := q.ClearInstallationPermissions(ctx, postgresdb.ClearInstallationPermissionsParams{
+			InstallationID: installationID,
+			WorkspaceID:    workspaceID,
+		}); err != nil {
+			return fmt.Errorf("clear installation permissions: %w", err)
 		}
 
 		for permission, access := range permissions {
@@ -354,6 +380,42 @@ func (s *InstallationStore) RecordDelivery(ctx context.Context, deliveryID, even
 	}
 }
 
+// ForgetDelivery removes a delivery record so GitHub's retry is processed.
+//
+// Deduplication and retries pull in opposite directions, and recording the
+// delivery first gets the trade-off wrong on its own: a transient failure
+// returns non-2xx, GitHub retries the same delivery id, deduplication reports
+// it as already seen, and the effect is silently dropped forever. A missed
+// suspend would leave an installation authorising repositories GitHub has cut
+// off.
+//
+// So the record is treated as provisional until the effect succeeds. Removing
+// it on failure keeps the retry meaningful while still collapsing the ordinary
+// case, where the effect worked and GitHub retries anyway.
+func (s *InstallationStore) ForgetDelivery(ctx context.Context, deliveryID string) error {
+	if _, err := s.pool.Exec(ctx,
+		"DELETE FROM github_webhook_deliveries WHERE delivery_id = $1", deliveryID); err != nil {
+		return fmt.Errorf("forget webhook delivery: %w", err)
+	}
+	return nil
+}
+
+// PruneDeliveries drops delivery records older than the retention window.
+//
+// Without it the table grows for the life of the deployment: every distinct
+// delivery inserts a row and nothing ever removes one. The rows are only
+// needed while a retry might still arrive, and GitHub gives up well inside any
+// sensible window.
+func (s *InstallationStore) PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM github_webhook_deliveries WHERE received_at < now() - $1::interval",
+		retention.String())
+	if err != nil {
+		return 0, fmt.Errorf("prune webhook deliveries: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // installationToDomain converts a generated row.
 func installationToDomain(row postgresdb.GithubInstallation) domain.Installation {
 	installation := domain.Installation{
@@ -370,6 +432,10 @@ func installationToDomain(row postgresdb.GithubInstallation) domain.Installation
 	if row.SuspendedAt.Valid {
 		at := row.SuspendedAt.Time
 		installation.SuspendedAt = &at
+	}
+	if row.DeletedAt.Valid {
+		at := row.DeletedAt.Time
+		installation.DeletedAt = &at
 	}
 	return installation
 }

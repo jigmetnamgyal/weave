@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,22 @@ import (
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/internal/domain"
 )
+
+// githubIDs hands out installation ids that are unique within a process.
+//
+// The ids must not be fixed constants. github_installation_id is unique across
+// the whole table, and the integration database is not reset between runs —
+// these tests only get away with it today because seedWorkspace's cleanup
+// cascades the installations away with the workspace. That is a dependency on
+// a helper in another file behaving a particular way, and it would fail
+// confusingly the moment the cascade changed.
+var githubIDs atomic.Int64
+
+func nextGitHubID() int64 {
+	// A per-process base keeps ids distinct from any left behind by an earlier
+	// run whose cleanup did not complete.
+	return time.Now().UnixNano()/1000*1000 + githubIDs.Add(1)
+}
 
 // connectInstallation binds an installation for a workspace, failing the test
 // if it cannot.
@@ -67,7 +84,7 @@ func TestInstallationCannotBeBoundTwiceIntegration(t *testing.T) {
 	store := postgres.NewInstallationStore(pool)
 
 	a, b, ownerA, ownerB := twoTenants(t, pool)
-	const githubID = int64(500001)
+	githubID := nextGitHubID()
 
 	connectInstallation(t, store, a, ownerA, githubID)
 
@@ -113,7 +130,7 @@ func TestInstallationIsInvisibleAcrossTenantsIntegration(t *testing.T) {
 	store := postgres.NewInstallationStore(pool)
 
 	a, b, ownerA, ownerB := twoTenants(t, pool)
-	installation := connectInstallation(t, store, a, ownerA, 500002)
+	installation := connectInstallation(t, store, a, ownerA, nextGitHubID())
 
 	// Tenant B naming tenant A's installation id explicitly.
 	ctxB := postgres.WithTenant(context.Background(), postgres.TenantContext{
@@ -141,7 +158,7 @@ func TestReconcileWithdrawsWhatIsNoLongerGrantedIntegration(t *testing.T) {
 
 	owner := seedUser(t, pool)
 	workspace := seedWorkspace(t, pool, owner, "Reconcile Workspace")
-	installation := connectInstallation(t, store, workspace, owner, 500003)
+	installation := connectInstallation(t, store, workspace, owner, nextGitHubID())
 
 	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
 		UserID:      owner.ID,
@@ -195,7 +212,7 @@ func TestRenameKeepsRepositoryIdentityIntegration(t *testing.T) {
 
 	owner := seedUser(t, pool)
 	workspace := seedWorkspace(t, pool, owner, "Rename Workspace")
-	installation := connectInstallation(t, store, workspace, owner, 500004)
+	installation := connectInstallation(t, store, workspace, owner, nextGitHubID())
 
 	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
 		UserID:      owner.ID,
@@ -249,7 +266,7 @@ func TestSuspensionIsRecordedWithoutLosingRepositoriesIntegration(t *testing.T) 
 
 	owner := seedUser(t, pool)
 	workspace := seedWorkspace(t, pool, owner, "Suspension Workspace")
-	installation := connectInstallation(t, store, workspace, owner, 500005)
+	installation := connectInstallation(t, store, workspace, owner, nextGitHubID())
 
 	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
 		UserID:      owner.ID,
@@ -338,7 +355,7 @@ func TestGitHubTablesAreClosedWithoutContextIntegration(t *testing.T) {
 	owner := seedUser(t, ownerPool)
 	workspace := seedWorkspace(t, ownerPool, owner, "RLS GitHub Workspace")
 	store := postgres.NewInstallationStore(ownerPool)
-	installation := connectInstallation(t, store, workspace, owner, 500006)
+	installation := connectInstallation(t, store, workspace, owner, nextGitHubID())
 
 	ownerCtx := postgres.WithTenant(ctx, postgres.TenantContext{UserID: owner.ID, WorkspaceID: workspace.ID})
 	if err := store.Reconcile(ownerCtx, installation.ID, workspace.ID, domain.SelectionSelected,
@@ -376,5 +393,64 @@ func TestGitHubTablesAreClosedWithoutContextIntegration(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("naming another tenant's workspace returned %d installations, want 0", count)
+	}
+}
+
+// TestRemovingAnInstallationKeepsRepositoryHistory is the regression test for
+// a defect review caught.
+//
+// The handler deleted the installation row, and the composite foreign key
+// cascaded straight through to the repositories. Those rows are the record
+// that access once existed, which is what makes an old audit entry or a
+// finished session readable afterwards — deleting them destroys history that
+// nothing else holds.
+func TestRemovingAnInstallationKeepsRepositoryHistoryIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewInstallationStore(pool)
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Removal Workspace")
+	installation := connectInstallation(t, store, workspace, owner, nextGitHubID())
+
+	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
+		UserID:      owner.ID,
+		WorkspaceID: workspace.ID,
+	})
+	if err := store.Reconcile(ctx, installation.ID, workspace.ID, domain.SelectionSelected,
+		[]domain.Repository{
+			{GitHubID: 900040, Owner: "acme", Name: "kept", DefaultBranch: "main", Private: true},
+		}, domain.RequiredPermissions); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if err := store.MarkDeleted(ctx, installation.ID, workspace.ID, application.AuditEvent{
+		WorkspaceID: workspace.ID,
+		Action:      application.AuditInstallationDeleted,
+		Target:      "test",
+	}); err != nil {
+		t.Fatalf("MarkDeleted: %v", err)
+	}
+
+	// The repository row survives, withdrawn.
+	repositories, err := store.ListRepositories(ctx, workspace.ID)
+	if err != nil {
+		t.Fatalf("ListRepositories: %v", err)
+	}
+	if len(repositories) != 1 {
+		t.Fatalf("removal left %d repository rows, want 1 kept for history", len(repositories))
+	}
+	if repositories[0].Granted {
+		t.Error("a removed installation still reports its repository as granted")
+	}
+
+	// And it is no longer a connection.
+	installations, err := store.List(ctx, workspace.ID)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, candidate := range installations {
+		if candidate.ID == installation.ID {
+			t.Error("a removed installation is still listed as connected")
+		}
 	}
 }

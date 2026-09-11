@@ -35,7 +35,14 @@ export function SyncRepositoriesButton({
       <Button type="submit" variant="secondary" disabled={pending}>
         {pending ? "Asking GitHub…" : label}
       </Button>
-      {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
+      {state.error ? (
+        // role="alert" because this appears after the action returns. Without
+        // a live region a screen reader announces nothing, so the failure is
+        // silent for exactly the people who cannot see the red text.
+        <p role="alert" className="text-destructive text-sm">
+          {state.error}
+        </p>
+      ) : null}
     </form>
   );
 }

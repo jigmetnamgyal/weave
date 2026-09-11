@@ -125,6 +125,28 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
+			// .env.example must carry non-empty values so the required-key
+			// check passes in CI. Accepting them would mean a copied template
+			// starts an API whose webhook secret is published in this
+			// repository, and anyone could forge a signed delivery.
+			name: "a placeholder webhook secret is rejected",
+			env: func() map[string]string {
+				e := validEnv()
+				e["GITHUB_APP_WEBHOOK_SECRET"] = "replace-me"
+				return e
+			}(),
+			errSubstr: []string{"GITHUB_APP_WEBHOOK_SECRET", "placeholder"},
+		},
+		{
+			name: "a placeholder is rejected whatever its case",
+			env: func() map[string]string {
+				e := validEnv()
+				e["GITHUB_APP_SLUG"] = "Replace-Me"
+				return e
+			}(),
+			errSubstr: []string{"GITHUB_APP_SLUG"},
+		},
+		{
 			name: "unknown exporter is rejected",
 			env: func() map[string]string {
 				e := validEnv()
