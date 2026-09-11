@@ -60,7 +60,7 @@ Nothing in progress. M3.0 merged in PR #5 on 2026-09-11 after two review rounds;
 
 **Carried from M3.0, and easy to lose:** all three new tables are workspace-owned, so `ENABLE`/`FORCE ROW LEVEL SECURITY` and policies belong in the same migration that creates them — RLS is off by default and a table added without them is silently unprotected. Every read goes through `inTenantTx`.
 
-**Blocked on an operator action:** the GitHub App must be created in the account settings first — only the account owner can do it. The spec lists the exact settings, permissions and events. It yields an App ID, client ID and secret, webhook secret and private key.
+**Operator action done, 2026-09-11.** The App `weave-ai-dev-jaggle` (id 4906626, owner `jigmetnamgyal`) exists and its credentials are verified: an App JWT minted from the private key was accepted by `GET /app`, permissions are exactly `contents:write`, `metadata:read`, `pull_requests:write`, and the webhook URL matches the smee channel in `.env`. No OAuth client secret was generated, deliberately — see the spec. Remaining before implementation: subscribe the App to the Installation target and Repository events, which was left empty at creation. Whether the webhook secret on GitHub matches `.env` cannot be checked through the API; the first delivery's signature will prove it.
 
 **Also produces** `docs/adr/0005-github-app-credentials.md`, which is currently a tracker row with no document behind it.
 
