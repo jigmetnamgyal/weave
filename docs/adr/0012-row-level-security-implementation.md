@@ -86,7 +86,12 @@ function rather than a blanket exemption:
   while proving nothing.
 - Two pools in the API: the readiness probe uses the owner so a policy
   misconfiguration cannot make the service look unhealthy, and every request
-  uses the application role.
+  uses the application role. Readiness also probes the application pool and
+  asserts that the role it connects as is neither superuser nor `BYPASSRLS` —
+  the one control the unit rests on, checked continuously rather than assumed
+  from configuration. It rides on readiness rather than startup because the
+  service is required to start while a dependency is down; a misconfigured role
+  means the instance never becomes ready, and so never takes traffic.
 
 **Deployment ordering:** ship the configuration change pointing the API at
 `APP_DATABASE_URL` first, then apply the migration. Where the owner is a
