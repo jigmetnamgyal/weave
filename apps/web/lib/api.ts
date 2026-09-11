@@ -35,6 +35,19 @@ export type Result<T> =
 /** How long a server-side API call may take before it is abandoned. */
 const requestTimeoutMs = 5_000;
 
+/**
+ * The budget for calls that fan out to GitHub.
+ *
+ * Five seconds is right for endpoints that only touch our own API. These do
+ * not: connecting an installation mints a token and lists every repository the
+ * installation grants, which is several round trips to a third party and runs
+ * to seconds on an account with a hundred repositories. Holding them to the
+ * ordinary budget times out a request that is working perfectly well — and
+ * worse, times it out *after* the binding has been written, so the page
+ * reports failure for work that succeeded.
+ */
+const githubRequestTimeoutMs = 30_000;
+
 function apiBaseUrl(): string {
   const url = process.env.API_BASE_URL;
   if (!url) {
@@ -296,10 +309,11 @@ export async function completeGitHubInstall(
   state: string,
   installationId: number
 ): Promise<Result<Installation>> {
-  return apiRequest<Installation>("/v1/github/installations", {
-    method: "POST",
-    body: JSON.stringify({ state, installation_id: installationId }),
-  });
+  return apiRequest<Installation>(
+    "/v1/github/installations",
+    { method: "POST", body: JSON.stringify({ state, installation_id: installationId }) },
+    githubRequestTimeoutMs
+  );
 }
 
 /** List a workspace's GitHub installations. */
@@ -324,7 +338,9 @@ export async function fetchInstallationHealth(
   installationId: string
 ): Promise<Result<InstallationHealth>> {
   return apiRequest<InstallationHealth>(
-    `/v1/workspaces/${workspaceId}/github/installations/${installationId}/health`
+    `/v1/workspaces/${workspaceId}/github/installations/${installationId}/health`,
+    {},
+    githubRequestTimeoutMs
   );
 }
 
@@ -335,7 +351,8 @@ export async function reconcileInstallation(
 ): Promise<Result<void>> {
   return apiRequest<void>(
     `/v1/workspaces/${workspaceId}/github/installations/${installationId}/reconcile`,
-    { method: "POST" }
+    { method: "POST" },
+    githubRequestTimeoutMs
   );
 }
 
@@ -345,7 +362,11 @@ export async function reconcileInstallation(
  * Server-side only, so the token never reaches the browser and no CORS
  * configuration is needed.
  */
-async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<Result<T>> {
+async function apiRequest<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs: number = requestTimeoutMs
+): Promise<Result<T>> {
   const { getToken } = await auth();
   const token = await getToken();
 
@@ -363,7 +384,7 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<Resu
         ...init.headers,
       },
       cache: "no-store",
-      signal: AbortSignal.timeout(requestTimeoutMs),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     const reason =

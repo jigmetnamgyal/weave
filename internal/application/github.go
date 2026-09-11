@@ -242,17 +242,30 @@ func (s *InstallationService) CompleteInstall(
 	// check, the next webhook, or the next use. Failing the whole callback
 	// would leave the installation connected on GitHub and absent here, which
 	// is the one outcome that needs a human to untangle.
-	_ = s.reconcile(tenantCtx, connected)
+	_ = s.reconcile(tenantCtx, connected, &remote)
 	return connected, nil
 }
 
 // reconcile pulls the current truth from GitHub and writes it over what we
 // believed.
-func (s *InstallationService) reconcile(ctx context.Context, installation domain.Installation) error {
-	remote, err := s.api.Installation(ctx, installation.GitHubID)
-	if err != nil {
-		return fmt.Errorf("read installation from github: %w", err)
+//
+// `known` lets a caller that has just fetched the installation pass it in.
+// That is not micro-optimisation: each GitHub round trip here is close to a
+// second, and the installation callback happens inside a browser request with
+// a client timeout on it. Fetching the same thing twice in one request was
+// enough on its own to exceed that budget.
+func (s *InstallationService) reconcile(ctx context.Context, installation domain.Installation, known *RemoteInstallation) error {
+	var remote RemoteInstallation
+	if known != nil {
+		remote = *known
+	} else {
+		fetched, err := s.api.Installation(ctx, installation.GitHubID)
+		if err != nil {
+			return fmt.Errorf("read installation from github: %w", err)
+		}
+		remote = fetched
 	}
+
 	selection, err := domain.ParseRepositorySelection(remote.RepositorySelection)
 	if err != nil {
 		return err
@@ -284,7 +297,7 @@ func (s *InstallationService) Reconcile(ctx context.Context, installationID, wor
 	if err != nil {
 		return err
 	}
-	return s.reconcile(ctx, installation)
+	return s.reconcile(ctx, installation, nil)
 }
 
 // ListInstallations returns a workspace's installations.
@@ -384,7 +397,7 @@ func (s *InstallationService) RepositoryForUse(ctx context.Context, repositoryID
 	// Refresh before answering. The stored row is a belief, and this is the
 	// moment where acting on a stale belief would reach a repository the
 	// workspace no longer has.
-	if err := s.reconcile(ctx, installation); err != nil {
+	if err := s.reconcile(ctx, installation, nil); err != nil {
 		return domain.Repository{}, fmt.Errorf("reconcile before use: %w", err)
 	}
 
@@ -470,7 +483,7 @@ func (s *InstallationService) HandleWebhook(ctx context.Context, deliveryID, eve
 		if err != nil {
 			return err
 		}
-		return s.reconcile(ctx, installation)
+		return s.reconcile(ctx, installation, nil)
 	default:
 		// Unknown events are ignored deliberately rather than by accident. An
 		// App's subscriptions can be widened in GitHub's settings without any
@@ -520,18 +533,31 @@ func (s *InstallationService) handleInstallationEvent(ctx context.Context, ref I
 		}
 		// Things may have changed while it was suspended, and no events
 		// arrived to say so.
-		return s.reconcile(ctx, installation)
+		return s.reconcile(ctx, installation, nil)
 
 	case "new_permissions_accepted":
 		installation, err := s.installations.Get(ctx, ref.InstallationID, ref.WorkspaceID)
 		if err != nil {
 			return err
 		}
-		return s.reconcile(ctx, installation)
+		return s.reconcile(ctx, installation, nil)
+
+	case "created":
+		// Usually a no-op: this arrives while the browser is still being
+		// redirected, so the installation is not bound yet and Resolve has
+		// already returned early.
+		//
+		// When it does find one, it is the safety net for the opposite
+		// ordering — the binding landed first and its reconciliation failed or
+		// was cut short. Without this the workspace would sit with a
+		// connection and no repositories until someone pressed refresh.
+		installation, err := s.installations.Get(ctx, ref.InstallationID, ref.WorkspaceID)
+		if err != nil {
+			return err
+		}
+		return s.reconcile(ctx, installation, nil)
 
 	default:
-		// "created" included: the callback binds it, and this event routinely
-		// arrives first.
 		return nil
 	}
 }

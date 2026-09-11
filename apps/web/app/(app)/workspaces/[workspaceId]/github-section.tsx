@@ -1,5 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConnectGitHubButton } from "./connect-github-button";
+import { SyncRepositoriesButton } from "./sync-repositories-button";
 import { fetchInstallations, fetchRepositories, type Workspace } from "@/lib/api";
 
 /**
@@ -91,9 +92,19 @@ export async function GitHubSection({ workspace }: { workspace: Workspace }) {
             ))}
           </ul>
         ) : (
-          <p className="text-muted-foreground text-sm">
-            No repositories are shared with this workspace yet.
-          </p>
+          <div className="space-y-2">
+            <p className="text-muted-foreground text-sm">
+              No repositories are shared with this workspace yet. If you selected some on GitHub,
+              they may not have arrived here yet.
+            </p>
+            {canManage ? (
+              <SyncRepositoriesButton
+                workspaceId={workspace.id}
+                installationId={connected[0].id}
+                label="Sync repositories from GitHub"
+              />
+            ) : null}
+          </div>
         )}
 
         {/*
@@ -115,11 +126,20 @@ export async function GitHubSection({ workspace }: { workspace: Workspace }) {
         ) : null}
 
         {canManage ? (
-          <ConnectGitHubButton
-            workspaceId={workspace.id}
-            label="Change repository access on GitHub"
-            variant="secondary"
-          />
+          <div className="flex flex-wrap gap-2">
+            <ConnectGitHubButton
+              workspaceId={workspace.id}
+              label="Change repository access on GitHub"
+              variant="secondary"
+            />
+            {granted.length > 0 ? (
+              <SyncRepositoriesButton
+                workspaceId={workspace.id}
+                installationId={connected[0].id}
+                label="Sync now"
+              />
+            ) : null}
+          </div>
         ) : null}
       </CardContent>
     </Card>
