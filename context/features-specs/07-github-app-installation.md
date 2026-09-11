@@ -46,9 +46,15 @@ settings → GitHub Apps → New GitHub App** with:
 - **Repository permissions** — Contents: read and write; Metadata:
   read-only; Pull requests: read and write. Nothing else. Each extra
   permission is one a customer has to grant and we have to justify.
-- **Subscribe to events** — Installation target, Repository. Not push or
-  pull request: those belong to M3.2, and subscribing early means
-  receiving traffic we have no handler for.
+- **Subscribe to events** — Repository, and nothing else. The two events
+  this unit actually depends on, `installation` and
+  `installation_repositories`, are delivered to every GitHub App
+  automatically and cannot be subscribed to or turned off, so they do not
+  appear in this list. Do not add push or pull request: they belong to
+  M3.2, and in development the webhook URL is a public smee.io channel
+  whose deliveries anyone holding the URL can read — a push payload
+  carries commit messages, author email addresses and file paths, which is
+  real repository metadata crossing a third party for no benefit.
 - **Where can this App be installed** — any account.
 
 It yields an App ID, a webhook secret, and a generated private key
@@ -159,7 +165,10 @@ A repository row that outlives its grant is the failure mode that
 matters, so it gets three defences rather than one:
 
 - **Webhooks.** `installation`, `installation_repositories` and
-  `repository` events update the records. Verify the signature as HMAC
+  `repository` events update the records. The first two arrive whether or
+  not the App subscribes to anything, which is worth knowing: an App with
+  an empty subscription list still receives installation lifecycle
+  events, so their absence in the settings UI is not a misconfiguration. Verify the signature as HMAC
   SHA-256 over the **raw body**, compared in constant time, before
   parsing — a handler that parses first has already trusted the input.
   Deduplicate on the delivery id; GitHub retries, and a retry must not
