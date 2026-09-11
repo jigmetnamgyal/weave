@@ -36,12 +36,13 @@ A real GitHub App must exist before any of this can be built, and only
 the account owner can create one. Create it at **Settings → Developer
 settings → GitHub Apps → New GitHub App** with:
 
-- **Callback URL** — `{APP_URL}/api/github/callback`, "Request user
-  authorization (OAuth) during installation" enabled.
-- **Setup URL** — `{APP_URL}/github/installed`, "Redirect on update"
+- **Setup URL** — `{APP_URL}/github/installed`, with "Redirect on update"
   enabled, so repository-selection changes come back to us.
-- **Webhook URL** — `{API_URL}/v1/github/webhook`, with a generated
-  webhook secret.
+- **Request user authorization (OAuth) during installation** — leave
+  **off**. GitHub treats the two as mutually exclusive landing points:
+  enabling OAuth disables the Setup URL field, because the callback URL
+  takes over as the post-install redirect. We want the Setup URL, and
+  OAuth buys us nothing this unit needs — see below.
 - **Repository permissions** — Contents: read and write; Metadata:
   read-only; Pull requests: read and write. Nothing else. Each extra
   permission is one a customer has to grant and we have to justify.
@@ -50,9 +51,11 @@ settings → GitHub Apps → New GitHub App** with:
   receiving traffic we have no handler for.
 - **Where can this App be installed** — any account.
 
-It yields an App ID, a client ID and secret, a webhook secret, and a
-generated private key (`.pem`). Add them to `.env.example` as empty keys
-and to `.env` with real values.
+It yields an App ID, a webhook secret, and a generated private key
+(`.pem`). GitHub also issues OAuth client credentials to every App, but
+with user authorization off this unit never uses them: do not generate a
+client secret, and do not put one in the environment. An unused
+credential is still a credential that can leak.
 
 ## Decisions this unit locks in
 
@@ -88,7 +91,16 @@ So:
 - Before redirecting to GitHub, mint a **single-use, expiring state
   token** carrying the workspace id and the acting user id. Store it
   server-side, keyed by a random value; the value is what travels in the
-  `state` parameter.
+  `state` parameter of the install URL,
+  `https://github.com/apps/<slug>/installations/new?state=...`, which
+  GitHub preserves across install, authentication and update.
+
+  This is why the App does not request user authorization during
+  installation. OAuth would tell us which GitHub account performed the
+  install, but the binding does not rest on that — it rests on our own
+  state token and a re-check of the actor's permission. Enabling OAuth
+  would cost us the Setup URL and its update redirect, which we do need,
+  in exchange for an identity we already have from the session.
 - On callback, look the state up, delete it, and fail closed if it is
   missing, expired or already used. Then re-check that the actor still
   holds `repository:manage` in that workspace — the state proves intent,
@@ -104,6 +116,13 @@ So:
 The same reasoning applies to the setup-URL redirect after a repository
 selection change: it carries an `installation_id`, so it is a claim, not
 a fact.
+
+One thing to confirm empirically rather than assume: GitHub's
+documentation describes `installation_id` on the setup URL and describes
+`state` as preserved, but does not spell out the full parameter set for
+the update redirect. Log what actually arrives on the first install and
+the first selection change before writing code that depends on a
+parameter being present.
 
 ## Data
 
