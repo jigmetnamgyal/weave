@@ -37,9 +37,6 @@ type Querier interface {
 	// Scoped by workspace so an invitation id from one tenant cannot be revoked
 	// through another.
 	GetInvitationForWorkspace(ctx context.Context, arg GetInvitationForWorkspaceParams) (WorkspaceInvitation, error)
-	// Backing for the preview: the workspace name and who invited you, and
-	// nothing else about either.
-	GetInvitationWorkspaceContext(ctx context.Context, id uuid.UUID) (GetInvitationWorkspaceContextRow, error)
 	// The row occupying the one-outstanding slot, if any. May be expired: the
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)

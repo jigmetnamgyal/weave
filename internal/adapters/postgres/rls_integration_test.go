@@ -2,11 +2,14 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
@@ -122,6 +125,26 @@ func TestPolicyFiltersWithoutAnyApplicationFilter(t *testing.T) {
 
 // TestPolicyRefusesAnotherTenantNamedExplicitly covers the caller who has the
 // other tenant's identifier and asks for it directly.
+// insufficientPrivilege is the SQLSTATE PostgreSQL raises when a row-level
+// security policy rejects a write.
+const insufficientPrivilege = "42501"
+
+// setTenant establishes tenant context and fails the test if it cannot.
+//
+// Discarding these errors would be the quiet way to break every test in this
+// file: absent context denies by design, so a set_config that silently failed
+// would produce exactly the empty results the tests assert on, and they would
+// pass while exercising nothing.
+func setTenant(t *testing.T, ctx context.Context, tx pgx.Tx, userID, workspaceID string) {
+	t.Helper()
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.user_id', $1, true)", userID); err != nil {
+		t.Fatalf("set app.user_id: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.workspace_id', $1, true)", workspaceID); err != nil {
+		t.Fatalf("set app.workspace_id: %v", err)
+	}
+}
+
 func TestPolicyRefusesAnotherTenantNamedExplicitly(t *testing.T) {
 	ownerPool := newPool(t)
 	appPool := newAppPool(t)
@@ -135,8 +158,7 @@ func TestPolicyRefusesAnotherTenantNamedExplicitly(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, _ = tx.Exec(ctx, "SELECT set_config('app.user_id', $1, true)", ownerA.ID.String())
-	_, _ = tx.Exec(ctx, "SELECT set_config('app.workspace_id', $1, true)", a.ID.String())
+	setTenant(t, ctx, tx, ownerA.ID.String(), a.ID.String())
 
 	var count int
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM workspaces WHERE id = $1", b.ID).Scan(&count); err != nil {
@@ -249,21 +271,37 @@ func TestPolicyConstrainsWrites(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, _ = tx.Exec(ctx, "SELECT set_config('app.user_id', $1, true)", ownerA.ID.String())
-	_, _ = tx.Exec(ctx, "SELECT set_config('app.workspace_id', $1, true)", a.ID.String())
+	setTenant(t, ctx, tx, ownerA.ID.String(), a.ID.String())
 
-	// An audit row attributed to the other tenant.
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO audit_events (id, workspace_id, action) VALUES ($1, $2, 'forged')",
-		uuid.New(), b.ID); err == nil {
-		t.Error("wrote an audit row into another tenant, want a policy violation")
-	}
-
-	// And an attempt to rename the other tenant's workspace.
+	// Renaming the other tenant's workspace is different in kind: an UPDATE
+	// whose USING clause matches nothing is not an error, it simply touches
+	// no rows. Requiring success-with-zero-rows distinguishes that from the
+	// statement failing for some unrelated reason.
+	//
+	// It runs before the insert below because a policy violation aborts the
+	// transaction, and every statement after one is refused outright.
 	tag, err := tx.Exec(ctx, "UPDATE workspaces SET name = 'seized' WHERE id = $1", b.ID)
-	if err == nil && tag.RowsAffected() != 0 {
+	if err != nil {
+		t.Fatalf("update across tenants returned an error, want zero rows affected: %v", err)
+	}
+	if tag.RowsAffected() != 0 {
 		t.Errorf("updated %d rows in another tenant, want 0", tag.RowsAffected())
 	}
+
+	// An audit row attributed to the other tenant. The specific SQLSTATE
+	// matters: accepting any error would let a schema or connection mistake
+	// pass for tenant isolation.
+	_, err = tx.Exec(ctx,
+		"INSERT INTO audit_events (id, workspace_id, action) VALUES ($1, $2, 'forged')",
+		uuid.New(), b.ID)
+	if err == nil {
+		t.Fatal("wrote an audit row into another tenant, want a policy violation")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != insufficientPrivilege {
+		t.Fatalf("insert failed with %v, want SQLSTATE %s (row-level security violation)", err, insufficientPrivilege)
+	}
+
 }
 
 // TestInvitationLookupIsLimitedToOneRow covers the deliberate hole.
@@ -317,5 +355,71 @@ func TestInvitationLookupIsLimitedToOneRow(t *testing.T) {
 	}
 	if direct != 0 {
 		t.Errorf("the invitations table returned %d rows without context, want 0", direct)
+	}
+}
+
+// TestPreviewReachesANonMember is the regression test for the defect this
+// unit introduced and review caught.
+//
+// The preview behind an invitation link reads the invitation joined to its
+// workspace. Both tables are policy-protected, and the viewer is by
+// definition not a member of anything yet, so with no workspace context both
+// policies matched nothing and a legitimate invitee was told their invitation
+// did not exist.
+//
+// It is worth being precise about why the existing suite missed it: those
+// tests connect as the owner, which is a superuser locally and bypasses RLS,
+// so they exercised the application's filtering and said nothing about the
+// policies. This one runs as the application role, which is the only way the
+// failure is visible.
+func TestPreviewReachesANonMember(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	ctx := context.Background()
+
+	owner := seedUser(t, ownerPool)
+	workspace := seedWorkspace(t, ownerPool, owner, "Preview Workspace")
+	invitations, _ := invitationServices(ownerPool, time.Now)
+
+	issued, err := invitations.Issue(
+		postgres.WithTenant(ctx, postgres.TenantContext{UserID: owner.ID, WorkspaceID: workspace.ID}),
+		ownerOf(workspace.ID, owner.ID), "preview@example.com", domain.RoleViewer)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	hash := domain.HashInvitationToken(issued.Token)
+
+	// The invitee: authenticated, but a member of nothing, so no workspace
+	// context exists to read under. This is the real shape of the request.
+	stranger := seedUser(t, ownerPool)
+	strangerCtx := postgres.WithTenant(ctx, postgres.TenantContext{UserID: stranger.ID})
+
+	store := postgres.NewInvitationStore(appPool)
+	preview, err := store.Context(strangerCtx, hash)
+	if err != nil {
+		t.Fatalf("Context for a non-member invitee: %v", err)
+	}
+	if preview.WorkspaceName != "Preview Workspace" {
+		t.Errorf("workspace name = %q, want %q", preview.WorkspaceName, "Preview Workspace")
+	}
+	if preview.InvitedByEmail != owner.Email {
+		t.Errorf("inviter email = %q, want %q", preview.InvitedByEmail, owner.Email)
+	}
+
+	// The preview is keyed by the token and returns nothing else: a wrong
+	// hash reveals no workspace, and it cannot be used to enumerate.
+	if _, err := store.Context(strangerCtx, []byte("not-a-real-hash-value-000000000000")); err == nil {
+		t.Error("a wrong hash returned a preview, want not found")
+	}
+
+	// And the underlying tables stay closed to that same caller.
+	for _, table := range []string{"workspaces", "workspace_invitations"} {
+		var count int
+		if err := appPool.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatalf("select %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Errorf("%s returned %d rows without context, want 0", table, count)
+		}
 	}
 }

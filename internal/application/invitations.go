@@ -91,7 +91,7 @@ type InvitationStore interface {
 	ByTokenHash(ctx context.Context, tokenHash []byte) (domain.Invitation, error)
 
 	// Context returns the workspace name and inviter for a preview.
-	Context(ctx context.Context, invitationID uuid.UUID) (InvitationPreview, error)
+	Context(ctx context.Context, tokenHash []byte) (InvitationPreview, error)
 
 	// Accept claims the invitation and creates the membership atomically.
 	//
@@ -279,7 +279,7 @@ func (s *InvitationService) Preview(ctx context.Context, token string) (Invitati
 		return InvitationPreview{}, err
 	}
 
-	preview, err := s.invitations.Context(ctx, invitation.ID)
+	preview, err := s.invitations.Context(ctx, domain.HashInvitationToken(token))
 	if err != nil {
 		return InvitationPreview{}, fmt.Errorf("load invitation context: %w", err)
 	}

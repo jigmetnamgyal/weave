@@ -158,31 +158,6 @@ func (q *Queries) GetInvitationForWorkspace(ctx context.Context, arg GetInvitati
 	return i, err
 }
 
-const getInvitationWorkspaceContext = `-- name: GetInvitationWorkspaceContext :one
-SELECT w.name AS workspace_name,
-       u.email AS invited_by_email,
-       u.display_name AS invited_by_display_name
-FROM workspace_invitations i
-JOIN workspaces w ON w.id = i.workspace_id
-JOIN users u ON u.id = i.invited_by
-WHERE i.id = $1
-`
-
-type GetInvitationWorkspaceContextRow struct {
-	WorkspaceName        string
-	InvitedByEmail       string
-	InvitedByDisplayName *string
-}
-
-// Backing for the preview: the workspace name and who invited you, and
-// nothing else about either.
-func (q *Queries) GetInvitationWorkspaceContext(ctx context.Context, id uuid.UUID) (GetInvitationWorkspaceContextRow, error) {
-	row := q.db.QueryRow(ctx, getInvitationWorkspaceContext, id)
-	var i GetInvitationWorkspaceContextRow
-	err := row.Scan(&i.WorkspaceName, &i.InvitedByEmail, &i.InvitedByDisplayName)
-	return i, err
-}
-
 const getOutstandingInvitationForEmail = `-- name: GetOutstandingInvitationForEmail :one
 SELECT id, workspace_id, email, role, token_hash, invited_by, expires_at, created_at, accepted_at, accepted_by, revoked_at, revoked_by FROM workspace_invitations
 WHERE workspace_id = $1 AND email = $2

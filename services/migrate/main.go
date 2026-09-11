@@ -97,6 +97,10 @@ func run(args []string) error {
 //
 // The migration creates the role without a password, so this is what makes it
 // usable. Run after `migrate up`, once per environment.
+// appRoleName is the only role this command will alter. It matches the role
+// created by migration 00004.
+const appRoleName = "weave_app"
+
 func setAppRolePassword() error {
 	appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL"))
 	if appURL == "" {
@@ -107,8 +111,14 @@ func setAppRolePassword() error {
 	if err != nil {
 		return fmt.Errorf("parse APP_DATABASE_URL: %w", err)
 	}
-	if appConfig.User == "" || appConfig.Password == "" {
+	if appConfig.Password == "" {
 		return errors.New("APP_DATABASE_URL must carry a username and password")
+	}
+	// The username is an ALTER ROLE target, so it is checked rather than
+	// trusted. A typo naming the owner — or any other existing role — would
+	// otherwise reset that role's password to the application's.
+	if appConfig.User != appRoleName {
+		return fmt.Errorf("APP_DATABASE_URL must connect as %q, got %q", appRoleName, appConfig.User)
 	}
 
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))

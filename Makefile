@@ -125,8 +125,15 @@ test: ## Run unit tests (CI gate)
 # Two URLs: most tests connect as the owner to exercise the application's own
 # filtering, while the row-level-security tests connect as the application role
 # so the policies actually apply to them.
+# Both URLs are required rather than optional. An .env created before
+# APP_DATABASE_URL existed is not updated by the .env rule above, so the
+# variable would be empty, every RLS test would skip itself, and the command
+# would report success having proved nothing about the policies.
 test-integration: .env ## Run integration tests against the local database
-	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" 		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is empty. Check .env against .env.example." && exit 1)
+	@test -n "$(APP_DATABASE_URL)" || (echo "APP_DATABASE_URL is empty, so the row-level-security tests would skip. Add it to .env — see .env.example." && exit 1)
+	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
+		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
 
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)

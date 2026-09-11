@@ -55,13 +55,3 @@ WHERE id = $1
   AND expires_at > now()
 RETURNING *;
 
--- name: GetInvitationWorkspaceContext :one
--- Backing for the preview: the workspace name and who invited you, and
--- nothing else about either.
-SELECT w.name AS workspace_name,
-       u.email AS invited_by_email,
-       u.display_name AS invited_by_display_name
-FROM workspace_invitations i
-JOIN workspaces w ON w.id = i.workspace_id
-JOIN users u ON u.id = i.invited_by
-WHERE i.id = $1;

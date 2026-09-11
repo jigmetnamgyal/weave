@@ -30,6 +30,41 @@ BEGIN
 END
 $$;
 
+-- Normalise unconditionally, because CREATE ROLE above runs only when the role
+-- is absent. A weave_app left over from an earlier environment could already
+-- carry SUPERUSER or BYPASSRLS, and the application would then bypass every
+-- policy below while looking correctly configured. This is the single control
+-- the whole unit rests on, so it is asserted rather than assumed.
+ALTER ROLE weave_app WITH LOGIN NOSUPERUSER NOBYPASSRLS;
+
+-- The owner of the SECURITY DEFINER functions further down.
+--
+-- Those functions must read rows that the caller's policies hide — that is
+-- their entire purpose. A SECURITY DEFINER function runs as its owner, so if
+-- it were owned by the table owner it would still be filtered wherever the
+-- owner is subject to policies, which is exactly what FORCE ROW LEVEL SECURITY
+-- arranges. Locally the owner is a superuser and the problem is invisible; in
+-- a deployment whose owner is not, invitation lookup would silently return
+-- nothing and every invitation would stop working.
+--
+-- NOLOGIN, granted to nobody: the only way to reach these privileges is by
+-- calling one of the three functions, each of which returns a fixed, narrow
+-- shape.
+--
+-- Note for non-superuser deployments: CREATE ROLE ... BYPASSRLS itself
+-- requires superuser (or a CREATEROLE role that already holds BYPASSRLS), so
+-- where migrations run as an unprivileged owner this role must be provisioned
+-- ahead of them by a superuser. The migration then finds it and moves on.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'weave_rls_bypass') THEN
+        CREATE ROLE weave_rls_bypass NOLOGIN BYPASSRLS;
+    END IF;
+END
+$$;
+
+ALTER ROLE weave_rls_bypass WITH NOLOGIN BYPASSRLS NOSUPERUSER;
+
 GRANT USAGE ON SCHEMA public TO weave_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     users, workspaces, workspace_members, workspace_invitations, audit_events
@@ -87,10 +122,64 @@ AS $$
     SELECT * FROM workspace_invitations WHERE token_hash = presented_hash;
 $$;
 
+-- The preview behind an invitation link: the workspace you are being invited
+-- to and who invited you, for someone who is not yet a member of anything.
+--
+-- Keyed by the same token as the lookup above, and for the same reason: the
+-- token is the only authorization the viewer holds. It returns three display
+-- fields and nothing else, so holding a token cannot be widened into reading
+-- the workspace.
+--
+-- Without this the preview reads workspace_invitations joined to workspaces
+-- with no workspace context, both policies match nothing, and a legitimate
+-- invitee is told their invitation does not exist.
+CREATE FUNCTION weave_invitation_preview_by_token(presented_hash bytea)
+RETURNS TABLE (
+    workspace_name text,
+    invited_by_email text,
+    invited_by_display_name text
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT w.name::text, u.email::text, u.display_name::text
+    FROM workspace_invitations i
+    JOIN workspaces w ON w.id = i.workspace_id
+    JOIN users u ON u.id = i.invited_by
+    WHERE i.token_hash = presented_hash;
+$$;
+
+-- The three SECURITY DEFINER functions are owned by the bypass role so their
+-- reads are not filtered by the policies they exist to look past. The context
+-- helpers stay owned by the migration role: they read no tables.
+ALTER FUNCTION weave_is_member(uuid) OWNER TO weave_rls_bypass;
+ALTER FUNCTION weave_invitation_by_token(bytea) OWNER TO weave_rls_bypass;
+ALTER FUNCTION weave_invitation_preview_by_token(bytea) OWNER TO weave_rls_bypass;
+
+GRANT SELECT ON users, workspaces, workspace_members, workspace_invitations
+    TO weave_rls_bypass;
+
+-- CREATE FUNCTION grants EXECUTE to PUBLIC by default. Left alone, any role
+-- reaching the schema could invoke these as their owner, which for the three
+-- SECURITY DEFINER functions means reading past the policies. Revoke first,
+-- then grant deliberately.
+REVOKE ALL ON FUNCTION
+    weave_current_workspace_id(), weave_current_user_id(),
+    weave_is_member(uuid), weave_invitation_by_token(bytea),
+    weave_invitation_preview_by_token(bytea)
+    FROM PUBLIC;
+
 GRANT EXECUTE ON FUNCTION
     weave_current_workspace_id(), weave_current_user_id(),
-    weave_is_member(uuid), weave_invitation_by_token(bytea)
+    weave_is_member(uuid), weave_invitation_by_token(bytea),
+    weave_invitation_preview_by_token(bytea)
     TO weave_app;
+
+-- weave_is_member reads the current user through weave_current_user_id, and
+-- runs as its owner. Without this the revoke above would leave that call
+-- unprivileged, and every policy consulting membership would fail outright.
+GRANT EXECUTE ON FUNCTION weave_current_workspace_id(), weave_current_user_id()
+    TO weave_rls_bypass;
 
 -- --------------------------------------------------------------------------
 -- Policies
@@ -224,12 +313,14 @@ ALTER TABLE workspace_invitations  DISABLE ROW LEVEL SECURITY;
 ALTER TABLE workspace_members      DISABLE ROW LEVEL SECURITY;
 ALTER TABLE workspaces             DISABLE ROW LEVEL SECURITY;
 
+DROP FUNCTION IF EXISTS weave_invitation_preview_by_token(bytea);
 DROP FUNCTION IF EXISTS weave_invitation_by_token(bytea);
 DROP FUNCTION IF EXISTS weave_is_member(uuid);
 DROP FUNCTION IF EXISTS weave_current_user_id();
 DROP FUNCTION IF EXISTS weave_current_workspace_id();
 
--- The role is left in place: it may own grants elsewhere, and dropping a role
--- that another environment still uses is not something a rollback should do.
+-- The roles are left in place: they may own grants elsewhere, and dropping a
+-- role that another environment still uses is not something a rollback should
+-- do. weave_rls_bypass owns nothing once the functions above are dropped.
 
 -- +goose StatementEnd
