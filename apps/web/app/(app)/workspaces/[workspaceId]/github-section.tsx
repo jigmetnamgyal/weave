@@ -1,13 +1,21 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConnectGitHubButton } from "./connect-github-button";
 import { SyncRepositoriesButton } from "./sync-repositories-button";
-import { fetchInstallations, fetchRepositories, type Workspace } from "@/lib/api";
+import {
+  fetchInstallations,
+  fetchRepositories,
+  type Installation,
+  type Repository,
+  type Workspace,
+} from "@/lib/api";
 
 /**
  * The GitHub section of a workspace page.
  *
- * Rendered on the server so the repository list reflects what the API will
- * actually authorize, rather than a cached view of it.
+ * Rendered per installation rather than as one flat repository list. A
+ * workspace may connect several accounts — a personal one and an organisation
+ * is the common case — and flattening them hides which connection is the one
+ * that is failing when one of them is.
  */
 export async function GitHubSection({ workspace }: { workspace: Workspace }) {
   const canManage = workspace.permissions.includes("repository:manage");
@@ -29,6 +37,8 @@ export async function GitHubSection({ workspace }: { workspace: Workspace }) {
   }
 
   const connected = installations.data;
+  const all = repositories.ok ? repositories.data : [];
+
   if (connected.length === 0) {
     return (
       <Card>
@@ -38,110 +48,131 @@ export async function GitHubSection({ workspace }: { workspace: Workspace }) {
             No GitHub account is connected, so this workspace has no repositories yet.
           </CardDescription>
         </CardHeader>
-        {canManage ? (
-          <CardContent>
+        <CardContent>
+          {canManage ? (
             <ConnectGitHubButton workspaceId={workspace.id} label="Connect GitHub" />
-          </CardContent>
-        ) : (
-          <CardContent>
+          ) : (
             <p className="text-muted-foreground text-sm">
               Your role cannot connect GitHub. Ask an owner or admin.
             </p>
-          </CardContent>
-        )}
+          )}
+        </CardContent>
       </Card>
     );
   }
-
-  const granted = repositories.ok ? repositories.data.filter((r) => r.granted) : [];
-  const withdrawn = repositories.ok ? repositories.data.filter((r) => !r.granted) : [];
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">GitHub</CardTitle>
         <CardDescription>
-          {connected.map((installation) => (
-            <span key={installation.id} className="block">
-              {installation.account_login}
-              {installation.suspended ? (
-                <span className="text-destructive">
-                  {" "}
-                  — suspended on GitHub, so it grants nothing until it is restored
-                </span>
-              ) : installation.repository_selection === "all" ? (
-                " — all repositories"
-              ) : (
-                " — selected repositories"
-              )}
-            </span>
-          ))}
+          {connected.length === 1
+            ? "One connected account."
+            : `${connected.length} connected accounts.`}
         </CardDescription>
       </CardHeader>
 
-      <CardContent className="space-y-4">
-        {granted.length > 0 ? (
-          <ul className="grid gap-1.5 text-sm">
-            {granted.map((repository) => (
-              <li key={repository.id} className="flex items-center gap-2">
-                <span className="font-mono text-xs">{repository.full_name}</span>
-                {repository.private ? (
-                  <span className="text-muted-foreground text-xs">private</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-muted-foreground text-sm">
-              No repositories are shared with this workspace yet. If you selected some on GitHub,
-              they may not have arrived here yet.
-            </p>
-            {canManage ? (
-              <SyncRepositoriesButton
-                workspaceId={workspace.id}
-                installationId={connected[0].id}
-                label="Sync repositories from GitHub"
-              />
-            ) : null}
-          </div>
-        )}
-
-        {/*
-          Withdrawn repositories are shown rather than dropped. Someone who
-          used one yesterday should be told access was removed, not left to
-          wonder where it went.
-        */}
-        {withdrawn.length > 0 ? (
-          <div className="space-y-1.5">
-            <p className="text-muted-foreground text-xs">No longer shared with this workspace:</p>
-            <ul className="grid gap-1 text-sm">
-              {withdrawn.map((repository) => (
-                <li key={repository.id} className="text-muted-foreground font-mono text-xs">
-                  {repository.full_name}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
+      <CardContent className="space-y-6">
+        {connected.map((installation) => (
+          <InstallationBlock
+            key={installation.id}
+            workspaceId={workspace.id}
+            installation={installation}
+            repositories={all.filter((r) => r.installation_id === installation.id)}
+            canManage={canManage}
+          />
+        ))}
 
         {canManage ? (
-          <div className="flex flex-wrap gap-2">
-            <ConnectGitHubButton
-              workspaceId={workspace.id}
-              label="Change repository access on GitHub"
-              variant="secondary"
-            />
-            {granted.length > 0 ? (
-              <SyncRepositoriesButton
-                workspaceId={workspace.id}
-                installationId={connected[0].id}
-                label="Sync now"
-              />
-            ) : null}
-          </div>
+          <ConnectGitHubButton
+            workspaceId={workspace.id}
+            label="Connect another account, or change access"
+            variant="secondary"
+          />
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function InstallationBlock({
+  workspaceId,
+  installation,
+  repositories,
+  canManage,
+}: {
+  workspaceId: string;
+  installation: Installation;
+  repositories: Repository[];
+  canManage: boolean;
+}) {
+  const granted = repositories.filter((r) => r.granted);
+  const withdrawn = repositories.filter((r) => !r.granted);
+
+  return (
+    <div className="space-y-3 border-l-2 border-border pl-4">
+      <div>
+        <p className="text-foreground text-sm font-medium">
+          {installation.account_login}
+          <span className="text-muted-foreground font-normal">
+            {" "}
+            · {installation.account_type === "Organization" ? "organisation" : "personal"}
+          </span>
+        </p>
+        <p className="text-muted-foreground text-xs">
+          {installation.suspended ? (
+            <span className="text-destructive">
+              Suspended on GitHub, so it grants nothing until it is restored.
+            </span>
+          ) : installation.repository_selection === "all" ? (
+            `All repositories · ${granted.length} here`
+          ) : (
+            `Selected repositories · ${granted.length} here`
+          )}
+        </p>
+      </div>
+
+      {granted.length > 0 ? (
+        <ul className="grid gap-1">
+          {granted.map((repository) => (
+            <li key={repository.id} className="flex items-center gap-2">
+              <span className="font-mono text-xs">{repository.full_name}</span>
+              {repository.private ? (
+                <span className="text-muted-foreground text-xs">private</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          No repositories from this account have arrived yet.
+        </p>
+      )}
+
+      {/*
+        Withdrawn repositories are shown rather than dropped. Someone who used
+        one yesterday should be told access was removed, not left wondering.
+      */}
+      {withdrawn.length > 0 ? (
+        <div className="space-y-1">
+          <p className="text-muted-foreground text-xs">No longer shared:</p>
+          <ul className="grid gap-1">
+            {withdrawn.map((repository) => (
+              <li key={repository.id} className="text-muted-foreground font-mono text-xs">
+                {repository.full_name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {canManage ? (
+        <SyncRepositoriesButton
+          workspaceId={workspaceId}
+          installationId={installation.id}
+          label={granted.length === 0 ? "Sync repositories from GitHub" : "Sync now"}
+        />
+      ) : null}
+    </div>
   );
 }

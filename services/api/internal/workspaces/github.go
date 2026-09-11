@@ -92,12 +92,17 @@ type installationResponse struct {
 }
 
 type repositoryResponse struct {
-	ID            string `json:"id"`
-	Owner         string `json:"owner"`
-	Name          string `json:"name"`
-	FullName      string `json:"full_name"`
-	DefaultBranch string `json:"default_branch"`
-	Private       bool   `json:"private"`
+	ID string `json:"id"`
+	// InstallationID lets the interface group repositories by the account they
+	// came from. A workspace may connect several — a personal account and an
+	// organisation, say — and presenting them as one flat list hides which
+	// connection is failing when one of them is.
+	InstallationID string `json:"installation_id"`
+	Owner          string `json:"owner"`
+	Name           string `json:"name"`
+	FullName       string `json:"full_name"`
+	DefaultBranch  string `json:"default_branch"`
+	Private        bool   `json:"private"`
 	// Granted is false for a repository the installation no longer reaches.
 	// Reported rather than filtered out, so the interface can say access was
 	// removed instead of silently losing something someone used yesterday.
@@ -206,13 +211,14 @@ func (g *githubRoutes) listRepositories(w http.ResponseWriter, r *http.Request) 
 	response := make([]repositoryResponse, 0, len(repositories))
 	for _, repository := range repositories {
 		response = append(response, repositoryResponse{
-			ID:            repository.ID.String(),
-			Owner:         repository.Owner,
-			Name:          repository.Name,
-			FullName:      repository.FullName(),
-			DefaultBranch: repository.DefaultBranch,
-			Private:       repository.Private,
-			Granted:       repository.Granted,
+			ID:             repository.ID.String(),
+			InstallationID: repository.InstallationID.String(),
+			Owner:          repository.Owner,
+			Name:           repository.Name,
+			FullName:       repository.FullName(),
+			DefaultBranch:  repository.DefaultBranch,
+			Private:        repository.Private,
+			Granted:        repository.Granted,
 		})
 	}
 	httpx.WriteJSON(ctx, w, http.StatusOK, map[string]any{"repositories": response})

@@ -268,6 +268,8 @@ export type Installation = {
  */
 export type Repository = {
   id: string;
+  /** Which connected account this came from. A workspace may have several. */
+  installation_id: string;
   owner: string;
   name: string;
   full_name: string;
