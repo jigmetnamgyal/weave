@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0 (row-level security) complete; M3.1 (GitHub App) next
+- Status: M2 complete; M3.0 (row-level security) merged 2026-09-11; M3.1 (GitHub App) next, blocked on creating the GitHub App
 
 ## Current Goal
 
@@ -28,7 +28,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Completed
 
-- Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
+- Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Merged 2026-09-11 in PR #5 after two review rounds and eleven findings, including a live defect that made the invitation preview 404 for every legitimate invitee. Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
 - Defined developer-first MVP and long-term multiplayer-agent product boundary.
 - Defined modular control plane and isolated execution plane.
 - Selected initial technology stack and service boundaries.
@@ -44,7 +44,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M3.0 is complete and awaiting review; M3.1 is next.
+Nothing in progress. M3.0 merged in PR #5 on 2026-09-11 after two review rounds; M3.1 is next.
 
 ## Next Up
 
@@ -156,4 +156,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-11 — Unit M3.0 (row-level security) complete.
+2026-09-11 — Unit M3.0 merged. Next: M3.1, blocked on creating the GitHub App.
