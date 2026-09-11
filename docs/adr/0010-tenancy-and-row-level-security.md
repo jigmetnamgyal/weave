@@ -1,6 +1,6 @@
 # ADR-010: Tenancy enforced by workspace-scoped queries, with row-level security deferred
 
-- Status: Accepted
+- Status: Accepted; **superseded in part by ADR-012 (2026-09-11), which records that row-level security shipped**
 - Date: 2026-09-10
 - Supersedes: nothing
 - Related: ADR-002 (PostgreSQL as source of truth), ADR-009 (Clerk for
@@ -49,7 +49,24 @@ Concretely, as of M2.2:
 - Integration tests assert cross-tenant reads return nothing, using real
   PostgreSQL rather than a fake.
 
-## Why row-level security is deferred, and what brings it forward
+## Update, 2026-09-11: row-level security shipped
+
+RLS landed in M3.0, ahead of any of the triggers below firing. The deferral
+reasoning stood — none of the three conditions had been met — but the tenant
+surface was about to roughly double with M3.1, and four tables are cheaper to
+convert than eight. See ADR-012 for what was built.
+
+One correction to what this ADR implied. It described RLS as protecting
+against an application running as owner; that is only half right. `FORCE ROW
+LEVEL SECURITY` subjects a table's _owner_ to its policies, but a **superuser
+or a `BYPASSRLS` role ignores RLS regardless**, and the local `weave` role is a
+superuser. The control that actually carries isolation is the application
+connecting as `weave_app`, which is none of those three. `FORCE` is the second
+layer, for environments whose owner is not a superuser.
+
+The rest of this ADR is retained as the record of why the deferral was taken.
+
+## Why row-level security was deferred, and what brought it forward
 
 Deferring a security control deserves an explicit reason, so:
 

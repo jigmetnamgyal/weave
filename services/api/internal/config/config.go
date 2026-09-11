@@ -18,8 +18,16 @@ type Config struct {
 	AppEnv string
 	// HTTPAddr is the listen address for the HTTP server.
 	HTTPAddr string
-	// DatabaseURL is the PostgreSQL connection string.
+	// DatabaseURL is the PostgreSQL connection string used for readiness
+	// probing. Migrations use it too, from their own process.
 	DatabaseURL string
+	// AppDatabaseURL is the connection the API serves requests on.
+	//
+	// Deliberately separate from DatabaseURL: it authenticates as a role that
+	// does not own the tables, so row-level security applies to it. An owner
+	// bypasses policies, and a single URL would make reverting to the owner a
+	// one-character change that nothing would catch.
+	AppDatabaseURL string
 	// RedisURL is the Redis connection string.
 	RedisURL string
 	// NATSURL is the NATS JetStream connection string.
@@ -45,6 +53,7 @@ type Config struct {
 // of them is listed in .env.example.
 var requiredKeys = []string{
 	"DATABASE_URL",
+	"APP_DATABASE_URL",
 	"REDIS_URL",
 	"NATS_URL",
 	"TEMPORAL_HOST_PORT",
@@ -92,6 +101,7 @@ func Load() (Config, error) {
 		AppEnv:           valueOr("APP_ENV", "development"),
 		HTTPAddr:         valueOr("API_HTTP_ADDR", ":8080"),
 		DatabaseURL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		AppDatabaseURL:   strings.TrimSpace(os.Getenv("APP_DATABASE_URL")),
 		RedisURL:         strings.TrimSpace(os.Getenv("REDIS_URL")),
 		NATSURL:          strings.TrimSpace(os.Getenv("NATS_URL")),
 		TemporalHostPort: strings.TrimSpace(os.Getenv("TEMPORAL_HOST_PORT")),

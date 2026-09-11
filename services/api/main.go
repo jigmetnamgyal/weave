@@ -76,11 +76,21 @@ func run() error {
 	// Dependency clients are constructed eagerly but connect lazily. The
 	// service must start even when a dependency is down: that is precisely
 	// the state readiness exists to report.
+	// Two pools, deliberately. The readiness probe connects as the owner so a
+	// policy misconfiguration cannot make the service look unhealthy; every
+	// request goes through appPool, which authenticates as a role that
+	// row-level security applies to.
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("configure postgres pool: %w", err)
 	}
 	defer pool.Close()
+
+	appPool, err := pgxpool.New(ctx, cfg.AppDatabaseURL)
+	if err != nil {
+		return fmt.Errorf("configure application postgres pool: %w", err)
+	}
+	defer appPool.Close()
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
@@ -106,7 +116,11 @@ func run() error {
 	defer natsConn.Close()
 
 	checks := []health.Check{
-		{Name: "postgres", Probe: pool.Ping},
+		{Name: "postgres-owner", Probe: pool.Ping},
+		// The application pool connects lazily, so without its own probe a
+		// broken APP_DATABASE_URL stays invisible until the first request
+		// that needs it — and readiness would report healthy throughout.
+		{Name: "postgres-app", Probe: appRoleProbe(appPool)},
 		{Name: "redis", Probe: func(ctx context.Context) error { return redisClient.Ping(ctx).Err() }},
 		{Name: "nats", Probe: natsProbe(natsConn)},
 	}
@@ -119,7 +133,9 @@ func run() error {
 		return fmt.Errorf("configure identity verifier: %w", err)
 	}
 
-	provisioner := application.NewUserProvisioner(postgres.NewUserStore(pool))
+	// users carries no workspace_id and has no policy, so provisioning uses
+	// the application pool like everything else.
+	provisioner := application.NewUserProvisioner(postgres.NewUserStore(appPool))
 	authMiddleware := auth.NewMiddleware(verifier, provisioner, logger)
 
 	// Every product route lives under /v1 and the whole subtree is wrapped in
@@ -129,10 +145,10 @@ func run() error {
 	protected := http.NewServeMux()
 	protected.Handle("GET /v1/me", users.Me())
 
-	workspaceStore := postgres.NewWorkspaceStore(pool)
+	workspaceStore := postgres.NewWorkspaceStore(appPool)
 	workspaceService := application.NewWorkspaceService(workspaceStore)
 	invitationService := application.NewInvitationService(
-		postgres.NewInvitationStore(pool), workspaceStore, time.Now)
+		postgres.NewInvitationStore(appPool), workspaceStore, time.Now)
 
 	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
 	workspaceHandler.Register(protected)
@@ -212,4 +228,41 @@ func withTimeout(timeout time.Duration, next http.Handler) http.Handler {
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// appRoleProbe reports the application pool healthy only when the role it
+// connects as is one that row-level security actually applies to.
+//
+// PostgreSQL ignores every policy for a superuser or a role holding
+// BYPASSRLS. An application connecting as either would run with tenant
+// isolation silently switched off — the policies would still be there, still
+// look correct, and do nothing. That is the failure this whole unit exists to
+// prevent, so it is asserted continuously rather than assumed from
+// configuration.
+//
+// It rides on the readiness probe rather than running at startup because the
+// service is required to start while a dependency is down and report the
+// state through readiness. A misconfigured role therefore means the instance
+// never becomes ready, and so never takes traffic.
+func appRoleProbe(pool *pgxpool.Pool) func(context.Context) error {
+	return func(ctx context.Context) error {
+		var (
+			role              string
+			superuser, bypass bool
+		)
+		err := pool.QueryRow(ctx,
+			`SELECT current_user, rolsuper, rolbypassrls
+			   FROM pg_roles WHERE rolname = current_user`).
+			Scan(&role, &superuser, &bypass)
+		if err != nil {
+			return fmt.Errorf("inspect application role: %w", err)
+		}
+		if superuser || bypass {
+			return fmt.Errorf(
+				"application role %q bypasses row-level security (superuser=%t, bypassrls=%t): "+
+					"APP_DATABASE_URL must connect as an unprivileged role",
+				role, superuser, bypass)
+		}
+		return nil
+	}
 }

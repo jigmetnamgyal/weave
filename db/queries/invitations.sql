@@ -14,8 +14,12 @@ WHERE workspace_id = $1 AND email = $2
 -- Deliberately unscoped by workspace: the token is the only thing the
 -- acceptor holds, and they are not yet a member of anything. The caller
 -- checks status and email before acting on the result.
-SELECT * FROM workspace_invitations
-WHERE token_hash = $1;
+--
+-- Goes through weave_invitation_by_token rather than the table, because
+-- row-level security would otherwise match no row — there is no workspace
+-- context to match against. The function is SECURITY DEFINER and returns only
+-- the row whose hash was presented.
+SELECT * FROM weave_invitation_by_token($1);
 
 -- name: GetInvitationForWorkspace :one
 -- Scoped by workspace so an invitation id from one tenant cannot be revoked
@@ -51,13 +55,3 @@ WHERE id = $1
   AND expires_at > now()
 RETURNING *;
 
--- name: GetInvitationWorkspaceContext :one
--- Backing for the preview: the workspace name and who invited you, and
--- nothing else about either.
-SELECT w.name AS workspace_name,
-       u.email AS invited_by_email,
-       u.display_name AS invited_by_display_name
-FROM workspace_invitations i
-JOIN workspaces w ON w.id = i.workspace_id
-JOIN users u ON u.id = i.invited_by
-WHERE i.id = $1;

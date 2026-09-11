@@ -25,12 +25,13 @@ GOBIN := $(shell go env GOPATH)/bin
 
 # Migrations run against the DATABASE_URL in .env.
 DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$DATABASE_URL)
+APP_DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$APP_DATABASE_URL)
 
 .DEFAULT_GOAL := help
 
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
         fmt fmt-check lint lint-go typecheck test test-integration build ci tidy \
-        migrate-up migrate-down migrate-status sqlc sqlc-check
+        migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -121,8 +122,18 @@ test: ## Run unit tests (CI gate)
 # Integration tests need a migrated database. They skip themselves when
 # TEST_DATABASE_URL is unset, which is what keeps `make test` runnable without
 # Docker.
+# Two URLs: most tests connect as the owner to exercise the application's own
+# filtering, while the row-level-security tests connect as the application role
+# so the policies actually apply to them.
+# Both URLs are required rather than optional. An .env created before
+# APP_DATABASE_URL existed is not updated by the .env rule above, so the
+# variable would be empty, every RLS test would skip itself, and the command
+# would report success having proved nothing about the policies.
 test-integration: .env ## Run integration tests against the local database
-	@TEST_DATABASE_URL="$(DATABASE_URL)" go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is empty. Check .env against .env.example." && exit 1)
+	@test -n "$(APP_DATABASE_URL)" || (echo "APP_DATABASE_URL is empty, so the row-level-security tests would skip. Add it to .env — see .env.example." && exit 1)
+	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
+		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
 
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)
@@ -144,9 +155,13 @@ endef
 # large build and dependency surface for a PostgreSQL-only project.
 migrate-up: .env ## Apply all pending database migrations
 	@DATABASE_URL="$(DATABASE_URL)" go run ./services/migrate up
+	@$(MAKE) --no-print-directory db-app-role
 
 migrate-down: .env ## Roll back the most recent migration
 	@DATABASE_URL="$(DATABASE_URL)" go run ./services/migrate down
+
+db-app-role: .env ## Set the application role's password from APP_DATABASE_URL
+	@DATABASE_URL="$(DATABASE_URL)" APP_DATABASE_URL="$(APP_DATABASE_URL)" go run ./services/migrate app-role
 
 migrate-status: .env ## Show which migrations have been applied
 	@DATABASE_URL="$(DATABASE_URL)" go run ./services/migrate status

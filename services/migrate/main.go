@@ -39,9 +39,16 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: migrate <up|down|status|version> (reads DATABASE_URL)")
+		return errors.New("usage: migrate <up|down|status|version|app-role> (reads DATABASE_URL)")
 	}
 	command := args[0]
+
+	// app-role sets the application role's password from APP_DATABASE_URL.
+	// It lives here rather than in a migration because a credential does not
+	// belong in a file that is committed and replayed in every environment.
+	if command == "app-role" {
+		return setAppRolePassword()
+	}
 
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if databaseURL == "" {
@@ -76,12 +83,94 @@ func run(args []string) error {
 	case "version":
 		err = goose.VersionContext(ctx, db, weavedb.MigrationsDir)
 	default:
-		return fmt.Errorf("unknown command %q: expected up, down, status or version", command)
+		return fmt.Errorf("unknown command %q: expected up, down, status, version or app-role", command)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", command, err)
 	}
 
+	return nil
+}
+
+// setAppRolePassword aligns the weave_app role's password with the one the
+// API will connect with.
+//
+// The migration creates the role without a password, so this is what makes it
+// usable. Run after `migrate up`, once per environment.
+// appRoleName is the only role this command will alter. It matches the role
+// created by migration 00004.
+const appRoleName = "weave_app"
+
+func setAppRolePassword() error {
+	appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL"))
+	if appURL == "" {
+		return errors.New("APP_DATABASE_URL is not set; it carries the credential this command applies")
+	}
+
+	appConfig, err := pgx.ParseConfig(appURL)
+	if err != nil {
+		return fmt.Errorf("parse APP_DATABASE_URL: %w", err)
+	}
+	if appConfig.Password == "" {
+		return errors.New("APP_DATABASE_URL must carry a username and password")
+	}
+	// The username is an ALTER ROLE target, so it is checked rather than
+	// trusted. A typo naming the owner — or any other existing role — would
+	// otherwise reset that role's password to the application's.
+	if appConfig.User != appRoleName {
+		return fmt.Errorf("APP_DATABASE_URL must connect as %q, got %q", appRoleName, appConfig.User)
+	}
+
+	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if databaseURL == "" {
+		return errors.New("DATABASE_URL is not set; the owner connection applies the change")
+	}
+
+	db, err := openDB(databaseURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+
+	// ALTER ROLE takes neither the role name nor the password as a bind
+	// parameter, and hand-rolling SQL quoting around a credential is the wrong
+	// place to improvise. Pass both as bound settings instead and let
+	// format()'s %I and %L do the quoting, which is the server's own
+	// implementation of the rules.
+	//
+	// set_config(..., true) makes the settings transaction-local, so the
+	// password is discarded at commit rather than lingering on the session.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		"SELECT set_config('weave.app_role', $1, true)", appConfig.User); err != nil {
+		return fmt.Errorf("bind role name: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"SELECT set_config('weave.app_password', $1, true)", appConfig.Password); err != nil {
+		return fmt.Errorf("bind role password: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DO $do$
+BEGIN
+    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L',
+        current_setting('weave.app_role'), current_setting('weave.app_password'));
+END
+$do$;`); err != nil {
+		return fmt.Errorf("set application role password: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	fmt.Printf("weave-migrate: application role %q is ready\n", appConfig.User)
 	return nil
 }
 

@@ -28,13 +28,15 @@ type Querier interface {
 	// Deliberately unscoped by workspace: the token is the only thing the
 	// acceptor holds, and they are not yet a member of anything. The caller
 	// checks status and email before acting on the result.
-	GetInvitationByTokenHash(ctx context.Context, tokenHash []byte) (WorkspaceInvitation, error)
+	//
+	// Goes through weave_invitation_by_token rather than the table, because
+	// row-level security would otherwise match no row — there is no workspace
+	// context to match against. The function is SECURITY DEFINER and returns only
+	// the row whose hash was presented.
+	GetInvitationByTokenHash(ctx context.Context, presentedHash []byte) (WorkspaceInvitation, error)
 	// Scoped by workspace so an invitation id from one tenant cannot be revoked
 	// through another.
 	GetInvitationForWorkspace(ctx context.Context, arg GetInvitationForWorkspaceParams) (WorkspaceInvitation, error)
-	// Backing for the preview: the workspace name and who invited you, and
-	// nothing else about either.
-	GetInvitationWorkspaceContext(ctx context.Context, id uuid.UUID) (GetInvitationWorkspaceContextRow, error)
 	// The row occupying the one-outstanding slot, if any. May be expired: the
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)

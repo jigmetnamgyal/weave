@@ -91,13 +91,13 @@ type InvitationStore interface {
 	ByTokenHash(ctx context.Context, tokenHash []byte) (domain.Invitation, error)
 
 	// Context returns the workspace name and inviter for a preview.
-	Context(ctx context.Context, invitationID uuid.UUID) (InvitationPreview, error)
+	Context(ctx context.Context, tokenHash []byte) (InvitationPreview, error)
 
 	// Accept claims the invitation and creates the membership atomically.
 	//
 	// The claim must be conditional on the invitation still being usable, so
 	// that two concurrent accepts of one token produce exactly one membership.
-	Accept(ctx context.Context, invitationID, userID uuid.UUID, role domain.Role, event AuditEvent) (domain.Membership, error)
+	Accept(ctx context.Context, invitationID, workspaceID, userID uuid.UUID, role domain.Role, event AuditEvent) (domain.Membership, error)
 }
 
 // InvitationService holds the invitation use cases.
@@ -279,7 +279,7 @@ func (s *InvitationService) Preview(ctx context.Context, token string) (Invitati
 		return InvitationPreview{}, err
 	}
 
-	preview, err := s.invitations.Context(ctx, invitation.ID)
+	preview, err := s.invitations.Context(ctx, domain.HashInvitationToken(token))
 	if err != nil {
 		return InvitationPreview{}, fmt.Errorf("load invitation context: %w", err)
 	}
@@ -310,7 +310,7 @@ func (s *InvitationService) Accept(ctx context.Context, user domain.User, token 
 		return domain.Membership{}, fmt.Errorf("check membership: %w", err)
 	}
 
-	membership, err := s.invitations.Accept(ctx, invitation.ID, user.ID, invitation.Role, AuditEvent{
+	membership, err := s.invitations.Accept(ctx, invitation.ID, invitation.WorkspaceID, user.ID, invitation.Role, AuditEvent{
 		WorkspaceID: invitation.WorkspaceID,
 		ActorUserID: user.ID,
 		Action:      AuditInvitationAccepted,

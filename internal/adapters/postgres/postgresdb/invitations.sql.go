@@ -95,15 +95,19 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 }
 
 const getInvitationByTokenHash = `-- name: GetInvitationByTokenHash :one
-SELECT id, workspace_id, email, role, token_hash, invited_by, expires_at, created_at, accepted_at, accepted_by, revoked_at, revoked_by FROM workspace_invitations
-WHERE token_hash = $1
+SELECT id, workspace_id, email, role, token_hash, invited_by, expires_at, created_at, accepted_at, accepted_by, revoked_at, revoked_by FROM weave_invitation_by_token($1)
 `
 
 // Deliberately unscoped by workspace: the token is the only thing the
 // acceptor holds, and they are not yet a member of anything. The caller
 // checks status and email before acting on the result.
-func (q *Queries) GetInvitationByTokenHash(ctx context.Context, tokenHash []byte) (WorkspaceInvitation, error) {
-	row := q.db.QueryRow(ctx, getInvitationByTokenHash, tokenHash)
+//
+// Goes through weave_invitation_by_token rather than the table, because
+// row-level security would otherwise match no row — there is no workspace
+// context to match against. The function is SECURITY DEFINER and returns only
+// the row whose hash was presented.
+func (q *Queries) GetInvitationByTokenHash(ctx context.Context, presentedHash []byte) (WorkspaceInvitation, error) {
+	row := q.db.QueryRow(ctx, getInvitationByTokenHash, presentedHash)
 	var i WorkspaceInvitation
 	err := row.Scan(
 		&i.ID,
@@ -151,31 +155,6 @@ func (q *Queries) GetInvitationForWorkspace(ctx context.Context, arg GetInvitati
 		&i.RevokedAt,
 		&i.RevokedBy,
 	)
-	return i, err
-}
-
-const getInvitationWorkspaceContext = `-- name: GetInvitationWorkspaceContext :one
-SELECT w.name AS workspace_name,
-       u.email AS invited_by_email,
-       u.display_name AS invited_by_display_name
-FROM workspace_invitations i
-JOIN workspaces w ON w.id = i.workspace_id
-JOIN users u ON u.id = i.invited_by
-WHERE i.id = $1
-`
-
-type GetInvitationWorkspaceContextRow struct {
-	WorkspaceName        string
-	InvitedByEmail       string
-	InvitedByDisplayName *string
-}
-
-// Backing for the preview: the workspace name and who invited you, and
-// nothing else about either.
-func (q *Queries) GetInvitationWorkspaceContext(ctx context.Context, id uuid.UUID) (GetInvitationWorkspaceContextRow, error) {
-	row := q.db.QueryRow(ctx, getInvitationWorkspaceContext, id)
-	var i GetInvitationWorkspaceContextRow
-	err := row.Scan(&i.WorkspaceName, &i.InvitedByEmail, &i.InvitedByDisplayName)
 	return i, err
 }
 
