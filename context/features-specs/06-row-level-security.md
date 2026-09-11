@@ -137,4 +137,4 @@ application, so test it by making that mistake on purpose:
 - With no tenant context, tenant tables return nothing.
 - Migrations still run as the owner.
 - ADR-010 is updated to record that RLS shipped and what it covers.
-- `make ci` and `make test-integration` pass.
+- `make ci` and `make test-integration` pass
