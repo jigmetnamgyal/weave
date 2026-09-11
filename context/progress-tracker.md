@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0 (row-level security) merged 2026-09-11; M3.1 (GitHub App) next, blocked on creating the GitHub App
+- Status: M2 complete; M3.0 merged 2026-09-11; M3.1 (GitHub App installation) in progress
 
 ## Current Goal
 
@@ -44,7 +44,15 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M3.0 merged in PR #5 on 2026-09-11 after two review rounds; M3.1 is next.
+### Unit M3.1 — GitHub App Installation and Repository Access
+
+Started 2026-09-11 on `feat/m3.1-github-app-installation`, branched from `main`.
+
+**Source:** `context/features-specs/07-github-app-installation.md`
+
+**Outcome:** a workspace installs the Weave GitHub App, selects repositories, and the grant is recorded well enough to authorize later work against it — and cannot be borrowed by another tenant.
+
+**The App exists and is verified** (`weave-ai-dev-jaggle`, id 4906626). Credentials, permissions and webhook config all confirmed against GitHub's API on 2026-09-11.
 
 ## Next Up
 

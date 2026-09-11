@@ -43,6 +43,23 @@ type Config struct {
 	// ClerkIssuer is the expected `iss` claim on session tokens, and the base
 	// URL the signing key set is discovered from.
 	ClerkIssuer string
+	// GitHubAppID is the numeric App id, used as the `iss` claim when minting
+	// the App JWT that authenticates as the App itself.
+	GitHubAppID string
+	// GitHubAppSlug is the App's URL slug, used to build the install link
+	// https://github.com/apps/<slug>/installations/new.
+	GitHubAppSlug string
+	// GitHubAppPrivateKeyPath points at the PEM private key. A path rather
+	// than the key itself: the key is the root credential for every
+	// installation, and a path keeps it out of the environment, out of process
+	// listings, and out of anything that dumps configuration.
+	GitHubAppPrivateKeyPath string
+	// GitHubWebhookSecret is the shared secret GitHub signs deliveries with.
+	GitHubWebhookSecret string
+	// GitHubWebhookProxyURL is where deliveries are relayed from in
+	// development, because GitHub cannot reach localhost. Empty in production,
+	// where the API is reachable directly, so it is deliberately not required.
+	GitHubWebhookProxyURL string
 	// ClerkJWTAudience, when set, is required in the token's `aud` claim.
 	// Clerk's default session token has no audience; one appears only when a
 	// JWT template sets it, so enforcement is opt-in.
@@ -62,6 +79,14 @@ var requiredKeys = []string{
 	// signature requires only public keys, so that secret stays with the web
 	// application and out of this process entirely.
 	"CLERK_ISSUER",
+	// The GitHub App. The private key is required as a path, and read at
+	// startup rather than lazily: a missing key is a misconfiguration, and the
+	// moment to discover it is deployment, not the first time someone tries to
+	// connect a repository.
+	"GITHUB_APP_ID",
+	"GITHUB_APP_SLUG",
+	"GITHUB_APP_PRIVATE_KEY_PATH",
+	"GITHUB_APP_WEBHOOK_SECRET",
 }
 
 // validExporters are the accepted values for OTEL_EXPORTER.
@@ -110,6 +135,12 @@ func Load() (Config, error) {
 		ReadinessTimeout: 3 * time.Second,
 		ClerkIssuer:      strings.TrimSpace(os.Getenv("CLERK_ISSUER")),
 		ClerkJWTAudience: strings.TrimSpace(os.Getenv("CLERK_JWT_AUDIENCE")),
+
+		GitHubAppID:             strings.TrimSpace(os.Getenv("GITHUB_APP_ID")),
+		GitHubAppSlug:           strings.TrimSpace(os.Getenv("GITHUB_APP_SLUG")),
+		GitHubAppPrivateKeyPath: strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH")),
+		GitHubWebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_APP_WEBHOOK_SECRET")),
+		GitHubWebhookProxyURL:   strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_PROXY_URL")),
 	}
 
 	if !validExporters[cfg.OTelExporter] {
