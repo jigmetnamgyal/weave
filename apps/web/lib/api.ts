@@ -2,26 +2,98 @@ import "server-only";
 
 import { auth } from "@clerk/nextjs/server";
 
+import type { components, operations } from "./api-types.gen";
+
 /**
- * The authenticated user, as returned by `GET /v1/me`.
+ * Every response type here comes from `contracts/openapi/openapi.yaml`, via
+ * `npm run contracts`. None is written by hand.
  *
- * Hand-written for this one endpoint. Once the API surface grows past a
- * couple of routes these types come from the generated OpenAPI client
- * (`contracts/openapi/openapi.yaml`) rather than being maintained here.
+ * That is a correctness property, not tidiness. A hand-written type is an
+ * assertion about what the API returns that nothing checks — and during M3.1
+ * the API gained `installation_id` on the repository response while the page
+ * grouping by it compiled cleanly and grouped every repository under
+ * `undefined`. Generated types make that a compile error.
+ *
+ * `make ci` regenerates and fails on drift, so this cannot quietly become a
+ * hand-maintained file with a misleading name.
  */
-export type User = {
-  id: string;
-  email: string;
-  display_name?: string;
-  avatar_url?: string;
-};
+type Schemas = components["schemas"];
+
+/**
+ * The 200/201 body of a named operation, straight from the contract.
+ *
+ * Response *envelopes* need this as much as the objects inside them. A
+ * hand-written `{ repositories: Repository[] }` is still an unchecked
+ * assertion even when `Repository` itself is generated — rename that key in
+ * the contract and every caller keeps compiling while reading a field the API
+ * no longer sends. Which is the exact failure this unit exists to remove, so
+ * leaving the envelopes by hand would have closed half the hole and claimed
+ * the whole one.
+ */
+type Ok<K extends keyof operations> = operations[K] extends {
+  responses: infer R;
+}
+  ? R extends { 200: { content: { "application/json": infer B } } }
+    ? B
+    : R extends { 201: { content: { "application/json": infer B } } }
+      ? B
+      : never
+  : never;
+
+/** The authenticated user, as returned by `GET /v1/me`. */
+export type User = Schemas["User"];
+
+/** A member's position in a workspace. */
+export type Role = Schemas["Role"];
+
+/**
+ * A workspace, with the caller's role and what that role permits.
+ *
+ * `permissions` is advisory — it exists so the UI can hide controls the caller
+ * cannot use, rather than reimplementing the role matrix in TypeScript where
+ * it would drift. The server enforces the same matrix regardless.
+ */
+export type Workspace = Schemas["Workspace"];
+
+/** A workspace member. */
+export type Member = Schemas["Member"];
+
+/** An invitation to join a workspace. Never carries the token. */
+export type Invitation = Schemas["Invitation"];
+
+/**
+ * A freshly issued invitation.
+ *
+ * `token` exists here and nowhere else — only its hash is stored, so it
+ * cannot be fetched again. Surface it immediately.
+ */
+export type IssuedInvitation = Schemas["IssuedInvitation"];
+
+/**
+ * What the holder of a token may learn before accepting.
+ *
+ * No invited address: a forwarded token must not disclose who it was meant
+ * for. The accept page shows the signed-in account instead.
+ */
+export type InvitationPreview = Schemas["InvitationPreview"];
+
+/** A GitHub App installation bound to a workspace. */
+export type Installation = Schemas["Installation"];
+
+/**
+ * A repository an installation grants.
+ *
+ * `granted` can be false. Withdrawn repositories are returned rather than
+ * filtered out so the interface can say access was removed, instead of
+ * silently losing something a member used yesterday.
+ */
+export type Repository = Schemas["Repository"];
+
+/** What an installation can and cannot currently do. */
+export type InstallationHealth = Schemas["InstallationHealth"];
 
 /** The error envelope every failing endpoint returns. */
-type ApiError = {
-  code: string;
-  message: string;
-  request_id: string;
-};
+type ApiError = Schemas["Error"];
 
 /**
  * A request outcome.
@@ -55,71 +127,6 @@ function apiBaseUrl(): string {
   }
   return url.replace(/\/$/, "");
 }
-
-/** A member's position in a workspace. */
-export type Role = "owner" | "admin" | "developer" | "viewer";
-
-/**
- * A workspace, with the caller's role and what that role permits.
- *
- * `permissions` is advisory — it exists so the UI can hide controls the caller
- * cannot use, rather than reimplementing the role matrix in TypeScript where
- * it would drift. The server enforces the same matrix regardless.
- */
-export type Workspace = {
-  id: string;
-  slug: string;
-  name: string;
-  version: number;
-  role: Role;
-  permissions: string[];
-  created_at: string;
-};
-
-type ListResponse<T> = { items: T[] };
-
-/** A workspace member. */
-export type Member = {
-  user_id: string;
-  email: string;
-  display_name?: string;
-  avatar_url?: string;
-  role: Role;
-};
-
-/** An invitation to join a workspace. Never carries the token. */
-export type Invitation = {
-  id: string;
-  email: string;
-  role: Role;
-  status: "pending" | "accepted" | "revoked" | "expired";
-  invited_by_email?: string;
-  invited_by_display_name?: string;
-  expires_at: string;
-  created_at: string;
-};
-
-/**
- * A freshly issued invitation.
- *
- * `token` exists here and nowhere else — only its hash is stored, so it
- * cannot be fetched again. Surface it immediately.
- */
-export type IssuedInvitation = Invitation & { token: string };
-
-/**
- * What the holder of a token may learn before accepting.
- *
- * No invited address: a forwarded token must not disclose who it was meant
- * for. The accept page shows the signed-in account instead.
- */
-export type InvitationPreview = {
-  workspace_name: string;
-  role: Role;
-  invited_by_email: string;
-  invited_by_display_name?: string;
-  expires_at: string;
-};
 
 /**
  * Fetch the authenticated user from the control-plane API.
@@ -173,7 +180,7 @@ export async function fetchCurrentUser(): Promise<Result<User>> {
 
 /** List the workspaces the caller belongs to. */
 export async function fetchWorkspaces(): Promise<Result<Workspace[]>> {
-  const result = await apiRequest<ListResponse<Workspace>>("/v1/workspaces");
+  const result = await apiRequest<Ok<"listWorkspaces">>("/v1/workspaces");
   return result.ok ? { ok: true, data: result.data.items } : result;
 }
 
@@ -187,7 +194,9 @@ export async function createWorkspace(name: string): Promise<Result<Workspace>> 
 
 /** List a workspace's members. */
 export async function fetchMembers(workspaceId: string): Promise<Result<Member[]>> {
-  const result = await apiRequest<ListResponse<Member>>(`/v1/workspaces/${workspaceId}/members`);
+  const result = await apiRequest<Ok<"listWorkspaceMembers">>(
+    `/v1/workspaces/${workspaceId}/members`
+  );
   return result.ok ? { ok: true, data: result.data.items } : result;
 }
 
@@ -197,7 +206,7 @@ export async function fetchInvitations(
   status?: Invitation["status"]
 ): Promise<Result<Invitation[]>> {
   const query = status ? `?status=${encodeURIComponent(status)}` : "";
-  const result = await apiRequest<ListResponse<Invitation>>(
+  const result = await apiRequest<Ok<"listWorkspaceInvitations">>(
     `/v1/workspaces/${workspaceId}/invitations${query}`
   );
   return result.ok ? { ok: true, data: result.data.items } : result;
@@ -239,56 +248,12 @@ export async function previewInvitation(token: string): Promise<Result<Invitatio
 }
 
 /** Accept an invitation. */
-export async function acceptInvitation(
-  token: string
-): Promise<Result<{ workspace_id: string; role: Role }>> {
-  return apiRequest<{ workspace_id: string; role: Role }>("/v1/invitations/accept", {
+export async function acceptInvitation(token: string): Promise<Result<Ok<"acceptInvitation">>> {
+  return apiRequest<Ok<"acceptInvitation">>("/v1/invitations/accept", {
     method: "POST",
     body: JSON.stringify({ token }),
   });
 }
-
-/** A GitHub App installation bound to a workspace. */
-export type Installation = {
-  id: string;
-  account_login: string;
-  account_type: "User" | "Organization";
-  repository_selection: "all" | "selected";
-  suspended: boolean;
-  suspended_at?: string;
-  created_at: string;
-};
-
-/**
- * A repository an installation grants.
- *
- * `granted` can be false. Withdrawn repositories are returned rather than
- * filtered out so the interface can say access was removed, instead of
- * silently losing something a member used yesterday.
- */
-export type Repository = {
-  id: string;
-  /** Which connected account this came from. A workspace may have several. */
-  installation_id: string;
-  owner: string;
-  name: string;
-  full_name: string;
-  default_branch: string;
-  private: boolean;
-  granted: boolean;
-};
-
-/** What an installation can and cannot currently do. */
-export type InstallationHealth = {
-  installation_id: string;
-  account_login: string;
-  reachable: boolean;
-  suspended: boolean;
-  /** Named, as "permission:access", so the fix is obvious. */
-  missing_permissions: string[];
-  granted_repositories: number;
-  error?: string;
-};
 
 /**
  * Start connecting GitHub, returning the URL to send the browser to.
@@ -300,8 +265,8 @@ export type InstallationHealth = {
  */
 export async function beginGitHubInstall(
   workspaceId: string
-): Promise<Result<{ install_url: string }>> {
-  return apiRequest<{ install_url: string }>(`/v1/workspaces/${workspaceId}/github/install`, {
+): Promise<Result<Ok<"beginGitHubInstall">>> {
+  return apiRequest<Ok<"beginGitHubInstall">>(`/v1/workspaces/${workspaceId}/github/install`, {
     method: "POST",
   });
 }
@@ -320,7 +285,7 @@ export async function completeGitHubInstall(
 
 /** List a workspace's GitHub installations. */
 export async function fetchInstallations(workspaceId: string): Promise<Result<Installation[]>> {
-  const result = await apiRequest<{ installations: Installation[] }>(
+  const result = await apiRequest<Ok<"listGitHubInstallations">>(
     `/v1/workspaces/${workspaceId}/github/installations`
   );
   return result.ok ? { ok: true, data: result.data.installations } : result;
@@ -328,7 +293,7 @@ export async function fetchInstallations(workspaceId: string): Promise<Result<In
 
 /** List a workspace's repositories, withdrawn ones included. */
 export async function fetchRepositories(workspaceId: string): Promise<Result<Repository[]>> {
-  const result = await apiRequest<{ repositories: Repository[] }>(
+  const result = await apiRequest<Ok<"listWorkspaceRepositories">>(
     `/v1/workspaces/${workspaceId}/repositories`
   );
   return result.ok ? { ok: true, data: result.data.repositories } : result;
