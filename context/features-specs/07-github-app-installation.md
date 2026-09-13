@@ -265,4 +265,4 @@ plausible:
 - No secret appears in the log, verified by grep.
 - `docs/adr/0005-github-app-credentials.md` exists and records the
   credential model, the token cache, and the installation-binding rule.
-- `make ci` and `make test-integration` pass.
+- `make ci` and `make test-integration` pass
