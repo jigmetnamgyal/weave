@@ -121,9 +121,14 @@ func ValidateBranchName(name string) error {
 		// Git's reflog syntax. A ref containing it cannot be addressed
 		// afterwards, so GitHub would refuse it — but refusing here returns
 		// the documented invalid-request response instead of a relayed 422.
+		//
+		// Git's neighbouring rule, that a ref cannot *be* the single character
+		// "@", needs no case: the namespace check above already guarantees
+		// every name begins with the prefix, so no name can be "@" alone. A
+		// component named "@" — `weave/@` — is a legal ref, and an earlier
+		// revision rejected it here under a comment claiming it was the
+		// single-character case. It was not.
 		return fmt.Errorf("%w: must not contain a %q sequence", ErrInvalidBranchName, "@{")
-	case name == BranchPrefix+"@":
-		return fmt.Errorf("%w: must not be the single character @", ErrInvalidBranchName)
 	case strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/"):
 		return fmt.Errorf("%w: must not begin or end with /", ErrInvalidBranchName)
 	case strings.Contains(name, "//"):

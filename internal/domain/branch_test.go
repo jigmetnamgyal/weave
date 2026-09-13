@@ -59,6 +59,12 @@ func TestValidateBranchNameAcceptsOrdinaryNames(t *testing.T) {
 		"weave/fix-the-thing-2f4k7",
 		"weave/a",
 		"weave/nested/name",
+		// A path component named "@" is legal. Git forbids a ref that *is*
+		// the single character "@", which the namespace prefix already makes
+		// impossible — an earlier revision conflated the two and rejected
+		// this.
+		"weave/@",
+		"weave/@-suffix",
 	} {
 		if err := domain.ValidateBranchName(candidate); err != nil {
 			t.Errorf("ValidateBranchName(%q) = %v, want nil", candidate, err)
