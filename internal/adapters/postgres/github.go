@@ -362,6 +362,18 @@ func (s *InstallationStore) ListPermissions(ctx context.Context, installationID,
 // this, so five minutes is far outside the first and well inside the second.
 const deliveryLease = 5 * time.Minute
 
+// AppendAudit records an audit event on its own.
+//
+// Separate from the other writes because a branch is created on GitHub, not
+// here: there is no local transaction for the audit row to join, and the
+// effect it describes has already happened somewhere this database cannot
+// roll back.
+func (s *InstallationStore) AppendAudit(ctx context.Context, event application.AuditEvent) error {
+	return s.inTx(ctx, func(q *postgresdb.Queries) error {
+		return appendAudit(ctx, q, event)
+	})
+}
+
 // ClaimDelivery takes ownership of a webhook delivery.
 //
 // Three outcomes, and collapsing any two of them loses something. A delivery

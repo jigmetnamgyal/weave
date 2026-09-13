@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jigmetnamgyal/weave/internal/application"
 )
@@ -52,4 +53,36 @@ func (p *Port) InstallationRepositories(ctx context.Context, githubInstallationI
 		})
 	}
 	return repositories, nil
+}
+
+// Branch reads one branch, translating GitHub's not-found into the port's.
+//
+// The translation matters: the service distinguishes "no such branch" — the
+// ordinary answer before creating one — from a failure, and it must do so
+// without importing this package's errors.
+func (p *Port) Branch(ctx context.Context, githubInstallationID int64, owner, repo, branch string) (application.RemoteBranch, error) {
+	state, err := p.client.Branch(ctx, githubInstallationID, owner, repo, branch)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return application.RemoteBranch{}, application.ErrRemoteNotFound
+		}
+		return application.RemoteBranch{}, err
+	}
+	return application.RemoteBranch{Name: state.Name, SHA: state.SHA, Protected: state.Protected}, nil
+}
+
+// CreateBranch creates a branch, translating the already-exists refusal.
+//
+// That one is not a failure — a retry finding its own earlier work — and the
+// service needs to tell it apart from every other unprocessable request, which
+// GitHub reports with the same status.
+func (p *Port) CreateBranch(ctx context.Context, githubInstallationID int64, owner, repo, name, sha string) (application.RemoteBranch, error) {
+	ref, err := p.client.CreateBranch(ctx, githubInstallationID, owner, repo, name, sha)
+	if err != nil {
+		if errors.Is(err, ErrRefExists) {
+			return application.RemoteBranch{}, application.ErrRemoteRefExists
+		}
+		return application.RemoteBranch{}, err
+	}
+	return application.RemoteBranch{Name: ref.Name, SHA: ref.SHA}, nil
 }

@@ -388,6 +388,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{workspaceId}/repositories/{repositoryId}/branches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                repositoryId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a branch in a connected repository
+         * @description The first external side effect Weave performs on a customer's
+         *     repository.
+         *
+         *     Access is re-checked against GitHub before writing, not against our
+         *     records: a grant withdrawn since the page loaded stops the write here.
+         *     A protected target is refused outright — protected branches never
+         *     receive direct agent writes — though creating a branch *from* a
+         *     protected base is normal.
+         *
+         *     Idempotent by name. A request repeating one that succeeded returns the
+         *     same branch with `200` and `created: false`, rather than failing on
+         *     GitHub's duplicate-ref refusal. A branch of that name pointing
+         *     somewhere other than the requested base is a conflict, not a success.
+         */
+        post: operations["createBranch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/github/webhook": {
         parameters: {
             query?: never;
@@ -417,6 +452,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Branch: {
+            name: string;
+            /** @description The commit the branch points at. */
+            sha: string;
+            base: string;
+            /**
+             * @description False when the branch already existed at the requested base.
+             *     Reported rather than hidden: the caller has a branch at the commit
+             *     they asked for either way, but "already there" and "just made" are
+             *     different facts.
+             */
+            created: boolean;
+        };
         Installation: {
             /** Format: uuid */
             id: string;
@@ -1298,6 +1346,89 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["WorkspaceNotFound"];
+        };
+    };
+    createBranch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                repositoryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Optional. Omitted, the server generates one — the normal
+                     *     path, because a name the product chose cannot smuggle
+                     *     anything into a ref. Supplied, it is validated just as
+                     *     strictly, and exists so a retry can name the branch its
+                     *     first attempt created. Must begin with `weave/`.
+                     */
+                    name?: string;
+                    /** @description Describes the purpose, and seeds a generated name. */
+                    slug?: string;
+                    /** @description The branch to create from. Defaults to the repository's default branch. */
+                    base?: string;
+                };
+            };
+        };
+        responses: {
+            /**
+             * @description The branch already existed at the requested base. The same body,
+             *     with `created: false` — a retry finding its own earlier work.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Branch"];
+                };
+            };
+            /** @description The branch was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Branch"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            /**
+             * @description The caller's role cannot manage repositories, the installation no
+             *     longer grants the repository, the installation is suspended, the
+             *     installation does not hold `contents: write`, or the target branch
+             *     is protected.
+             */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["WorkspaceNotFound"];
+            /**
+             * @description A branch of that name exists and points somewhere other than the
+             *     requested base. Refused rather than returned, because handing back
+             *     a branch at unknown work as though it were what was asked for is
+             *     worse than an error.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     receiveGitHubWebhook: {

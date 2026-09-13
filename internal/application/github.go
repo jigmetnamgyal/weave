@@ -71,6 +71,10 @@ type InstallationRepository interface {
 	ListRepositories(ctx context.Context, workspaceID uuid.UUID) ([]domain.Repository, error)
 	GetRepository(ctx context.Context, repositoryID, workspaceID uuid.UUID) (domain.Repository, error)
 	ListPermissions(ctx context.Context, installationID, workspaceID uuid.UUID) (map[string]string, error)
+	// AppendAudit records an event with no other change. Every other write
+	// here audits inside its own transaction; a branch is created on GitHub,
+	// so there is no local transaction to join and the record stands alone.
+	AppendAudit(ctx context.Context, event AuditEvent) error
 	ClaimDelivery(ctx context.Context, deliveryID, event, action string) (DeliveryClaim, error)
 	CompleteDelivery(ctx context.Context, deliveryID string) error
 	PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error)
@@ -94,11 +98,32 @@ type RemoteRepository struct {
 	Private       bool
 }
 
+// RemoteBranch is what GitHub reports about an existing branch.
+type RemoteBranch struct {
+	Name string
+	SHA  string
+	// Protected is GitHub's own answer, which accounts for pattern rules and
+	// rulesets that a list of names would not.
+	Protected bool
+}
+
 // GitHubAPI is the port onto GitHub itself.
 type GitHubAPI interface {
 	Installation(ctx context.Context, githubInstallationID int64) (RemoteInstallation, error)
 	InstallationRepositories(ctx context.Context, githubInstallationID int64) ([]RemoteRepository, error)
+	// Branch returns ErrInstallationNotFound's remote equivalent when absent;
+	// callers distinguish "no such branch" from a failure by that error.
+	Branch(ctx context.Context, githubInstallationID int64, owner, repo, branch string) (RemoteBranch, error)
+	CreateBranch(ctx context.Context, githubInstallationID int64, owner, repo, name, sha string) (RemoteBranch, error)
 }
+
+// ErrRemoteNotFound is the port's "no such thing on GitHub". Adapters
+// translate their own not-found into it so the service does not import them.
+var ErrRemoteNotFound = errors.New("not found on github")
+
+// ErrRemoteRefExists is the port's "a ref of that name is already there". It
+// is not a failure — see CreateBranch.
+var ErrRemoteRefExists = errors.New("reference already exists on github")
 
 // InstallStateRepository stores the single-use value that carries intent
 // across the installation round trip.
@@ -157,6 +182,7 @@ const (
 	AuditInstallationUnsuspended  = "github.installation.unsuspended"
 	AuditRepositoriesReconciled   = "github.repositories.reconciled"
 	AuditInstallationRebindDenied = "github.installation.rebind_denied"
+	AuditBranchCreated            = "github.branch.created"
 )
 
 // BeginInstall returns the URL to send someone to, having first recorded which

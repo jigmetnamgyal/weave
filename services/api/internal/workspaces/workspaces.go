@@ -431,6 +431,34 @@ func (h *Handler) writeError(ctx context.Context, w http.ResponseWriter, err err
 		httpx.WriteError(ctx, w, http.StatusForbidden, httpx.CodePermissionDenied,
 			"Your role does not allow this action.")
 
+	// Branch operations. Each maps to a status the caller can act on: a name
+	// we refuse is the caller's to fix, a protected target is not theirs to
+	// override, and a conflict needs a human to look at what is already there.
+	case errors.Is(err, domain.ErrInvalidBranchName):
+		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
+
+	case errors.Is(err, domain.ErrBaseNotFound):
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound,
+			"That base branch does not exist in this repository.")
+
+	case errors.Is(err, domain.ErrBranchProtected):
+		httpx.WriteError(ctx, w, http.StatusForbidden, httpx.CodePermissionDenied,
+			"That branch is protected on GitHub and will not be written to.")
+
+	case errors.Is(err, domain.ErrBranchConflict):
+		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict, err.Error())
+
+	case errors.Is(err, domain.ErrRepositoryNotGranted):
+		httpx.WriteError(ctx, w, http.StatusForbidden, httpx.CodePermissionDenied,
+			"This installation no longer grants access to that repository.")
+
+	case errors.Is(err, domain.ErrInstallationSuspended):
+		httpx.WriteError(ctx, w, http.StatusForbidden, httpx.CodePermissionDenied,
+			"The GitHub installation is suspended, so it grants nothing until it is restored.")
+
+	case errors.Is(err, application.ErrRepositoryNotFound):
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Repository not found.")
+
 	case errors.Is(err, application.ErrVersionConflict):
 		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
 			"The workspace changed since you last read it. Reload and try again.")

@@ -43,6 +43,8 @@ func (h *Handler) RegisterGitHub(
 		h.requireMembership(http.HandlerFunc(gh.reconcile)))
 	mux.Handle("GET /v1/workspaces/{workspaceID}/repositories",
 		h.requireMembership(http.HandlerFunc(gh.listRepositories)))
+	mux.Handle("POST /v1/workspaces/{workspaceID}/repositories/{repositoryID}/branches",
+		h.requireMembership(http.HandlerFunc(gh.createBranch)))
 
 	// Authenticated but not workspace-scoped: which workspace this belongs to
 	// comes from the state token, not from the caller. That is the whole point
@@ -354,6 +356,72 @@ func (g *githubRoutes) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type createBranchRequest struct {
+	// Name is optional. Omitted, the server generates one from Slug — which is
+	// the normal path, because a name the product chose cannot smuggle
+	// anything into a ref. Supplied, it is validated just as strictly, and
+	// exists so a retry can name the branch its first attempt created.
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+	Base string `json:"base"`
+}
+
+type branchResponse struct {
+	Name string `json:"name"`
+	SHA  string `json:"sha"`
+	Base string `json:"base"`
+	// Created is false when the branch already existed at the requested base.
+	// Reported rather than hidden: the caller asked for a branch at a commit
+	// and has one, but "already there" and "just made" are different facts.
+	Created bool `json:"created"`
+}
+
+func (g *githubRoutes) createBranch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	membership, ok := membershipFrom(ctx)
+	if !ok {
+		g.handler.serverError(ctx, w, "membership missing from context", errors.New("route not wrapped"))
+		return
+	}
+
+	repositoryID, err := uuid.Parse(r.PathValue("repositoryID"))
+	if err != nil {
+		g.handler.notFound(ctx, w)
+		return
+	}
+
+	var body createBranchRequest
+	if !g.handler.decode(ctx, w, r, &body) {
+		return
+	}
+
+	branch, err := g.service.CreateBranch(ctx, membership, application.CreateBranchCommand{
+		RepositoryID: repositoryID,
+		Name:         body.Name,
+		Slug:         body.Slug,
+		Base:         body.Base,
+	})
+	if err != nil {
+		g.handler.writeError(ctx, w, err, "create branch")
+		return
+	}
+
+	// 201 only when something was made. A retry that found its own earlier
+	// work gets 200: the resource exists either way, and the status is the
+	// only place that distinction survives into the response.
+	status := http.StatusOK
+	if branch.Created {
+		status = http.StatusCreated
+	}
+	httpx.WriteJSON(ctx, w, status, branchResponse{
+		Name:    branch.Name,
+		SHA:     branch.SHA,
+		Base:    branch.Base,
+		Created: branch.Created,
+	})
 }
 
 func toInstallationResponse(installation domain.Installation) installationResponse {
