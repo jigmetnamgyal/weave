@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "typegen": "next typegen",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "contracts": "openapi-typescript ../../contracts/openapi/openapi.yaml --output lib/api-types.gen.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -30,6 +31,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

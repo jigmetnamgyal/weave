@@ -31,7 +31,8 @@ APP_DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$APP_DATABASE_URL)
 
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
         fmt fmt-check lint lint-go typecheck test test-integration build ci tidy \
-        migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check
+        migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check \
+        contracts contracts-check
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -175,5 +176,15 @@ sqlc-check: sqlc ## Fail when committed generated code is stale (CI gate)
 	@git diff --exit-code -- internal/adapters/postgres/postgresdb \
 		|| (echo "Generated code is out of date. Commit the result of 'make sqlc'." && exit 1)
 
-ci: fmt-check lint lint-go sqlc-check typecheck test build ## Run every local quality gate
+contracts: ## Regenerate the web API types from the OpenAPI contract
+	@npm run contracts --workspace $(WEB_WORKSPACE)
+
+# The same shape as sqlc-check, and for the same reason. Without a gate the
+# generated file becomes another hand-maintained file with a misleading name,
+# and the contract it claims to follow drifts away from it unnoticed.
+contracts-check: contracts ## Fail when the generated API types are stale (CI gate)
+	@git diff --exit-code -- apps/web/lib/api-types.gen.ts \
+		|| (echo "Generated API types are out of date. Commit the result of 'make contracts'." && exit 1)
+
+ci: fmt-check lint lint-go sqlc-check contracts-check typecheck test build ## Run every local quality gate
 	@echo "All quality gates passed."

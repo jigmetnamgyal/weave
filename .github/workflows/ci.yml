@@ -39,7 +39,7 @@ jobs:
           echo "gitleaks=${GITLEAKS_VERSION}" >> "$GITHUB_OUTPUT"
 
   web:
-    name: Web (format, lint, typecheck, build)
+    name: Web (format, lint, contracts, typecheck, build)
     runs-on: ubuntu-latest
     needs: toolchain
     steps:
@@ -58,6 +58,14 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # Before the type check, so a stale generated file is reported as drift
+      # rather than as a confusing type error somewhere else.
+      - name: Contract types are current
+        run: |
+          npm run contracts --workspace @weave/web
+          git diff --exit-code -- apps/web/lib/api-types.gen.ts \
+            || (echo "Generated API types are out of date. Commit the result of 'make contracts'." && exit 1)
 
       - name: Type check
         run: npm run typecheck

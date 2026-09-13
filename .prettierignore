@@ -12,6 +12,14 @@ apps/web/components/ui/
 # rewrapping them produces large, meaningless diffs.
 context/
 
+# Types generated from contracts/openapi/openapi.yaml by `make contracts`.
+#
+# Not merely "generated, so leave it alone": formatting it would fight the
+# generator directly. Prettier would rewrite the file, the next regeneration
+# would undo that, and the drift check would then fail on every run for a
+# reason that has nothing to do with the contract.
+apps/web/lib/api-types.gen.ts
+
 # Lockfiles and generated manifests
 package-lock.json
 

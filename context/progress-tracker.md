@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0 merged 2026-09-11; M3.1 merged 2026-09-13; M3.2 (repository operations) next
+- Status: M2 complete; M3.0 and M3.1 merged; M3.2 complete and awaiting review; M3.3 (repository operations) next
 
 ## Current Goal
 
@@ -28,6 +28,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Completed
 
+- Generated the web application's API types from `contracts/openapi/openapi.yaml` with a CI drift check, replacing every hand-written response type in `apps/web/lib/api.ts` and adding a route-coverage test in both directions (Unit M3.2 — see Verification Record).
 - Built GitHub App installation and repository access: `github_installations`, `repositories`, `repository_permissions` and a delivery log, all with row-level security in the creating migration; installation binding authorized by a single-use state recorded before the redirect; signature-verified, deduplicated webhooks; reconciliation before use; and a health check that names the missing permission (Unit M3.1 — see Verification Record and ADR-005). Merged 2026-09-13 in PR #6 after five review rounds and ten findings, five of which were regressions introduced by fixes in the preceding round — every one in the webhook-delivery path.
 - Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Merged 2026-09-11 in PR #5 after two review rounds and eleven findings, including a live defect that made the invitation preview 404 for every legitimate invitee. Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
 - Defined developer-first MVP and long-term multiplayer-agent product boundary.
@@ -45,15 +46,31 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M3.1 merged in PR #6 on 2026-09-13 after five review rounds; M3.2 is next.
+Nothing in progress. M3.2 is complete and awaiting review.
 
 ## Next Up
 
-### Unit M3.2 — Repository Operations
+### Unit M3.2 — Generated API Client
+
+Started 2026-09-13 on `feat/m3.2-generated-api-client`, branched from `main`.
+
+**Source:** `context/features-specs/08-generated-api-client.md`
+
+**Outcome:** the web application's API types come from `contracts/openapi/openapi.yaml` rather than being hand-written, with a CI drift check that makes it stay true.
+
+**Why first, ahead of repository operations:** `context/code-standards.md` has required this since M0, and PR #6 accepted the gap as a documented exception on the condition it closes before the surface grows again. M3.3 adds cloning, branches, commits and pull requests — doing this afterwards means migrating a third layer of hand-written helpers instead of two.
+
+**The failure it prevents has already happened here.** During M3.1 the API gained `installation_id` on the repository response; the page grouping by it silently grouped everything under `undefined`, every account rendered empty, and it took comparing build timestamps against commit timestamps to find. Generated types would have made it a compile error.
+
+**Deliberate interpretation, recorded rather than left implicit:** this generates types, not a request client. `apps/web/lib/api.ts` keeps its `Result<T>` discriminated union, which makes failure unignorable — a generated client that throws would replace that with something easy to forget. The standard's concern is duplicated types and scattered callers, and one typed module generated from the contract meets it.
+
+**Not closed by this unit:** nothing verifies the contract against what the Go handlers actually serve. The cheap half is in scope — a route-coverage test in both directions — and the expensive half, shape verification, is not.
+
+### Unit M3.3 — Repository Operations
 
 **Lesson from M3.1, worth carrying:** the webhook-delivery path took three attempts, and each fix traded one failure mode for another — deduplicating before the effect dropped failed retries; recording completion separately allowed concurrent double-execution; a lease prevented that but acknowledged work still in flight, which GitHub then never retried. It settled only once claiming had three distinct outcomes rather than two. Anything in M3.2 that deduplicates, retries, or leases deserves the same suspicion: write down what must happen for each outcome *before* choosing the mechanism.
 
-Follows M3.1. Expected scope: cloning, branches, commits, pull requests, and the push and pull-request webhooks that M3.1 deliberately left unsubscribed.
+Follows M3.2. Expected scope: cloning, branches, commits, pull requests, and the push and pull-request webhooks that M3.1 deliberately left unsubscribed.
 
 **Carried from M3.1:** anything acting on a repository goes through `RepositoryForUse`, which reconciles with GitHub before answering. A stored `granted` flag is a belief, and acting on a stale one is how a revoked grant reaches a clone.
 
@@ -63,7 +80,7 @@ Follows M3.1. Expected scope: cloning, branches, commits, pull requests, and the
 
 Resolve these before the milestone that depends on them:
 
-- **The generated OpenAPI client does not exist.** `context/code-standards.md` requires one — "use the generated API client; do not call control-plane endpoints through scattered ad hoc `fetch` helpers" — and `apps/web/lib/api.ts` has hand-written helpers and response types for the whole `/v1` surface. The contract itself is now complete and current; what is missing is generation. Closing it means choosing a generator, wiring a drift check into CI so the client cannot silently diverge, and migrating every call site from M2.1 onward. Raised on PR #6 and deliberately not done there: it predates the GitHub endpoints and is wider than any one feature. **Decide before the surface grows again in M3.2.**
+- **The generated OpenAPI client does not exist.** `context/code-standards.md` requires one — "use the generated API client; do not call control-plane endpoints through scattered ad hoc `fetch` helpers" — and `apps/web/lib/api.ts` has hand-written helpers and response types for the whole `/v1` surface. The contract itself is now complete and current; what is missing is generation. Closing it means choosing a generator, wiring a drift check into CI so the client cannot silently diverge, and migrating every call site from M2.1 onward. Raised on PR #6 and deliberately not done there: it predates the GitHub endpoints and is wider than any one feature. **Being closed now as Unit M3.2** — see `context/features-specs/08-generated-api-client.md`.
 
 1. **Commercial name:** confirm trademark and domain viability for “Weave.” Required before public launch, not before engineering foundation.
 2. ~~**Identity provider**~~ — **Resolved 2026-09-10: Clerk**, behind the OIDC/JWT boundary, for authentication only. Clerk Organizations is explicitly not used; workspaces, membership and every permission decision stay in PostgreSQL, because two sources of truth for authorization is how tenant isolation breaks. Chosen over Auth.js because the Next.js/Go split needs a token the Go service can verify via JWKS, and hand-rolling that issuance is custom crypto across a security boundary; chosen over WorkOS because SAML and SCIM are deferred. See ADR-009. **Still outstanding:** confirm current Clerk pricing against projected workspace count — seats are billed per user while Weave bills per workspace, so model the mismatch before launch, not before M2.1.
@@ -107,6 +124,7 @@ Resolve these before the milestone that depends on them:
 
 | Date | Unit | Environment | Commands/tests | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-13 | Generated API Client, Unit M3.2 (`context/features-specs/08-generated-api-client.md`) | Local dev, macOS arm64, Node 23.11.0, openapi-typescript 7.13.0 | `make ci` (now including `contracts-check`); `make test-integration`; deliberate contract edits to prove each gate fails | Pass | The premise was verified rather than asserted: removing `installation_id` from the contract and regenerating produces compile errors at exactly the two grouping sites in `github-section.tsx` — the code that silently grouped every repository under `undefined` during M3.1 and took a build-timestamp comparison to diagnose. The drift check was proven by changing the contract without regenerating, and the route-coverage test by adding a route with no contract path and a contract path with no route; all three fail as intended and pass when restored. **No disagreement was found between the hand-written types and the contract** — every one matched, so the migration surfaced nothing wrong on either side. Generated output is in `.prettierignore`, because formatting it would fight the generator: prettier would rewrite the file, regeneration would undo that, and the drift check would then fail every run for a reason unrelated to the contract. **Known limitation, stated in the test's own comment:** route coverage checks only that a path exists on both sides, never that request and response shapes agree. |
 | 2026-09-11 | **Signed-in browser flow, end to end (M2.2, M2.3 and M3.1)** | Local dev, macOS arm64, real Clerk instance, real GitHub App `weave-ai-dev-jaggle`, two real GitHub accounts | Browser: sign in, create a workspace, invite, accept, connect GitHub on a personal account and an organisation, sync repositories; `psql` verification of the resulting audit trail and rows | Pass | **Closes the gap carried since M2.2.** The audit trail for the real workspace records `workspace.created`, `workspace.invitation.created`, `workspace.invitation.accepted` and `github.installation.connected` twice; 113 repositories synced for the personal account and 60 for the organisation. Four defects surfaced that no automated test caught, which is the point of having done it: the install callback exceeded the web client's five-second budget because `CompleteInstall` fetched the installation twice and listing 113 repositories takes 3.3s — and it failed *after* the write, reporting failure for work that had succeeded with the state value already spent; the repository list was rendered flat with a hard-coded `connected[0]` sync control, so of two installations only one could ever be refreshed and a half-empty connection looked complete; the sync action was wrapped in a client closure rather than bound, so `revalidatePath` invalidated the server cache while the router was never told, making a working button look dead; and a failed repository fetch was swallowed into an empty list, reported as "no repositories yet" — a claim about GitHub when the cause was ours. Also recorded: grepping a compiled binary for a JSON tag is not evidence it is current, because the string was already present from unrelated fields; build timestamps against commit timestamps settled it. |
 | 2026-09-11 | GitHub App Installation, Unit M3.1 (`context/features-specs/07-github-app-installation.md`) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2; real GitHub App `weave-ai-dev-jaggle` (id 4906626) | `make ci`; `make test-integration`; `make migrate-up` / `migrate-down` / `migrate-up`; live `curl` of the webhook endpoint with genuine and forged HMAC signatures; `psql` as `weave_app` against the three new tables | Pass, with one gap | Credentials verified against GitHub's own API before any code depended on them: an App JWT minted from the private key was accepted by `GET /app`, confirming the App id and key are a matching pair, the slug, and that permissions are exactly `contents:write`, `metadata:read`, `pull_requests:write`. Webhook endpoint exercised live against the running API: a genuine signature is accepted (204), a replayed delivery id produces exactly one row, an unknown event type and an installation we have no record of are both ignored rather than failing, and absent, wrong and post-signing-altered signatures are all refused (401). The three new tables return nothing to `weave_app` without tenant context, and nothing when another tenant's context names this workspace explicitly. Integration tests prove an installation cannot be bound twice and that the refusal leaves the first binding untouched, that another tenant's installation is absent rather than forbidden, that a deselected repository is withdrawn and kept rather than deleted, that a rename keeps one row because the GitHub id is the identity, and that a suspension keeps the repository records. GitHub is faked at the HTTP boundary, which is what makes the App JWT itself assertable — `iat` backdated against clock skew, validity inside GitHub's ten-minute maximum. Gap subsequently closed the same day: the signed-in browser flow was walked end to end — see the row above — including both install round trips and the repository sync. |
 | 2026-09-11 | Row-Level Security, Unit M3.0 — second review round (PR #5) | Local dev, macOS arm64, Go 1.26.8, PostgreSQL 17.2 | `make ci`; `make test-integration`; `make migrate-down` / `migrate-up`; full CI on the pull request | Pass | One further finding, applied although its stated consequence did not hold: `weave_invitation_preview_by_token` matched on token hash alone, but `Preview` refuses expired, revoked and accepted tokens before reaching the store, and a test already covered all three. The check is now repeated inside the function regardless, because it is a `SECURITY DEFINER` hole and what it returns is reachable by any future caller that forgets the gate. The new test calls the store directly, skipping the service, with a usable-token control so it cannot pass vacuously. `now()` inside the function is a second clock, accepted here because skew can only withhold a preview the service would have allowed, never disclose one it would have refused. Also repaired ADR-012, which had never received content an earlier commit message claimed for it — two edits written from the same unmodified string, the second discarding the first, leaving the file saying to keep to one `SECURITY DEFINER` function while the code had three. |
@@ -162,4 +180,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-13 — Unit M3.1 merged. Next: M3.2, repository operations, starting with the generated OpenAPI client.
+2026-09-13 — Unit M3.2 (generated API client) complete, awaiting review. Next: M3.3, repository operations.
