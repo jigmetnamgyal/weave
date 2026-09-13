@@ -329,8 +329,8 @@ func TestDeliveryDeduplicationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimDelivery: %v", err)
 	}
-	if !first {
-		t.Fatal("the first delivery was reported as already seen")
+	if first != application.DeliveryClaimed {
+		t.Fatalf("the first delivery returned %v, want DeliveryClaimed", first)
 	}
 	if err := store.CompleteDelivery(ctx, delivery); err != nil {
 		t.Fatalf("CompleteDelivery: %v", err)
@@ -340,8 +340,8 @@ func TestDeliveryDeduplicationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimDelivery on retry: %v", err)
 	}
-	if second {
-		t.Error("a retried delivery was claimed again, so it would be applied twice")
+	if second != application.DeliveryAlreadyDone {
+		t.Errorf("a retried delivery returned %v, want DeliveryAlreadyDone", second)
 	}
 }
 
@@ -556,18 +556,19 @@ func TestFailedDeliveryIsRetryableIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimDelivery: %v", err)
 	}
-	if !mine {
-		t.Fatal("the first claim was refused")
+	if mine != application.DeliveryClaimed {
+		t.Fatalf("the first claim returned %v, want DeliveryClaimed", mine)
 	}
 
-	// A retry arriving immediately: the first attempt may still be running, so
-	// the lease protects it.
+	// A retry arriving immediately. It must be reported as in flight, not as
+	// done: the first attempt may still be running, and answering GitHub that
+	// the delivery succeeded would discard it if that attempt then failed.
 	concurrent, err := store.ClaimDelivery(ctx, delivery, "installation", "suspend")
 	if err != nil {
 		t.Fatalf("ClaimDelivery while in flight: %v", err)
 	}
-	if concurrent {
-		t.Error("a delivery still within its lease was reclaimed, so both attempts would run and both would write an audit row")
+	if concurrent != application.DeliveryInFlight {
+		t.Errorf("a claim held within its lease returned %v, want DeliveryInFlight", concurrent)
 	}
 
 	// Age the claim past its lease, standing in for an attempt that died or
@@ -582,8 +583,8 @@ func TestFailedDeliveryIsRetryableIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimDelivery after the lease: %v", err)
 	}
-	if !reclaimed {
-		t.Error("a delivery whose claim expired without completing was treated as done, so the retry would be dropped")
+	if reclaimed != application.DeliveryClaimed {
+		t.Errorf("a claim that expired without completing returned %v, want DeliveryClaimed", reclaimed)
 	}
 
 	// This time it succeeds.
@@ -601,7 +602,7 @@ func TestFailedDeliveryIsRetryableIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimDelivery after completion: %v", err)
 	}
-	if again {
-		t.Error("a completed delivery was claimed again, so its effect would be applied twice")
+	if again != application.DeliveryAlreadyDone {
+		t.Errorf("a completed delivery returned %v, want DeliveryAlreadyDone", again)
 	}
 }

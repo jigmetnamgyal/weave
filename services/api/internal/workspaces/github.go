@@ -329,6 +329,19 @@ func (g *githubRoutes) webhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := g.service.HandleWebhook(ctx, delivery, event, body); err != nil {
+		// Another attempt holds this delivery and has not finished. Not a
+		// failure, and not something to alarm on — but it must not be
+		// acknowledged either, because GitHub does not retry what it believes
+		// succeeded, and the attempt in flight may yet fail.
+		if errors.Is(err, application.ErrDeliveryInFlight) {
+			g.handler.logger.InfoContext(ctx, "github webhook already in flight",
+				slog.String("delivery", delivery),
+				slog.String("event", event),
+			)
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+
 		// 500 rather than 200: GitHub retries a failed delivery, and a retry
 		// is exactly what a transient database failure deserves. Deduplication
 		// makes the retry safe.

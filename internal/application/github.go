@@ -30,6 +30,27 @@ var (
 	ErrInstallStateInvalid = errors.New("installation state is not valid")
 )
 
+// DeliveryClaim is the outcome of trying to take ownership of a webhook
+// delivery.
+type DeliveryClaim int
+
+const (
+	// DeliveryClaimed means this caller should process the delivery.
+	DeliveryClaimed DeliveryClaim = iota
+	// DeliveryAlreadyDone means the effect is durable and a retry should be
+	// acknowledged without repeating it.
+	DeliveryAlreadyDone
+	// DeliveryInFlight means another attempt holds the delivery and has not
+	// finished. It must not be acknowledged: GitHub does not retry what it
+	// believes succeeded, so answering 2xx here would discard the delivery if
+	// the attempt in flight then failed.
+	DeliveryInFlight
+)
+
+// ErrDeliveryInFlight is returned when another attempt is still processing a
+// delivery. The caller answers with a non-2xx status so GitHub retries later.
+var ErrDeliveryInFlight = errors.New("delivery is already being processed")
+
 // InstallationRef is the little we can learn about an installation without
 // tenant context: which workspace it belongs to, and whether it is suspended.
 type InstallationRef struct {
@@ -50,7 +71,7 @@ type InstallationRepository interface {
 	ListRepositories(ctx context.Context, workspaceID uuid.UUID) ([]domain.Repository, error)
 	GetRepository(ctx context.Context, repositoryID, workspaceID uuid.UUID) (domain.Repository, error)
 	ListPermissions(ctx context.Context, installationID, workspaceID uuid.UUID) (map[string]string, error)
-	ClaimDelivery(ctx context.Context, deliveryID, event, action string) (bool, error)
+	ClaimDelivery(ctx context.Context, deliveryID, event, action string) (DeliveryClaim, error)
 	CompleteDelivery(ctx context.Context, deliveryID string) error
 	PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error)
 }
@@ -479,12 +500,20 @@ func (s *InstallationService) HandleWebhook(ctx context.Context, deliveryID, eve
 	// A claim is not the same as a completed delivery. One whose effect failed
 	// is reclaimable, so the retry is processed rather than collapsed into the
 	// record of an attempt that went nowhere.
-	mine, err := s.installations.ClaimDelivery(ctx, deliveryID, event, actionOf(body))
+	claim, err := s.installations.ClaimDelivery(ctx, deliveryID, event, actionOf(body))
 	if err != nil {
 		return fmt.Errorf("claim delivery: %w", err)
 	}
-	if !mine {
+	switch claim {
+	case DeliveryAlreadyDone:
+		// Already applied. Acknowledging is the whole point of deduplication.
 		return nil
+	case DeliveryInFlight:
+		// Deliberately an error, so the caller answers non-2xx and GitHub
+		// retries. Acknowledging would tell GitHub the delivery succeeded
+		// while the only attempt at it is still running and may yet fail —
+		// and GitHub does not retry what it believes succeeded.
+		return ErrDeliveryInFlight
 	}
 
 	// The claim stays provisional until the effect is durable. Marking it on

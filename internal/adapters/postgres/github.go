@@ -362,46 +362,58 @@ func (s *InstallationStore) ListPermissions(ctx context.Context, installationID,
 // this, so five minutes is far outside the first and well inside the second.
 const deliveryLease = 5 * time.Minute
 
-// ClaimDelivery takes ownership of a webhook delivery, reporting whether this
-// caller should process it.
+// ClaimDelivery takes ownership of a webhook delivery.
 //
-// Deduplication and retries pull against each other: a retry of an effect that
-// already succeeded must be collapsed, and a retry of one that failed must be
-// processed. A row that merely exists cannot tell those apart, which is why
-// completion is recorded separately.
+// Three outcomes, and collapsing any two of them loses something. A delivery
+// nobody holds is claimed and processed. One already completed is
+// deduplicated, because GitHub retries what already worked. One held by an
+// attempt still inside its lease must be neither — acknowledging it would tell
+// GitHub the delivery succeeded while the only attempt at it is still in
+// flight and may yet fail, and GitHub does not retry what it believes
+// succeeded. That is how a suspension gets lost permanently.
 //
-// One statement rather than a read and a write. The insert claims an unseen
-// delivery. The ON CONFLICT arm reclaims one whose claim neither completed nor
-// is still within its lease — so an attempt that died, was cancelled, or
-// failed is retried, while one still in flight is left alone. A completed
-// delivery matches neither and returns no row, which is the deduplication.
+// One statement. The CTE claims an unseen delivery or reclaims one whose lease
+// lapsed; the outer select reads the row as it stood before the statement,
+// which is what distinguishes "already done" from "someone else is working on
+// it" when the claim is refused.
 //
 // Outside a tenant transaction because a delivery is claimed before we know
 // which workspace it concerns, and some name an installation we have no record
 // of at all.
-func (s *InstallationStore) ClaimDelivery(ctx context.Context, deliveryID, event, action string) (bool, error) {
-	const query = `INSERT INTO github_webhook_deliveries (delivery_id, event, action)
-	               VALUES ($1, $2, $3)
-	               ON CONFLICT (delivery_id) DO UPDATE
-	                 SET received_at = now(), event = EXCLUDED.event, action = EXCLUDED.action
-	                 WHERE github_webhook_deliveries.completed_at IS NULL
-	                   AND github_webhook_deliveries.received_at < now() - $4::interval
-	               RETURNING delivery_id`
+func (s *InstallationStore) ClaimDelivery(ctx context.Context, deliveryID, event, action string) (application.DeliveryClaim, error) {
+	const query = `
+	WITH claim AS (
+	    INSERT INTO github_webhook_deliveries (delivery_id, event, action)
+	    VALUES ($1, $2, $3)
+	    ON CONFLICT (delivery_id) DO UPDATE
+	      SET received_at = now(), event = EXCLUDED.event, action = EXCLUDED.action
+	      WHERE github_webhook_deliveries.completed_at IS NULL
+	        AND github_webhook_deliveries.received_at < now() - $4::interval
+	    RETURNING 1
+	)
+	SELECT
+	    EXISTS (SELECT 1 FROM claim),
+	    COALESCE((SELECT completed_at IS NOT NULL
+	              FROM github_webhook_deliveries WHERE delivery_id = $1), false)`
 
 	var actionValue *string
 	if action != "" {
 		actionValue = &action
 	}
 
-	var claimed string
-	err := s.pool.QueryRow(ctx, query, deliveryID, event, actionValue, deliveryLease.String()).Scan(&claimed)
+	var claimed, completed bool
+	if err := s.pool.QueryRow(ctx, query, deliveryID, event, actionValue, deliveryLease.String()).
+		Scan(&claimed, &completed); err != nil {
+		return 0, fmt.Errorf("claim webhook delivery: %w", err)
+	}
+
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("claim webhook delivery: %w", err)
+	case claimed:
+		return application.DeliveryClaimed, nil
+	case completed:
+		return application.DeliveryAlreadyDone, nil
 	default:
-		return true, nil
+		return application.DeliveryInFlight, nil
 	}
 }
 
