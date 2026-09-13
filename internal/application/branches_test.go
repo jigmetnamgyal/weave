@@ -16,6 +16,7 @@ import (
 // workspace, one installation, one repository, and a GitHub whose answers the
 // test controls.
 type branchWorld struct {
+	store       *fakeInstallations
 	service     *application.InstallationService
 	membership  domain.Membership
 	repository  domain.Repository
@@ -43,7 +44,8 @@ func newBranchWorld(t *testing.T) *branchWorld {
 	}
 
 	api := &fakeGitHub{
-		permissions: permissions,
+		permissions:     permissions,
+		restrictedNames: map[string]string{},
 		branches: map[string]application.RemoteBranch{
 			"main": {Name: "main", SHA: "basesha", Protected: true},
 		},
@@ -60,6 +62,7 @@ func newBranchWorld(t *testing.T) *branchWorld {
 		func(ctx context.Context, _ uuid.UUID) context.Context { return ctx }, "weave-test")
 
 	return &branchWorld{
+		store:       store,
 		service:     service,
 		membership:  domain.Membership{WorkspaceID: workspaceID, UserID: uuid.New(), Role: domain.RoleOwner},
 		repository:  repository,
@@ -256,9 +259,24 @@ func contains(haystack, needle string) bool {
 type fakeGitHub struct {
 	permissions map[string]string
 	branches    map[string]application.RemoteBranch
-	withdrawn   bool
-	created     int
-	calls       int
+	// restrictedNames are names a ruleset governs, whether or not a branch of
+	// that name exists.
+	restrictedNames map[string]string
+	rulesErr        error
+	withdrawn       bool
+	created         int
+	calls           int
+}
+
+func (f *fakeGitHub) BranchRules(_ context.Context, _ int64, _, _, branch string) (application.BranchRule, error) {
+	f.calls++
+	if f.rulesErr != nil {
+		return application.BranchRule{}, f.rulesErr
+	}
+	if rule, ok := f.restrictedNames[branch]; ok {
+		return application.BranchRule{Restricted: true, Rule: rule}, nil
+	}
+	return application.BranchRule{}, nil
 }
 
 func (f *fakeGitHub) Installation(context.Context, int64) (application.RemoteInstallation, error) {
@@ -303,6 +321,7 @@ type fakeInstallations struct {
 	repository   domain.Repository
 	permissions  map[string]string
 	audits       *[]application.AuditEvent
+	auditErr     error
 	withdrawn    bool
 }
 
@@ -328,8 +347,20 @@ func (f *fakeInstallations) ListPermissions(context.Context, uuid.UUID, uuid.UUI
 }
 
 func (f *fakeInstallations) AppendAudit(_ context.Context, event application.AuditEvent) error {
+	if f.auditErr != nil {
+		return f.auditErr
+	}
 	*f.audits = append(*f.audits, event)
 	return nil
+}
+
+func (f *fakeInstallations) HasAudit(_ context.Context, _ uuid.UUID, action, target string) (bool, error) {
+	for _, event := range *f.audits {
+		if event.Action == action && event.Target == target {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeInstallations) Connect(context.Context, domain.Installation, application.Actor, application.AuditEvent) (domain.Installation, error) {
@@ -356,4 +387,97 @@ func (f *fakeInstallations) ClaimDelivery(context.Context, string, string, strin
 func (f *fakeInstallations) CompleteDelivery(context.Context, string) error { return nil }
 func (f *fakeInstallations) PruneDeliveries(context.Context, time.Duration) (int64, error) {
 	return 0, nil
+}
+
+// TestCreateBranchRefusesANameARulesetGoverns closes the hole the existing
+// `protected` check could not see.
+//
+// A branch that does not exist has no `protected` flag to read, and rulesets
+// match patterns — one covering `weave/*` applies to every branch this unit
+// creates. Checking only existing branches would satisfy invariant 11
+// everywhere it was tested and violate it everywhere it mattered.
+func TestCreateBranchRefusesANameARulesetGoverns(t *testing.T) {
+	world := newBranchWorld(t)
+	world.api.restrictedNames["weave/governed"] = "creation"
+
+	_, err := world.service.CreateBranch(context.Background(), world.membership,
+		application.CreateBranchCommand{RepositoryID: world.repository.ID, Name: "weave/governed"})
+	if !errors.Is(err, domain.ErrBranchProtected) {
+		t.Errorf("CreateBranch = %v, want ErrBranchProtected", err)
+	}
+	if world.api.created > 0 {
+		t.Error("a name governed by a ruleset was created anyway")
+	}
+	if !contains(err.Error(), "creation") {
+		t.Errorf("error %q does not name the rule that refused it", err)
+	}
+}
+
+// TestCreateBranchFailsClosedWhenRulesCannotBeRead.
+//
+// A protection check that proceeds when it cannot see the answer looks like
+// protection and is not — the same mistake as row-level security matching
+// every row when tenant context is missing. The cost is that a GitHub outage
+// blocks creation, which is the right way round for a control whose whole
+// purpose is stopping writes.
+func TestCreateBranchFailsClosedWhenRulesCannotBeRead(t *testing.T) {
+	world := newBranchWorld(t)
+	world.api.rulesErr = errors.New("github is unreachable")
+
+	_, err := world.service.CreateBranch(context.Background(), world.membership,
+		application.CreateBranchCommand{RepositoryID: world.repository.ID, Name: "weave/x"})
+	if err == nil {
+		t.Fatal("creation proceeded while the protection check was unanswerable")
+	}
+	if world.api.created > 0 {
+		t.Error("a branch was created without knowing whether a rule governs it")
+	}
+}
+
+// TestARetryCompletesAnAuditItsFirstAttemptLost.
+//
+// Creation and its audit are two writes to two systems, and GitHub goes first
+// because it is the one that cannot be rolled back. If the audit then fails,
+// the branch exists and the record does not — and the retry lands on the
+// already-exists path, which has nothing to create. Without finishing the
+// record there, an irreversible write to a customer's repository stays
+// permanently unattributable.
+func TestARetryCompletesAnAuditItsFirstAttemptLost(t *testing.T) {
+	world := newBranchWorld(t)
+	ctx := context.Background()
+	command := application.CreateBranchCommand{RepositoryID: world.repository.ID, Name: "weave/orphan"}
+
+	world.store.auditErr = errors.New("database went away")
+	if _, err := world.service.CreateBranch(ctx, world.membership, command); err == nil {
+		t.Fatal("a failed audit was reported as success")
+	}
+
+	// The branch exists on GitHub and nothing recorded it.
+	if world.api.created != 1 {
+		t.Fatalf("created %d branches, want 1", world.api.created)
+	}
+	if len(*world.audits) != 0 {
+		t.Fatalf("audits = %d, want 0 — the fixture is not reproducing the failure", len(*world.audits))
+	}
+
+	// The retry finds the branch and completes the record.
+	world.store.auditErr = nil
+	branch, err := world.service.CreateBranch(ctx, world.membership, command)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if branch.Created {
+		t.Error("the retry reported Created = true; nothing was made the second time")
+	}
+	if len(*world.audits) != 1 {
+		t.Fatalf("audits = %d after the retry, want 1 — the creation is unattributable", len(*world.audits))
+	}
+
+	// And a third attempt does not duplicate it.
+	if _, err := world.service.CreateBranch(ctx, world.membership, command); err != nil {
+		t.Fatalf("third attempt: %v", err)
+	}
+	if len(*world.audits) != 1 {
+		t.Errorf("audits = %d, want 1 — a further retry duplicated the record", len(*world.audits))
+	}
 }

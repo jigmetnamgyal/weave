@@ -86,3 +86,14 @@ func (p *Port) CreateBranch(ctx context.Context, githubInstallationID int64, own
 	}
 	return application.RemoteBranch{Name: ref.Name, SHA: ref.SHA}, nil
 }
+
+// BranchRules reads the rules that would apply to a branch name, existing or
+// not, and reports whether they govern writing the ref.
+func (p *Port) BranchRules(ctx context.Context, githubInstallationID int64, owner, repo, branch string) (application.BranchRule, error) {
+	rules, err := p.client.BranchRules(ctx, githubInstallationID, owner, repo, branch)
+	if err != nil {
+		return application.BranchRule{}, err
+	}
+	name, restricted := rules.RestrictsWriting()
+	return application.BranchRule{Restricted: restricted, Rule: name}, nil
+}

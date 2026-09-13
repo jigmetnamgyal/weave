@@ -374,6 +374,25 @@ func (s *InstallationStore) AppendAudit(ctx context.Context, event application.A
 	})
 }
 
+// HasAudit reports whether an event with this action and target exists.
+//
+// Exists so a retry can tell "already recorded" from "never recorded", which
+// is what lets an audit survive a failure between the external write and the
+// row. Reading before writing races, and two concurrent retries could both
+// write — that is a duplicated history entry rather than a lost one, which is
+// the right way round.
+func (s *InstallationStore) HasAudit(ctx context.Context, workspaceID uuid.UUID, action, target string) (bool, error) {
+	const query = `SELECT EXISTS (
+	                 SELECT 1 FROM audit_events
+	                 WHERE workspace_id = $1 AND action = $2 AND target = $3)`
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx, query, workspaceID, action, target).Scan(&exists); err != nil {
+		return false, fmt.Errorf("look up audit event: %w", err)
+	}
+	return exists, nil
+}
+
 // ClaimDelivery takes ownership of a webhook delivery.
 //
 // Three outcomes, and collapsing any two of them loses something. A delivery

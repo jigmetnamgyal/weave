@@ -130,3 +130,62 @@ func (c *Client) CreateBranch(ctx context.Context, installationID int64, owner, 
 	}
 	return Ref{Name: strings.TrimPrefix(created.Ref, "refs/heads/"), SHA: created.Object.SHA}, nil
 }
+
+// BranchRules are the ruleset rules GitHub would apply to a branch name.
+//
+// Queried by name rather than read from an existing branch, because that is
+// the only way to learn about a branch that does not exist yet — and a
+// ruleset matching `weave/*` governs every branch we are about to create.
+// GitHub documents the endpoint as answering for absent names: "The branch
+// does not need to exist; rules that would apply to a branch with that name
+// will be returned."
+type BranchRules struct {
+	// Types are the rule types in force, as GitHub names them: "creation",
+	// "update", "deletion", "required_signatures" and so on.
+	Types []string
+}
+
+// RestrictsWriting reports whether the rules would govern creating or moving
+// the ref.
+//
+// Deliberately narrower than "any rule at all". Organisation-wide rulesets
+// requiring signed commits or review before merge are common and do not stop a
+// working branch existing; refusing on those would make the feature unusable
+// in most repositories with any governance. What matters here is a rule over
+// the ref itself.
+func (r BranchRules) RestrictsWriting() (string, bool) {
+	for _, name := range r.Types {
+		switch name {
+		case "creation", "update", "deletion", "non_fast_forward":
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// BranchRules reads the rules that would apply to a branch name.
+func (c *Client) BranchRules(ctx context.Context, installationID int64, owner, repo, branch string) (BranchRules, error) {
+	token, err := c.InstallationToken(ctx, installationID)
+	if err != nil {
+		return BranchRules{}, err
+	}
+
+	path := "/repos/" + escapeRepo(owner, repo) + "/rules/branches/" + escapeRef(branch)
+	body, err := c.do(ctx, http.MethodGet, path, token, nil)
+	if err != nil {
+		return BranchRules{}, err
+	}
+
+	var rules []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(body, &rules); err != nil {
+		return BranchRules{}, fmt.Errorf("github: decode branch rules: %w", err)
+	}
+
+	types := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		types = append(types, rule.Type)
+	}
+	return BranchRules{Types: types}, nil
+}

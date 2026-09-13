@@ -95,7 +95,14 @@ func (s *InstallationService) CreateBranch(
 	case err == nil:
 		return s.resolveExisting(ctx, membership, repository, existing, baseBranch, base)
 	case errors.Is(err, ErrRemoteNotFound):
-		// The ordinary path: nothing there yet.
+		// The ordinary path: nothing there yet. A branch that does not exist
+		// still has no `protected` flag to read, and a ruleset matching
+		// `weave/*` would govern every branch we create — so the absence of a
+		// branch is not the absence of protection, and asking about the name
+		// is the only way to find out.
+		if err := s.requireUnrestrictedName(ctx, installation, repository, name); err != nil {
+			return domain.Branch{}, err
+		}
 	default:
 		return domain.Branch{}, fmt.Errorf("read target branch: %w", err)
 	}
@@ -145,12 +152,67 @@ func (s *InstallationService) resolveExisting(
 			domain.ErrBranchConflict, existing.Name, short(existing.SHA), short(base.SHA))
 	}
 
-	// No audit row. Nothing changed on GitHub, and an audit trail that records
-	// attempts rather than effects stops being a record of what happened.
-	_ = ctx
-	_ = membership
-	_ = repository
-	return domain.Branch{Name: existing.Name, SHA: existing.SHA, Base: baseName, Created: false}, nil
+	branch := domain.Branch{Name: existing.Name, SHA: existing.SHA, Base: baseName, Created: false}
+
+	// Nothing changed on GitHub this time, so ordinarily there is nothing to
+	// record — an audit trail of attempts rather than effects stops being a
+	// record of what happened.
+	//
+	// The exception is the reason this check exists. Creation and its audit
+	// are two writes to two systems, and the branch is made first because
+	// GitHub is the one that cannot be rolled back. If the audit then fails,
+	// the retry arrives here — and without finishing the record, an
+	// irreversible write to a customer's repository would stay permanently
+	// unattributable. So: record it if and only if it was never recorded.
+	recorded, err := s.installations.HasAudit(ctx, membership.WorkspaceID,
+		AuditBranchCreated, auditTarget(repository, branch))
+	if err != nil {
+		return domain.Branch{}, fmt.Errorf("check branch audit: %w", err)
+	}
+	if !recorded {
+		if err := s.auditBranch(ctx, membership, repository, branch); err != nil {
+			return domain.Branch{}, err
+		}
+	}
+	return branch, nil
+}
+
+// auditTarget identifies a branch creation in the audit trail.
+//
+// Repository and branch together, because a branch is created once: that makes
+// the target unique per effect, which is what lets a retry ask whether the
+// effect was already recorded.
+func auditTarget(repository domain.Repository, branch domain.Branch) string {
+	return repository.FullName() + "#" + branch.Name
+}
+
+// requireUnrestrictedName refuses a name a ruleset governs.
+//
+// Checking an existing branch's `protected` flag covers only branches that
+// exist. Rulesets match patterns, so one covering `weave/*` applies to every
+// branch this unit creates and none of them would be found by that check —
+// which is how invariant 11 could be satisfied everywhere it was tested and
+// violated everywhere it mattered.
+//
+// **Fails closed.** An error here refuses the write rather than proceeding,
+// for the same reason the row-level security policies match no row when
+// context is absent: a protection check that fails open looks like protection
+// and is not. The cost is that a GitHub outage blocks branch creation, which
+// is the right way round for a control that exists to stop writes.
+func (s *InstallationService) requireUnrestrictedName(
+	ctx context.Context,
+	installation domain.Installation,
+	repository domain.Repository,
+	name string,
+) error {
+	rule, err := s.api.BranchRules(ctx, installation.GitHubID, repository.Owner, repository.Name, name)
+	if err != nil {
+		return fmt.Errorf("read branch rules: %w", err)
+	}
+	if rule.Restricted {
+		return fmt.Errorf("%w: a %q rule governs %s", domain.ErrBranchProtected, rule.Rule, name)
+	}
+	return nil
 }
 
 // requireWritePermission refuses when the installation cannot write contents.
@@ -197,7 +259,7 @@ func (s *InstallationService) auditBranch(
 		WorkspaceID: membership.WorkspaceID,
 		ActorUserID: membership.UserID,
 		Action:      AuditBranchCreated,
-		Target:      repository.FullName() + "#" + branch.Name,
+		Target:      auditTarget(repository, branch),
 		Detail: map[string]any{
 			"repository": repository.FullName(),
 			"branch":     branch.Name,

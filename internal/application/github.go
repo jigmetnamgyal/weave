@@ -75,6 +75,10 @@ type InstallationRepository interface {
 	// here audits inside its own transaction; a branch is created on GitHub,
 	// so there is no local transaction to join and the record stands alone.
 	AppendAudit(ctx context.Context, event AuditEvent) error
+	// HasAudit reports whether an event with this action and target was
+	// already recorded, so a retry can finish an audit its first attempt
+	// started rather than duplicating or losing it.
+	HasAudit(ctx context.Context, workspaceID uuid.UUID, action, target string) (bool, error)
 	ClaimDelivery(ctx context.Context, deliveryID, event, action string) (DeliveryClaim, error)
 	CompleteDelivery(ctx context.Context, deliveryID string) error
 	PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error)
@@ -107,6 +111,14 @@ type RemoteBranch struct {
 	Protected bool
 }
 
+// BranchRule is whether a ruleset governs writing a particular ref.
+type BranchRule struct {
+	// Restricted is true when a rule governs creating or moving the ref.
+	Restricted bool
+	// Rule names the rule that restricts it, for the refusal message.
+	Rule string
+}
+
 // GitHubAPI is the port onto GitHub itself.
 type GitHubAPI interface {
 	Installation(ctx context.Context, githubInstallationID int64) (RemoteInstallation, error)
@@ -115,6 +127,9 @@ type GitHubAPI interface {
 	// callers distinguish "no such branch" from a failure by that error.
 	Branch(ctx context.Context, githubInstallationID int64, owner, repo, branch string) (RemoteBranch, error)
 	CreateBranch(ctx context.Context, githubInstallationID int64, owner, repo, name, sha string) (RemoteBranch, error)
+	// BranchRules answers for names that do not exist yet, which is the only
+	// way to know whether a ruleset governs a branch about to be created.
+	BranchRules(ctx context.Context, githubInstallationID int64, owner, repo, branch string) (BranchRule, error)
 }
 
 // ErrRemoteNotFound is the port's "no such thing on GitHub". Adapters
