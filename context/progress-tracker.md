@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0 merged 2026-09-11; M3.1 complete and awaiting review; M3.2 (repository operations) next
+- Status: M2 complete; M3.0 merged 2026-09-11; M3.1 merged 2026-09-13; M3.2 (repository operations) next
 
 ## Current Goal
 
@@ -28,7 +28,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Completed
 
-- Built GitHub App installation and repository access: `github_installations`, `repositories`, `repository_permissions` and a delivery log, all with row-level security in the creating migration; installation binding authorized by a single-use state recorded before the redirect; signature-verified, deduplicated webhooks; reconciliation before use; and a health check that names the missing permission (Unit M3.1 — see Verification Record and ADR-005).
+- Built GitHub App installation and repository access: `github_installations`, `repositories`, `repository_permissions` and a delivery log, all with row-level security in the creating migration; installation binding authorized by a single-use state recorded before the redirect; signature-verified, deduplicated webhooks; reconciliation before use; and a health check that names the missing permission (Unit M3.1 — see Verification Record and ADR-005). Merged 2026-09-13 in PR #6 after five review rounds and ten findings, five of which were regressions introduced by fixes in the preceding round — every one in the webhook-delivery path.
 - Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Merged 2026-09-11 in PR #5 after two review rounds and eleven findings, including a live defect that made the invitation preview 404 for every legitimate invitee. Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
 - Defined developer-first MVP and long-term multiplayer-agent product boundary.
 - Defined modular control plane and isolated execution plane.
@@ -45,11 +45,13 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M3.1 is complete and awaiting review.
+Nothing in progress. M3.1 merged in PR #6 on 2026-09-13 after five review rounds; M3.2 is next.
 
 ## Next Up
 
 ### Unit M3.2 — Repository Operations
+
+**Lesson from M3.1, worth carrying:** the webhook-delivery path took three attempts, and each fix traded one failure mode for another — deduplicating before the effect dropped failed retries; recording completion separately allowed concurrent double-execution; a lease prevented that but acknowledged work still in flight, which GitHub then never retried. It settled only once claiming had three distinct outcomes rather than two. Anything in M3.2 that deduplicates, retries, or leases deserves the same suspicion: write down what must happen for each outcome *before* choosing the mechanism.
 
 Follows M3.1. Expected scope: cloning, branches, commits, pull requests, and the push and pull-request webhooks that M3.1 deliberately left unsubscribed.
 
@@ -160,4 +162,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-11 — Unit M3.1 complete and verified in the browser, awaiting review. Next: M3.2, repository operations.
+2026-09-13 — Unit M3.1 merged. Next: M3.2, repository operations, starting with the generated OpenAPI client.
