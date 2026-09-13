@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -17,6 +18,16 @@ type Querier interface {
 	// use. Two concurrent accepts race here and exactly one matches a row, so no
 	// lock is needed and no second membership can be created.
 	ClaimInvitation(ctx context.Context, arg ClaimInvitationParams) (WorkspaceInvitation, error)
+	ClearInstallationPermissions(ctx context.Context, arg ClearInstallationPermissionsParams) error
+	// Mark a delivery's effect durable. Until this runs, a retry may reclaim it.
+	CompleteWebhookDelivery(ctx context.Context, deliveryID string) error
+	// Bind an installation to a workspace.
+	//
+	// No ON CONFLICT clause on purpose. The unique index on
+	// github_installation_id is what refuses a second binding, and the refusal
+	// must reach the caller as an error rather than be absorbed into an update:
+	// quietly rebinding would move a repository grant between tenants.
+	ConnectInstallation(ctx context.Context, arg ConnectInstallationParams) (GithubInstallation, error)
 	// Test and operator support only; not used on a request path.
 	CountUsers(ctx context.Context) (int64, error)
 	// Used under LockWorkspace to enforce that a workspace never loses its last
@@ -25,6 +36,10 @@ type Querier interface {
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (WorkspaceInvitation, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
+	GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg GetInstallationByGitHubIDForWorkspaceParams) (GithubInstallation, error)
+	// Scoped by workspace, so an installation id from one tenant cannot be read
+	// through another even before the policies are consulted.
+	GetInstallationForWorkspace(ctx context.Context, arg GetInstallationForWorkspaceParams) (GithubInstallation, error)
 	// Deliberately unscoped by workspace: the token is the only thing the
 	// acceptor holds, and they are not yet a member of anything. The caller
 	// checks status and email before acting on the result.
@@ -40,21 +55,54 @@ type Querier interface {
 	// The row occupying the one-outstanding slot, if any. May be expired: the
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
+	GetRepositoryForWorkspace(ctx context.Context, arg GetRepositoryForWorkspaceParams) (Repository, error)
 	GetUserByExternalID(ctx context.Context, externalID string) (User, error)
 	// Scoped by member, not just by id. A caller who is not a member gets no row,
 	// so "not found" and "not yours" are indistinguishable from the outside and
 	// workspace identifiers cannot be probed.
 	GetWorkspaceForMember(ctx context.Context, arg GetWorkspaceForMemberParams) (Workspace, error)
 	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
+	// What the workspace currently has connected. Removed installations are kept
+	// for their repository history but are not connections any more.
+	ListActiveInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error)
 	// Operator and test support.
 	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
+	ListInstallationPermissions(ctx context.Context, arg ListInstallationPermissionsParams) ([]RepositoryPermission, error)
 	ListInvitationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]ListInvitationsForWorkspaceRow, error)
+	// Withdrawn repositories are returned too, with granted = false, so the
+	// interface can say "access was removed" rather than silently dropping a
+	// repository someone was using yesterday.
+	//
+	// Repositories belonging to a removed installation are excluded. Their rows
+	// are kept for audit and for reading finished sessions, but the connection is
+	// gone, so listing them among a workspace's repositories would present history
+	// as current state — and they would match no connected account in the
+	// interface, which reads as a build mismatch.
+	ListRepositoriesForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Repository, error)
 	ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUID) ([]ListWorkspaceMembersRow, error)
 	ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) ([]ListWorkspacesForUserRow, error)
 	// Serialises membership changes within a workspace. Taken before any check
 	// that counts owners, so two concurrent demotions cannot both observe two
 	// owners and both proceed.
 	LockWorkspace(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Used when GitHub reports the installation removed.
+	//
+	// The row is marked, not deleted. Deleting it cascades to the repositories,
+	// and those rows are the record that access once existed — which is what makes
+	// an old audit entry or a finished session readable. Withdrawing the
+	// repositories is a separate statement in the same transaction.
+	MarkInstallationDeleted(ctx context.Context, arg MarkInstallationDeletedParams) error
+	// Deliveries are only needed while deduplication might see a retry. GitHub
+	// gives up well inside this window.
+	PruneWebhookDeliveries(ctx context.Context, retention pgtype.Interval) error
+	RecordInstallationPermission(ctx context.Context, arg RecordInstallationPermissionParams) error
+	// Deduplication. GitHub retries deliveries, and a retry must not produce a
+	// second effect.
+	//
+	// ON CONFLICT DO NOTHING with a RETURNING clause yields no row when the
+	// delivery has been seen, which is how the caller distinguishes the two
+	// without a separate read and the race that would come with it.
+	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) (GithubWebhookDelivery, error)
 	// Optimistic concurrency: the caller supplies the version it read. A stale
 	// version matches no row, which the store reports as a conflict rather than
 	// silently overwriting a concurrent edit.
@@ -62,12 +110,32 @@ type Querier interface {
 	// Only an outstanding invitation can be revoked; revoking an accepted or
 	// already-revoked one matches no row.
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
+	SetInstallationSelection(ctx context.Context, arg SetInstallationSelectionParams) (GithubInstallation, error)
+	// Suspension is recorded, never deleted. Unsuspending must restore the
+	// previous state rather than require a fresh install, and keeping the rows is
+	// what makes that possible.
+	SetInstallationSuspended(ctx context.Context, arg SetInstallationSuspendedParams) (GithubInstallation, error)
 	SlugExists(ctx context.Context, slug string) (bool, error)
 	UpdateWorkspaceMemberRole(ctx context.Context, arg UpdateWorkspaceMemberRoleParams) (WorkspaceMember, error)
+	// Reconciliation writes every repository GitHub currently grants.
+	//
+	// ON CONFLICT updates rather than inserts because a repository seen before may
+	// have been renamed, transferred, made private, or re-granted after being
+	// withdrawn. The conflict target is (installation_id, github_repository_id):
+	// the GitHub id is the identity, and owner/name are mutable descriptions of it.
+	UpsertRepository(ctx context.Context, arg UpsertRepositoryParams) (Repository, error)
 	// Just-in-time provisioning. ON CONFLICT makes concurrent first requests for
 	// the same subject resolve to a single row instead of racing, and DO UPDATE
 	// (rather than DO NOTHING) guarantees RETURNING yields the row either way.
 	UpsertUserByExternalID(ctx context.Context, arg UpsertUserByExternalIDParams) (User, error)
+	WithdrawAllRepositories(ctx context.Context, arg WithdrawAllRepositoriesParams) error
+	// Mark everything the installation no longer grants.
+	//
+	// Rows are withdrawn rather than deleted: the record that access once existed
+	// is what makes an old audit entry or session readable later. Passing the
+	// currently granted set and negating it, rather than deleting named ones,
+	// means a repository that vanished without an event is still caught.
+	WithdrawRepositoriesNotIn(ctx context.Context, arg WithdrawRepositoriesNotInParams) error
 }
 
 var _ Querier = (*Queries)(nil)

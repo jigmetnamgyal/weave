@@ -40,6 +40,17 @@ func WithTenant(ctx context.Context, tenant TenantContext) context.Context {
 	return context.WithValue(ctx, tenantContextKey, tenant)
 }
 
+// WithTenantWorkspace attaches a workspace with no user.
+//
+// For work that has no acting user at all: a webhook delivery is authenticated
+// by its signature, not by a session, and there is nobody to attribute it to.
+// The policies that matter here key on the workspace, so an absent user
+// narrows access rather than widening it — a read that needed the membership
+// arm would return nothing rather than everything.
+func WithTenantWorkspace(ctx context.Context, workspaceID uuid.UUID) context.Context {
+	return WithTenant(ctx, TenantContext{WorkspaceID: workspaceID})
+}
+
 // TenantFrom returns the tenant identity carried by a context, if any.
 func TenantFrom(ctx context.Context) TenantContext {
 	tenant, _ := ctx.Value(tenantContextKey).(TenantContext)

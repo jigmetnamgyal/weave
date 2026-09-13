@@ -20,6 +20,50 @@ type AuditEvent struct {
 	OccurredAt  pgtype.Timestamptz
 }
 
+type GithubInstallation struct {
+	ID                   uuid.UUID
+	WorkspaceID          uuid.UUID
+	GithubInstallationID int64
+	AccountLogin         string
+	AccountType          string
+	RepositorySelection  string
+	ConnectedBy          uuid.UUID
+	SuspendedAt          pgtype.Timestamptz
+	DeletedAt            pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+}
+
+type GithubWebhookDelivery struct {
+	DeliveryID  string
+	Event       string
+	Action      *string
+	ReceivedAt  pgtype.Timestamptz
+	CompletedAt pgtype.Timestamptz
+}
+
+type Repository struct {
+	ID                 uuid.UUID
+	WorkspaceID        uuid.UUID
+	InstallationID     uuid.UUID
+	GithubRepositoryID int64
+	Owner              string
+	Name               string
+	DefaultBranch      string
+	Private            bool
+	Granted            bool
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+type RepositoryPermission struct {
+	InstallationID uuid.UUID
+	WorkspaceID    uuid.UUID
+	Permission     string
+	Access         string
+	RecordedAt     pgtype.Timestamptz
+}
+
 // Application users. One row per identity-provider subject.
 type User struct {
 	ID uuid.UUID

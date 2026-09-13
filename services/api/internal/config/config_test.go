@@ -15,6 +15,11 @@ func validEnv() map[string]string {
 		"NATS_URL":           "nats://localhost:4222",
 		"TEMPORAL_HOST_PORT": "localhost:7233",
 		"CLERK_ISSUER":       "https://test.clerk.accounts.dev",
+
+		"GITHUB_APP_ID":               "4906626",
+		"GITHUB_APP_SLUG":             "weave-test",
+		"GITHUB_APP_PRIVATE_KEY_PATH": "./secrets/github-app.pem",
+		"GITHUB_APP_WEBHOOK_SECRET":   "0123456789abcdef",
 	}
 }
 
@@ -54,11 +59,14 @@ func TestLoad(t *testing.T) {
 			errSubstr: []string{"REDIS_URL", ".env.example"},
 		},
 		{
-			name:      "every missing variable is reported at once",
-			env:       map[string]string{},
-			unset:     requiredKeys,
-			wantErr:   ErrMissingConfig,
-			errSubstr: []string{"APP_DATABASE_URL", "CLERK_ISSUER", "DATABASE_URL", "NATS_URL", "REDIS_URL", "TEMPORAL_HOST_PORT"},
+			name:    "every missing variable is reported at once",
+			env:     map[string]string{},
+			unset:   requiredKeys,
+			wantErr: ErrMissingConfig,
+			errSubstr: []string{
+				"APP_DATABASE_URL", "CLERK_ISSUER", "DATABASE_URL", "NATS_URL", "REDIS_URL", "TEMPORAL_HOST_PORT",
+				"GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY_PATH", "GITHUB_APP_WEBHOOK_SECRET",
+			},
 		},
 		{
 			name: "blank value counts as missing",
@@ -117,6 +125,28 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
+			// .env.example must carry non-empty values so the required-key
+			// check passes in CI. Accepting them would mean a copied template
+			// starts an API whose webhook secret is published in this
+			// repository, and anyone could forge a signed delivery.
+			name: "a placeholder webhook secret is rejected",
+			env: func() map[string]string {
+				e := validEnv()
+				e["GITHUB_APP_WEBHOOK_SECRET"] = "replace-me"
+				return e
+			}(),
+			errSubstr: []string{"GITHUB_APP_WEBHOOK_SECRET", "placeholder"},
+		},
+		{
+			name: "a placeholder is rejected whatever its case",
+			env: func() map[string]string {
+				e := validEnv()
+				e["GITHUB_APP_SLUG"] = "Replace-Me"
+				return e
+			}(),
+			errSubstr: []string{"GITHUB_APP_SLUG"},
+		},
+		{
 			name: "unknown exporter is rejected",
 			env: func() map[string]string {
 				e := validEnv()
@@ -130,7 +160,7 @@ func TestLoad(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// t.Setenv restores the previous value when the subtest ends.
-			optional := []string{"APP_ENV", "API_HTTP_ADDR", "OTEL_EXPORTER", "OTEL_SERVICE_NAME", "CLERK_JWT_AUDIENCE"}
+			optional := []string{"APP_ENV", "API_HTTP_ADDR", "OTEL_EXPORTER", "OTEL_SERVICE_NAME", "CLERK_JWT_AUDIENCE", "GITHUB_WEBHOOK_PROXY_URL"}
 			for _, key := range append(append([]string{}, requiredKeys...), optional...) {
 				t.Setenv(key, "")
 			}

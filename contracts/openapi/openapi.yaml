@@ -27,6 +27,8 @@ tags:
     description: The authenticated user.
   - name: invitations
     description: |
+  - name: github
+    description: GitHub App installations and the repositories they grant.
       Accepting an invitation is the one workspace operation available to
       someone who is not yet a member, so these routes sit outside the
       workspace path and are authorized by the token rather than by
@@ -400,8 +402,241 @@ paths:
         "404": { $ref: "#/components/responses/WorkspaceNotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /v1/workspaces/{workspaceId}/github/install:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    post:
+      operationId: beginGitHubInstall
+      tags: [github]
+      summary: Start connecting a GitHub account to this workspace
+      description: |
+        Returns the URL to send the browser to. The server records which
+        workspace the resulting installation belongs to before answering,
+        keyed by a single-use value carried in that URL.
+
+        That recording is the whole mechanism: GitHub returns an installation
+        id and nothing identifying the workspace, so the workspace must not be
+        taken from the callback.
+      responses:
+        "200":
+          description: Where to send the browser.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [install_url]
+                properties:
+                  install_url: { type: string, format: uri }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/github/installations:
+    post:
+      operationId: completeGitHubInstall
+      tags: [github]
+      summary: Finish connecting a GitHub account
+      description: |
+        Authenticated but not workspace-scoped: the workspace comes from the
+        state recorded before the redirect, never from the request.
+
+        The same endpoint serves a repository-access change, because GitHub
+        sends the browser back through it with the installation id it already
+        has. A collision whose workspace matches the recorded state is an
+        update and reconciles; one that differs is refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, installation_id]
+              properties:
+                state:
+                  type: string
+                  description: The single-use value GitHub echoed back.
+                installation_id:
+                  type: integer
+                  format: int64
+                  description: |
+                    A claim, not a fact. It is confirmed with GitHub before
+                    anything is written.
+      responses:
+        "201":
+          description: The installation is bound to the workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Installation" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "409":
+          description: |
+            The installation is already connected to a different workspace.
+            Refused rather than rebound, because rebinding would move a
+            repository grant between tenants.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/workspaces/{workspaceId}/github/installations:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listGitHubInstallations
+      tags: [github]
+      summary: List the GitHub accounts connected to this workspace
+      description: |
+        Removed installations are excluded. Their repository rows survive for
+        audit, but the connection is gone.
+      responses:
+        "200":
+          description: The connected accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [installations]
+                properties:
+                  installations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Installation" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/workspaces/{workspaceId}/github/installations/{installationId}/health:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/InstallationId"
+    get:
+      operationId: getGitHubInstallationHealth
+      tags: [github]
+      summary: Report whether an installation can still do its job
+      description: |
+        Reports rather than fails. Someone debugging a broken workspace needs
+        to know which of several things is wrong, and an error response would
+        collapse them into one.
+
+        When GitHub is unreachable this falls back to the permissions recorded
+        at the last reconciliation, and says so through `reachable`.
+      responses:
+        "200":
+          description: The installation's current state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationHealth" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/workspaces/{workspaceId}/github/installations/{installationId}/reconcile:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/InstallationId"
+    post:
+      operationId: reconcileGitHubInstallation
+      tags: [github]
+      summary: Replace the recorded repository set with what GitHub grants now
+      responses:
+        "204":
+          description: The recorded set now matches GitHub.
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/workspaces/{workspaceId}/repositories:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listWorkspaceRepositories
+      tags: [github]
+      summary: List the repositories connected to this workspace
+      description: |
+        Withdrawn repositories are included with `granted: false`, so the
+        interface can say access was removed rather than silently dropping
+        something a member used yesterday. Repositories belonging to a removed
+        installation are excluded: their rows are kept for audit, but they are
+        no longer current state.
+      responses:
+        "200":
+          description: The workspace's repositories.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repositories]
+                properties:
+                  repositories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Repository" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/github/webhook:
+    post:
+      operationId: receiveGitHubWebhook
+      tags: [github]
+      summary: Receive a delivery from GitHub
+      description: |
+        Public: GitHub cannot present a session token, so the HMAC signature
+        over the raw body is the authentication. It is verified before the
+        payload is parsed.
+
+        Rejections carry no body. The sender has no interface to show an error
+        in, and explaining why a forgery failed only helps the next one.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: A GitHub webhook payload. Only a few fields are read.
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema: { type: string }
+          description: |
+            HMAC-SHA256 of the raw body. The SHA-1 header GitHub also sends is
+            deliberately ignored; honouring it would allow a downgrade to a
+            broken hash.
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: |
+            Applied, or deduplicated because it already was. Events naming an
+            unknown installation and unrecognised event types also land here:
+            both are deliberate no-ops, and failing them would make GitHub
+            retry forever.
+        "400":
+          description: The delivery was unreadable or lacked required headers.
+        "401":
+          description: The signature was absent, malformed, or did not match.
+        "409":
+          description: |
+            Another attempt holds this delivery and has not finished.
+            Deliberately not acknowledged: GitHub does not retry what it
+            believes succeeded, so answering 2xx here would discard the
+            delivery if that attempt then failed.
+        "500":
+          description: |
+            Applying the delivery failed. GitHub retries, and the retry is
+            processed rather than deduplicated away.
+
 components:
   parameters:
+    InstallationId:
+      name: installationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     WorkspaceId:
       name: workspaceId
       in: path
@@ -418,6 +653,74 @@ components:
         as `Authorization: Bearer <token>`.
 
   schemas:
+    Installation:
+      type: object
+      required: [id, account_login, account_type, repository_selection, suspended, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        account_login: { type: string }
+        account_type: { type: string, enum: [User, Organization] }
+        repository_selection:
+          type: string
+          enum: [all, selected]
+          description: |
+            `all` grants repositories created later too, with no event naming
+            them — one reason access is reconciled before use.
+        suspended: { type: boolean }
+        suspended_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    Repository:
+      type: object
+      required: [id, installation_id, owner, name, full_name, default_branch, private, granted]
+      properties:
+        id: { type: string, format: uuid }
+        installation_id:
+          type: string
+          format: uuid
+          description: |
+            Which connected account this came from. A workspace may have
+            several, and presenting them as one flat list hides which
+            connection is failing when one of them is.
+        owner: { type: string }
+        name: { type: string }
+        full_name: { type: string }
+        default_branch: { type: string }
+        private: { type: boolean }
+        granted:
+          type: boolean
+          description: |
+            False for a repository the installation no longer reaches.
+            Reported rather than filtered out.
+
+    InstallationHealth:
+      type: object
+      required:
+        [
+          installation_id,
+          account_login,
+          reachable,
+          suspended,
+          missing_permissions,
+          granted_repositories,
+        ]
+      properties:
+        installation_id: { type: string, format: uuid }
+        account_login: { type: string }
+        reachable:
+          type: boolean
+          description: False when GitHub could not be reached; the rest is then last-known.
+        suspended: { type: boolean }
+        missing_permissions:
+          type: array
+          items: { type: string }
+          description: |
+            Named as `permission:access`, because the only useful thing to tell
+            someone whose workspace stopped working is which permission to
+            approve.
+        granted_repositories: { type: integer }
+        error: { type: string }
+
     Role:
       type: string
       description: |

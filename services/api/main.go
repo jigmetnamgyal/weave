@@ -22,7 +22,9 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/clerk"
+	githubadapter "github.com/jigmetnamgyal/weave/internal/adapters/github"
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
+	weaveredis "github.com/jigmetnamgyal/weave/internal/adapters/redis"
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/services/api/internal/auth"
 	"github.com/jigmetnamgyal/weave/services/api/internal/config"
@@ -150,13 +152,38 @@ func run() error {
 	invitationService := application.NewInvitationService(
 		postgres.NewInvitationStore(appPool), workspaceStore, time.Now)
 
+	githubClient, err := githubadapter.NewClient(
+		cfg.GitHubAppID, cfg.GitHubAppPrivateKeyPath, weaveredis.NewTokenCache(redisClient))
+	if err != nil {
+		return fmt.Errorf("configure github client: %w", err)
+	}
+	installationService := application.NewInstallationService(
+		postgres.NewInstallationStore(appPool),
+		weaveredis.NewInstallStateStore(redisClient),
+		githubadapter.NewPort(githubClient),
+		postgres.WithTenantWorkspace,
+		cfg.GitHubAppSlug,
+	)
+
+	// Delivery records are only needed while a retry might still arrive, and
+	// nothing else ever removes one — so without this the table grows for the
+	// life of the deployment. Started here rather than left to an external
+	// cron because a table that grows forever is the kind of thing nobody
+	// notices until it is a problem.
+	go pruneDeliveries(ctx, logger, installationService)
+
 	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
 	workspaceHandler.Register(protected)
 	workspaceHandler.RegisterInvitations(protected, invitationService)
+	workspaceHandler.RegisterGitHub(protected, installationService, cfg.GitHubWebhookSecret)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())
 	mux.Handle("GET /health/ready", withTimeout(cfg.ReadinessTimeout, health.Ready(logger, checks...)))
+	// Mounted before the authenticated subtree so its specific pattern wins
+	// over the "/v1/" prefix below. GitHub authenticates with a signature, not
+	// a token.
+	workspaceHandler.RegisterGitHubWebhook(mux, installationService, cfg.GitHubWebhookSecret)
 	mux.Handle("/v1/", authMiddleware.Require(protected))
 
 	server := &http.Server{
@@ -264,5 +291,45 @@ func appRoleProbe(pool *pgxpool.Pool) func(context.Context) error {
 				role, superuser, bypass)
 		}
 		return nil
+	}
+}
+
+// deliveryRetention is how long a webhook delivery record is kept.
+//
+// Deduplication only needs it while GitHub might still retry, which it stops
+// doing well inside a day. A week is generous, and leaves the table useful for
+// answering "did we receive that delivery" while an incident is being looked
+// at.
+const deliveryRetention = 7 * 24 * time.Hour
+
+// pruneInterval is how often the sweep runs. Rare, because the work is a
+// single indexed DELETE and nothing depends on it being prompt.
+const pruneInterval = 6 * time.Hour
+
+// pruneDeliveries removes webhook delivery records past the retention window.
+//
+// Failures are logged and never fatal: this is housekeeping, and a database
+// hiccup during a sweep is not a reason to disturb a healthy process. The
+// first sweep is delayed so it does not compete with startup.
+func pruneDeliveries(ctx context.Context, logger *slog.Logger, service *application.InstallationService) {
+	ticker := time.NewTicker(pruneInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			removed, err := service.PruneDeliveries(ctx, deliveryRetention)
+			if err != nil {
+				logger.WarnContext(ctx, "pruning webhook deliveries failed",
+					slog.String("error", err.Error()))
+				continue
+			}
+			if removed > 0 {
+				logger.InfoContext(ctx, "pruned webhook deliveries",
+					slog.Int64("removed", removed))
+			}
+		}
 	}
 }
