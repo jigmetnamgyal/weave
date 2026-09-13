@@ -538,11 +538,14 @@ func TestRemovedInstallationCannotBeRevivedIntegration(t *testing.T) {
 }
 
 // TestFailedDeliveryIsRetryable covers the half of deduplication that is easy
-// to get backwards.
+// to get backwards, and the lease that keeps it from going too far the other
+// way.
 //
-// A retry of an effect that succeeded must be collapsed; a retry of one that
-// failed must be processed. A row that merely exists cannot distinguish them,
-// which is why completion is recorded separately from the claim.
+// A retry of an effect that succeeded must be collapsed. A retry of one that
+// failed must be processed. And a retry arriving while the first attempt is
+// still working must be refused — reconciliation would converge, but a
+// suspension or removal appends an audit row every time it runs, and an
+// append-only trail cannot deduplicate itself.
 func TestFailedDeliveryIsRetryableIntegration(t *testing.T) {
 	pool := newPool(t)
 	store := postgres.NewInstallationStore(pool)
@@ -557,13 +560,30 @@ func TestFailedDeliveryIsRetryableIntegration(t *testing.T) {
 		t.Fatal("the first claim was refused")
 	}
 
-	// The effect fails, so completion is never recorded. GitHub retries.
+	// A retry arriving immediately: the first attempt may still be running, so
+	// the lease protects it.
+	concurrent, err := store.ClaimDelivery(ctx, delivery, "installation", "suspend")
+	if err != nil {
+		t.Fatalf("ClaimDelivery while in flight: %v", err)
+	}
+	if concurrent {
+		t.Error("a delivery still within its lease was reclaimed, so both attempts would run and both would write an audit row")
+	}
+
+	// Age the claim past its lease, standing in for an attempt that died or
+	// failed without recording completion.
+	if _, err := pool.Exec(ctx,
+		"UPDATE github_webhook_deliveries SET received_at = now() - interval '1 hour' WHERE delivery_id = $1",
+		delivery); err != nil {
+		t.Fatalf("age the claim: %v", err)
+	}
+
 	reclaimed, err := store.ClaimDelivery(ctx, delivery, "installation", "suspend")
 	if err != nil {
-		t.Fatalf("ClaimDelivery on retry: %v", err)
+		t.Fatalf("ClaimDelivery after the lease: %v", err)
 	}
 	if !reclaimed {
-		t.Error("a delivery whose effect never completed was treated as done, so the retry would be dropped")
+		t.Error("a delivery whose claim expired without completing was treated as done, so the retry would be dropped")
 	}
 
 	// This time it succeeds.
@@ -571,6 +591,12 @@ func TestFailedDeliveryIsRetryableIntegration(t *testing.T) {
 		t.Fatalf("CompleteDelivery: %v", err)
 	}
 
+	// Completed deliveries are refused regardless of age.
+	if _, err := pool.Exec(ctx,
+		"UPDATE github_webhook_deliveries SET received_at = now() - interval '1 hour' WHERE delivery_id = $1",
+		delivery); err != nil {
+		t.Fatalf("age the completed row: %v", err)
+	}
 	again, err := store.ClaimDelivery(ctx, delivery, "installation", "suspend")
 	if err != nil {
 		t.Fatalf("ClaimDelivery after completion: %v", err)

@@ -348,6 +348,20 @@ func (s *InstallationStore) ListPermissions(ctx context.Context, installationID,
 	return permissions, err
 }
 
+// deliveryLease is how long a claim is honoured before another attempt may
+// take it over.
+//
+// It bounds two failure modes against each other. Too short and a retry
+// arriving while the first attempt is still working reclaims the delivery, and
+// both run — which converges to the same state for reconciliation but appends
+// a second audit row for a suspension or a removal, because an audit trail is
+// append-only by design and cannot deduplicate itself. Too long and a genuinely
+// failed delivery waits before anything retries it.
+//
+// Processing takes seconds, and GitHub's own retries are spaced much wider than
+// this, so five minutes is far outside the first and well inside the second.
+const deliveryLease = 5 * time.Minute
+
 // ClaimDelivery takes ownership of a webhook delivery, reporting whether this
 // caller should process it.
 //
@@ -357,10 +371,10 @@ func (s *InstallationStore) ListPermissions(ctx context.Context, installationID,
 // completion is recorded separately.
 //
 // One statement rather than a read and a write. The insert claims an unseen
-// delivery; the ON CONFLICT arm reclaims one whose claim never completed —
-// because the effect failed, the process died, or the request was cancelled
-// before anything could be cleaned up. A completed delivery matches neither
-// and returns no row, which is the deduplication.
+// delivery. The ON CONFLICT arm reclaims one whose claim neither completed nor
+// is still within its lease — so an attempt that died, was cancelled, or
+// failed is retried, while one still in flight is left alone. A completed
+// delivery matches neither and returns no row, which is the deduplication.
 //
 // Outside a tenant transaction because a delivery is claimed before we know
 // which workspace it concerns, and some name an installation we have no record
@@ -371,6 +385,7 @@ func (s *InstallationStore) ClaimDelivery(ctx context.Context, deliveryID, event
 	               ON CONFLICT (delivery_id) DO UPDATE
 	                 SET received_at = now(), event = EXCLUDED.event, action = EXCLUDED.action
 	                 WHERE github_webhook_deliveries.completed_at IS NULL
+	                   AND github_webhook_deliveries.received_at < now() - $4::interval
 	               RETURNING delivery_id`
 
 	var actionValue *string
@@ -379,7 +394,7 @@ func (s *InstallationStore) ClaimDelivery(ctx context.Context, deliveryID, event
 	}
 
 	var claimed string
-	err := s.pool.QueryRow(ctx, query, deliveryID, event, actionValue).Scan(&claimed)
+	err := s.pool.QueryRow(ctx, query, deliveryID, event, actionValue, deliveryLease.String()).Scan(&claimed)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -392,11 +407,17 @@ func (s *InstallationStore) ClaimDelivery(ctx context.Context, deliveryID, event
 
 // CompleteDelivery records that a delivery's effect is durable.
 //
-// Until this runs the claim is provisional, so a retry reclaims it. Failing to
-// record completion is therefore safe in the direction that matters: the worst
-// outcome is that an effect is applied twice, and every effect here is
-// idempotent — reconciliation replaces a set, suspension and removal set a
-// state rather than toggling one.
+// Until this runs the claim is provisional, so a retry past the lease reclaims
+// it. Failing to record completion is safe in the direction that matters: the
+// worst outcome is that an effect is applied a second time, and the effects
+// themselves are idempotent — reconciliation replaces a set, suspension and
+// removal set a state rather than toggling one.
+//
+// The exception, and it is worth naming rather than glossing: the audit append
+// is not idempotent. A reprocessed suspension or removal writes a second audit
+// row, because an append-only trail cannot deduplicate itself. The lease is
+// what keeps that to the rare case where completion specifically failed after
+// the effect succeeded, rather than every ordinary retry.
 func (s *InstallationStore) CompleteDelivery(ctx context.Context, deliveryID string) error {
 	if err := s.queries().CompleteWebhookDelivery(ctx, deliveryID); err != nil {
 		return fmt.Errorf("complete webhook delivery: %w", err)
