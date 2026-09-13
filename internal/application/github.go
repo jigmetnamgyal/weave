@@ -75,10 +75,6 @@ type InstallationRepository interface {
 	// here audits inside its own transaction; a branch is created on GitHub,
 	// so there is no local transaction to join and the record stands alone.
 	AppendAudit(ctx context.Context, event AuditEvent) error
-	// HasAudit reports whether an event with this action and target was
-	// already recorded, so a retry can finish an audit its first attempt
-	// started rather than duplicating or losing it.
-	HasAudit(ctx context.Context, workspaceID uuid.UUID, action, target string) (bool, error)
 	ClaimDelivery(ctx context.Context, deliveryID, event, action string) (DeliveryClaim, error)
 	CompleteDelivery(ctx context.Context, deliveryID string) error
 	PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error)

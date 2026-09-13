@@ -117,6 +117,13 @@ func ValidateBranchName(name string) error {
 		return fmt.Errorf("%w: must not start with refs/", ErrInvalidBranchName)
 	case strings.Contains(name, ".."):
 		return fmt.Errorf("%w: must not contain a %q sequence", ErrInvalidBranchName, "..")
+	case strings.Contains(name, "@{"):
+		// Git's reflog syntax. A ref containing it cannot be addressed
+		// afterwards, so GitHub would refuse it — but refusing here returns
+		// the documented invalid-request response instead of a relayed 422.
+		return fmt.Errorf("%w: must not contain a %q sequence", ErrInvalidBranchName, "@{")
+	case name == BranchPrefix+"@":
+		return fmt.Errorf("%w: must not be the single character @", ErrInvalidBranchName)
 	case strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/"):
 		return fmt.Errorf("%w: must not begin or end with /", ErrInvalidBranchName)
 	case strings.Contains(name, "//"):

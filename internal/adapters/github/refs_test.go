@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,9 +88,12 @@ func TestCreateBranchTranslatesTheDuplicateRefusal(t *testing.T) {
 func TestCreateBranchSendsAFullyQualifiedRef(t *testing.T) {
 	var body string
 	server := tokenAndThen(t, func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(buf)
-		body = string(buf)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		body = string(raw)
 		fmt.Fprint(w, `{"ref":"refs/heads/weave/x","object":{"sha":"deadbeef"}}`)
 	})
 	defer server.Close()

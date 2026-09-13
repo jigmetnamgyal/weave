@@ -354,15 +354,6 @@ func (f *fakeInstallations) AppendAudit(_ context.Context, event application.Aud
 	return nil
 }
 
-func (f *fakeInstallations) HasAudit(_ context.Context, _ uuid.UUID, action, target string) (bool, error) {
-	for _, event := range *f.audits {
-		if event.Action == action && event.Target == target {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func (f *fakeInstallations) Connect(context.Context, domain.Installation, application.Actor, application.AuditEvent) (domain.Installation, error) {
 	return domain.Installation{}, nil
 }
@@ -434,50 +425,66 @@ func TestCreateBranchFailsClosedWhenRulesCannotBeRead(t *testing.T) {
 	}
 }
 
-// TestARetryCompletesAnAuditItsFirstAttemptLost.
+// TestAnUnrecordableCreationIsReportedNotRepaired.
 //
 // Creation and its audit are two writes to two systems, and GitHub goes first
-// because it is the one that cannot be rolled back. If the audit then fails,
-// the branch exists and the record does not — and the retry lands on the
-// already-exists path, which has nothing to create. Without finishing the
-// record there, an irreversible write to a customer's repository stays
-// permanently unattributable.
-func TestARetryCompletesAnAuditItsFirstAttemptLost(t *testing.T) {
+// because it cannot be rolled back. When the audit then fails, both facts
+// reach the caller: the branch, because something irreversible happened, and
+// an error naming it, because an unaudited write must not look like a clean
+// success.
+//
+// What it deliberately does *not* do is record the audit on a later retry.
+// Nothing distinguishes our own interrupted attempt from a branch someone
+// created by hand at the same commit, so a repair would assert — permanently,
+// in an append-only trail — that a member created something they did not. A
+// missing row is a gap; a false row is a false statement about a person.
+func TestAnUnrecordableCreationIsReportedNotRepaired(t *testing.T) {
 	world := newBranchWorld(t)
 	ctx := context.Background()
 	command := application.CreateBranchCommand{RepositoryID: world.repository.ID, Name: "weave/orphan"}
 
 	world.store.auditErr = errors.New("database went away")
-	if _, err := world.service.CreateBranch(ctx, world.membership, command); err == nil {
-		t.Fatal("a failed audit was reported as success")
-	}
-
-	// The branch exists on GitHub and nothing recorded it.
-	if world.api.created != 1 {
-		t.Fatalf("created %d branches, want 1", world.api.created)
-	}
-	if len(*world.audits) != 0 {
-		t.Fatalf("audits = %d, want 0 — the fixture is not reproducing the failure", len(*world.audits))
-	}
-
-	// The retry finds the branch and completes the record.
-	world.store.auditErr = nil
 	branch, err := world.service.CreateBranch(ctx, world.membership, command)
+	if err == nil {
+		t.Fatal("an unrecorded creation was reported as a clean success")
+	}
+	// The branch comes back regardless: the caller must know GitHub changed.
+	if branch.Name != "weave/orphan" {
+		t.Errorf("branch = %+v, want the created branch returned alongside the error", branch)
+	}
+	if !contains(err.Error(), "audit") {
+		t.Errorf("error %q does not say the creation went unrecorded", err)
+	}
+
+	// A retry finds the branch and does not invent attribution for it.
+	world.store.auditErr = nil
+	retried, err := world.service.CreateBranch(ctx, world.membership, command)
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if branch.Created {
+	if retried.Created {
 		t.Error("the retry reported Created = true; nothing was made the second time")
 	}
-	if len(*world.audits) != 1 {
-		t.Fatalf("audits = %d after the retry, want 1 — the creation is unattributable", len(*world.audits))
+	if len(*world.audits) != 0 {
+		t.Errorf("audits = %d; a branch of unknown provenance was attributed to the retrying member",
+			len(*world.audits))
 	}
+}
 
-	// And a third attempt does not duplicate it.
-	if _, err := world.service.CreateBranch(ctx, world.membership, command); err != nil {
-		t.Fatalf("third attempt: %v", err)
+// TestCreateBranchRequiresAName is the idempotency the endpoint claims.
+//
+// Generating a name when one is omitted made each attempt produce a different
+// branch, so a retry after a lost response created a second one — idempotent
+// by name, while quietly making the name non-deterministic.
+func TestCreateBranchRequiresAName(t *testing.T) {
+	world := newBranchWorld(t)
+
+	_, err := world.service.CreateBranch(context.Background(), world.membership,
+		application.CreateBranchCommand{RepositoryID: world.repository.ID})
+	if !errors.Is(err, domain.ErrInvalidBranchName) {
+		t.Errorf("CreateBranch without a name = %v, want ErrInvalidBranchName", err)
 	}
-	if len(*world.audits) != 1 {
-		t.Errorf("audits = %d, want 1 — a further retry duplicated the record", len(*world.audits))
+	if world.api.created > 0 {
+		t.Error("a nameless request created a branch")
 	}
 }

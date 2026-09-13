@@ -13,13 +13,10 @@ import (
 // CreateBranchCommand is a request to create a branch.
 type CreateBranchCommand struct {
 	RepositoryID uuid.UUID
-	// Name is optional. When empty one is generated from Slug, which is the
-	// normal path: a name the product chose cannot smuggle anything into a
-	// ref. A supplied name is validated just as strictly, and exists so a
-	// retry can name the branch its first attempt created.
+	// Name is required. A caller that may retry needs the same request to
+	// name the same branch; a generated name would make each attempt create
+	// another. Validated strictly, because it reaches a ref.
 	Name string
-	// Slug describes the branch's purpose and seeds a generated name.
-	Slug string
 	// Base is the branch to create from. Empty means the repository's default.
 	Base string
 }
@@ -48,14 +45,22 @@ func (s *InstallationService) CreateBranch(
 			ErrPermissionDenied, membership.Role, domain.PermissionRepositoryManage)
 	}
 
-	name := command.Name
-	if name == "" {
-		generated, err := domain.NewBranchName(command.Slug)
-		if err != nil {
-			return domain.Branch{}, err
-		}
-		name = generated
+	// The name is required, and that is what makes the operation retryable.
+	//
+	// An earlier revision generated one when it was omitted. Each attempt then
+	// produced a different random name, so a retry after a lost response
+	// created a *second* branch rather than finding the first — the operation
+	// was idempotent by name while quietly making the name non-deterministic.
+	//
+	// Generation still exists in the domain, for the session workflow in M4
+	// where a session id supplies the stable identity a name can be derived
+	// from. It does not belong on an endpoint whose caller may retry.
+	if command.Name == "" {
+		return domain.Branch{}, fmt.Errorf(
+			"%w: a branch name is required, so that retrying this request finds the same branch "+
+				"rather than creating another", domain.ErrInvalidBranchName)
 	}
+	name := command.Name
 	if err := domain.ValidateBranchName(name); err != nil {
 		return domain.Branch{}, err
 	}
@@ -93,7 +98,7 @@ func (s *InstallationService) CreateBranch(
 	existing, err := s.api.Branch(ctx, installation.GitHubID, repository.Owner, repository.Name, name)
 	switch {
 	case err == nil:
-		return s.resolveExisting(ctx, membership, repository, existing, baseBranch, base)
+		return s.resolveExisting(existing, baseBranch, base)
 	case errors.Is(err, ErrRemoteNotFound):
 		// The ordinary path: nothing there yet. A branch that does not exist
 		// still has no `protected` flag to read, and a ruleset matching
@@ -117,14 +122,20 @@ func (s *InstallationService) CreateBranch(
 			if readErr != nil {
 				return domain.Branch{}, fmt.Errorf("read branch after conflict: %w", readErr)
 			}
-			return s.resolveExisting(ctx, membership, repository, raced, baseBranch, base)
+			return s.resolveExisting(raced, baseBranch, base)
 		}
 		return domain.Branch{}, fmt.Errorf("create branch: %w", err)
 	}
 
 	branch := domain.Branch{Name: created.Name, SHA: created.SHA, Base: base, Created: true}
 	if err := s.auditBranch(ctx, membership, repository, branch); err != nil {
-		return domain.Branch{}, err
+		// The branch exists and the record does not. Both facts go to the
+		// caller: swallowing the error would hide an unaudited write, and
+		// reporting a bare failure would suggest nothing happened when
+		// something irreversible did.
+		return branch, fmt.Errorf(
+			"branch %s was created at %s but could not be recorded in the audit trail: %w",
+			branch.Name, short(branch.SHA), err)
 	}
 	return branch, nil
 }
@@ -137,9 +148,6 @@ func (s *InstallationService) CreateBranch(
 // anywhere else is a conflict, because handing back a branch at unknown work
 // as though it were what was asked for is worse than an error.
 func (s *InstallationService) resolveExisting(
-	ctx context.Context,
-	membership domain.Membership,
-	repository domain.Repository,
 	existing RemoteBranch,
 	base RemoteBranch,
 	baseName string,
@@ -152,29 +160,20 @@ func (s *InstallationService) resolveExisting(
 			domain.ErrBranchConflict, existing.Name, short(existing.SHA), short(base.SHA))
 	}
 
-	branch := domain.Branch{Name: existing.Name, SHA: existing.SHA, Base: baseName, Created: false}
-
-	// Nothing changed on GitHub this time, so ordinarily there is nothing to
-	// record — an audit trail of attempts rather than effects stops being a
-	// record of what happened.
+	// No audit row, and deliberately none.
 	//
-	// The exception is the reason this check exists. Creation and its audit
-	// are two writes to two systems, and the branch is made first because
-	// GitHub is the one that cannot be rolled back. If the audit then fails,
-	// the retry arrives here — and without finishing the record, an
-	// irreversible write to a customer's repository would stay permanently
-	// unattributable. So: record it if and only if it was never recorded.
-	recorded, err := s.installations.HasAudit(ctx, membership.WorkspaceID,
-		AuditBranchCreated, auditTarget(repository, branch))
-	if err != nil {
-		return domain.Branch{}, fmt.Errorf("check branch audit: %w", err)
-	}
-	if !recorded {
-		if err := s.auditBranch(ctx, membership, repository, branch); err != nil {
-			return domain.Branch{}, err
-		}
-	}
-	return branch, nil
+	// An earlier revision recorded one here when none existed, to recover an
+	// audit lost between creating the branch and writing its row. That was
+	// wrong: nothing distinguishes our own interrupted attempt from a branch
+	// someone created by hand that happens to point at the same commit. The
+	// repair would then assert, permanently and in an append-only trail, that
+	// a member created something they did not.
+	//
+	// A missing audit row is a gap. A false one is a false statement about a
+	// person that cannot be retracted, so the gap is the better failure — and
+	// the creation path below reports loudly rather than silently when it
+	// cannot record what it did.
+	return domain.Branch{Name: existing.Name, SHA: existing.SHA, Base: baseName, Created: false}, nil
 }
 
 // auditTarget identifies a branch creation in the audit trail.

@@ -1362,15 +1362,12 @@ export interface operations {
             content: {
                 "application/json": {
                     /**
-                     * @description Optional. Omitted, the server generates one — the normal
-                     *     path, because a name the product chose cannot smuggle
-                     *     anything into a ref. Supplied, it is validated just as
-                     *     strictly, and exists so a retry can name the branch its
-                     *     first attempt created. Must begin with `weave/`.
+                     * @description Required, and must begin with `weave/`. A caller that may
+                     *     retry needs the same request to name the same branch —
+                     *     generating one here would make each attempt create
+                     *     another, which is the opposite of the idempotency below.
                      */
-                    name?: string;
-                    /** @description Describes the purpose, and seeds a generated name. */
-                    slug?: string;
+                    name: string;
                     /** @description The branch to create from. Defaults to the repository's default branch. */
                     base?: string;
                 };
@@ -1414,7 +1411,21 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            404: components["responses"]["WorkspaceNotFound"];
+            /**
+             * @description The workspace is not the caller's or does not exist, the repository
+             *     was not found in it, or the requested base branch does not exist in
+             *     the repository. The three are deliberately indistinguishable for
+             *     the first two — a response confirming a workspace exists but is not
+             *     yours turns identifier guessing into tenant enumeration.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /**
              * @description A branch of that name exists and points somewhere other than the
              *     requested base. Refused rather than returned, because handing back

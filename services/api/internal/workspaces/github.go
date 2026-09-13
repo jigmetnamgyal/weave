@@ -359,12 +359,10 @@ func (g *githubRoutes) webhook(w http.ResponseWriter, r *http.Request) {
 }
 
 type createBranchRequest struct {
-	// Name is optional. Omitted, the server generates one from Slug — which is
-	// the normal path, because a name the product chose cannot smuggle
-	// anything into a ref. Supplied, it is validated just as strictly, and
-	// exists so a retry can name the branch its first attempt created.
+	// Name is required. A caller that may retry needs the same request to name
+	// the same branch — generating one here would make each attempt create
+	// another, which is the opposite of the idempotency this endpoint claims.
 	Name string `json:"name"`
-	Slug string `json:"slug"`
 	Base string `json:"base"`
 }
 
@@ -401,7 +399,6 @@ func (g *githubRoutes) createBranch(w http.ResponseWriter, r *http.Request) {
 	branch, err := g.service.CreateBranch(ctx, membership, application.CreateBranchCommand{
 		RepositoryID: repositoryID,
 		Name:         body.Name,
-		Slug:         body.Slug,
 		Base:         body.Base,
 	})
 	if err != nil {
