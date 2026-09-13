@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0, M3.1 and M3.2 merged; M3.3 (repository operations) next
+- Status: M2 complete; M3.0, M3.1 and M3.2 merged; M3.3 (branch operations) next, which completes M3
 
 ## Current Goal
 
@@ -46,19 +46,23 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M3.2 merged in PR #7 on 2026-09-13; M3.3 is next.
+Nothing in progress. M3.2 merged in PR #7 on 2026-09-13; the M3.3 spec is written and M3.3 is next.
 
 ## Next Up
 
-### Unit M3.3 — Repository Operations
+### Unit M3.3 — Branch Operations
 
-**Lesson from M3.1, worth carrying:** the webhook-delivery path took three attempts, and each fix traded one failure mode for another — deduplicating before the effect dropped failed retries; recording completion separately allowed concurrent double-execution; a lease prevented that but acknowledged work still in flight, which GitHub then never retried. It settled only once claiming had three distinct outcomes rather than two. Anything in M3.3 that deduplicates, retries, or leases deserves the same suspicion: write down what must happen for each outcome *before* choosing the mechanism.
+**Source:** `context/features-specs/09-branch-operations.md` (written 2026-09-13)
 
-Follows M3.2. Expected scope: cloning, branches, commits, pull requests, and the push and pull-request webhooks that M3.1 deliberately left unsubscribed.
+**Outcome:** the control plane can create a branch in a granted repository — the first external side effect Weave performs on a customer's repository, and the last thing M3 needs.
 
-**Carried from M3.1:** anything acting on a repository goes through `RepositoryForUse`, which reconciles with GitHub before answering. A stored `granted` flag is a belief, and acting on a stale one is how a revoked grant reaches a clone.
+**Scope corrected against the milestone.** This was described twice, by me, as "cloning, branches, commits and pull requests". That was wrong and the correction narrows it considerably: cloning belongs to the runner (M5, `context/architecture.md` — "a per-session ephemeral environment containing a repository checkout"), commit and pull-request delivery is M8, and webhook ingestion was delivered in M3.1. What remains in M3's line is branch operations.
 
-**Before subscribing to push or pull-request events,** move the webhook URL off the public smee.io channel. Those payloads carry commit messages, author email addresses and file paths, and a smee channel is readable by anyone holding its URL.
+**Push and pull-request webhooks stay unsubscribed,** for the M3.1 reason — nothing consumes them until sessions exist in M5 — and for a second that must be settled first: the development webhook URL is a public smee.io channel readable by anyone holding it, and push payloads carry commit messages, author email addresses and file paths. Moving off smee is a prerequisite for subscribing, not a tidy-up afterwards.
+
+**Invariant 11 becomes real here.** "Protected branches never receive direct agent writes" has been aspirational because nothing could write; this is the first code that could. Creating a branch *from* a protected base is normal; creating one *at* a protected ref is refused.
+
+**Invariant 5 shapes the retry behaviour.** Every external side effect must be idempotent. GitHub refuses a duplicate ref with 422, and that must read as "this branch already exists where you asked" rather than as a failure — otherwise a retried request looks broken while having done exactly the right thing. A duplicate at a *different* base is a genuine conflict and is refused.
 
 ## Open Questions
 
@@ -167,4 +171,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-13 — Unit M3.2 merged. Next: M3.3, repository operations.
+2026-09-13 — M3.3 spec written (branch operations, scope corrected). M3.2 merged.
