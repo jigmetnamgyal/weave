@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0 and M3.1 merged; M3.2 complete and awaiting review; M3.3 (repository operations) next
+- Status: M2 complete; M3.0, M3.1 and M3.2 merged; M3.3 (repository operations) next
 
 ## Current Goal
 
@@ -28,7 +28,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Completed
 
-- Generated the web application's API types from `contracts/openapi/openapi.yaml` with a CI drift check, replacing every hand-written response type and envelope in `apps/web/lib/api.ts` and adding a method-aware route-coverage test in both directions (Unit M3.2 — see Verification Record). Closes the exception accepted on PR #6, and was done before M3.3 so that repository operations migrate two layers of hand-written helpers rather than three. **Deliberate interpretation, recorded rather than left implicit:** it generates types, not a request client — `Result<T>` stays, because it makes failure unignorable where a client that throws would not. **Not closed:** nothing verifies the contract against what the handlers actually serve; route coverage is the cheap half, and shape verification is not attempted.
+- Generated the web application's API types from `contracts/openapi/openapi.yaml` with a CI drift check, replacing every hand-written response type and envelope in `apps/web/lib/api.ts` and adding a method-aware route-coverage test in both directions (Unit M3.2 — see Verification Record). Merged 2026-09-13 in PR #7. Closes the exception accepted on PR #6, and was done before M3.3 so that repository operations migrate two layers of hand-written helpers rather than three. **Deliberate interpretation, recorded rather than left implicit:** it generates types, not a request client — `Result<T>` stays, because it makes failure unignorable where a client that throws would not. **Not closed:** nothing verifies the contract against what the handlers actually serve; route coverage is the cheap half, and shape verification is not attempted.
 - Built GitHub App installation and repository access: `github_installations`, `repositories`, `repository_permissions` and a delivery log, all with row-level security in the creating migration; installation binding authorized by a single-use state recorded before the redirect; signature-verified, deduplicated webhooks; reconciliation before use; and a health check that names the missing permission (Unit M3.1 — see Verification Record and ADR-005). Merged 2026-09-13 in PR #6 after five review rounds and ten findings, five of which were regressions introduced by fixes in the preceding round — every one in the webhook-delivery path.
 - Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Merged 2026-09-11 in PR #5 after two review rounds and eleven findings, including a live defect that made the invitation preview 404 for every legitimate invitee. Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
 - Defined developer-first MVP and long-term multiplayer-agent product boundary.
@@ -46,7 +46,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M3.2 is complete and awaiting review.
+Nothing in progress. M3.2 merged in PR #7 on 2026-09-13; M3.3 is next.
 
 ## Next Up
 
@@ -63,6 +63,8 @@ Follows M3.2. Expected scope: cloning, branches, commits, pull requests, and the
 ## Open Questions
 
 Resolve these before the milestone that depends on them:
+
+- **`make ci` is not a superset of what CI runs, and was being treated as one.** The API workflow job verifies `go mod tidy` leaves `go.mod` and `go.sum` unchanged; the local target does not. On PR #7 the local gates passed and CI failed in twelve seconds on exactly that. Either add the tidy check to `make ci`, or stop describing it as "every local quality gate" in the Makefile — the current arrangement invites the mistake it caused. **Decide in M3.3.**
 
 - **The generated OpenAPI client does not exist.** `context/code-standards.md` requires one — "use the generated API client; do not call control-plane endpoints through scattered ad hoc `fetch` helpers" — and `apps/web/lib/api.ts` has hand-written helpers and response types for the whole `/v1` surface. The contract itself is now complete and current; what is missing is generation. Closing it means choosing a generator, wiring a drift check into CI so the client cannot silently diverge, and migrating every call site from M2.1 onward. Raised on PR #6 and deliberately not done there: it predates the GitHub endpoints and is wider than any one feature. **Being closed now as Unit M3.2** — see `context/features-specs/08-generated-api-client.md`.
 
@@ -165,4 +167,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-13 — Unit M3.2 (generated API client) complete, awaiting review. Next: M3.3, repository operations.
+2026-09-13 — Unit M3.2 merged. Next: M3.3, repository operations.
