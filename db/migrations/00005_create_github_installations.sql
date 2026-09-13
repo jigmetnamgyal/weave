@@ -146,6 +146,15 @@ CREATE TABLE github_webhook_deliveries (
     event        text        NOT NULL,
     action       text,
     received_at  timestamptz NOT NULL DEFAULT now(),
+    -- Set once the delivery's effect is durable.
+    --
+    -- Deduplication must collapse a retry of something that worked while still
+    -- reprocessing a retry of something that failed, and a row that merely
+    -- exists cannot tell those apart. Recording completion separately means a
+    -- claim that never completed — because the effect failed, the process
+    -- died, or the request was cancelled mid-flight — is reclaimable by the
+    -- retry rather than mistaken for work already done.
+    completed_at timestamptz,
 
     CONSTRAINT github_webhook_deliveries_event_not_blank
         CHECK (length(btrim(event)) > 0)
@@ -187,7 +196,8 @@ SET search_path = public, pg_temp
 AS $$
     SELECT i.id, i.workspace_id, i.suspended_at IS NOT NULL
     FROM github_installations i
-    WHERE i.github_installation_id = presented_id;
+    WHERE i.github_installation_id = presented_id
+      AND i.deleted_at IS NULL;
 $$;
 
 ALTER FUNCTION weave_installation_by_github_id(bigint) OWNER TO weave_rls_bypass;

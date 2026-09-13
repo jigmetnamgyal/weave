@@ -27,6 +27,18 @@ func (q *Queries) ClearInstallationPermissions(ctx context.Context, arg ClearIns
 	return err
 }
 
+const completeWebhookDelivery = `-- name: CompleteWebhookDelivery :exec
+UPDATE github_webhook_deliveries
+SET completed_at = now()
+WHERE delivery_id = $1
+`
+
+// Mark a delivery's effect durable. Until this runs, a retry may reclaim it.
+func (q *Queries) CompleteWebhookDelivery(ctx context.Context, deliveryID string) error {
+	_, err := q.db.Exec(ctx, completeWebhookDelivery, deliveryID)
+	return err
+}
+
 const connectInstallation = `-- name: ConnectInstallation :one
 INSERT INTO github_installations (
     id, workspace_id, github_installation_id, account_login, account_type,
@@ -80,7 +92,7 @@ func (q *Queries) ConnectInstallation(ctx context.Context, arg ConnectInstallati
 
 const getInstallationByGitHubIDForWorkspace = `-- name: GetInstallationByGitHubIDForWorkspace :one
 SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at FROM github_installations
-WHERE github_installation_id = $1 AND workspace_id = $2
+WHERE github_installation_id = $1 AND workspace_id = $2 AND deleted_at IS NULL
 `
 
 type GetInstallationByGitHubIDForWorkspaceParams struct {
@@ -109,7 +121,7 @@ func (q *Queries) GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg
 
 const getInstallationForWorkspace = `-- name: GetInstallationForWorkspace :one
 SELECT id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at FROM github_installations
-WHERE id = $1 AND workspace_id = $2
+WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL
 `
 
 type GetInstallationForWorkspaceParams struct {
@@ -245,14 +257,21 @@ func (q *Queries) ListInstallationPermissions(ctx context.Context, arg ListInsta
 }
 
 const listRepositoriesForWorkspace = `-- name: ListRepositoriesForWorkspace :many
-SELECT id, workspace_id, installation_id, github_repository_id, owner, name, default_branch, private, granted, created_at, updated_at FROM repositories
-WHERE workspace_id = $1
-ORDER BY owner, name
+SELECT r.id, r.workspace_id, r.installation_id, r.github_repository_id, r.owner, r.name, r.default_branch, r.private, r.granted, r.created_at, r.updated_at FROM repositories r
+JOIN github_installations i ON i.id = r.installation_id
+WHERE r.workspace_id = $1 AND i.deleted_at IS NULL
+ORDER BY r.owner, r.name
 `
 
 // Withdrawn repositories are returned too, with granted = false, so the
 // interface can say "access was removed" rather than silently dropping a
 // repository someone was using yesterday.
+//
+// Repositories belonging to a removed installation are excluded. Their rows
+// are kept for audit and for reading finished sessions, but the connection is
+// gone, so listing them among a workspace's repositories would present history
+// as current state — and they would match no connected account in the
+// interface, which reads as a build mismatch.
 func (q *Queries) ListRepositoriesForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Repository, error) {
 	rows, err := q.db.Query(ctx, listRepositoriesForWorkspace, workspaceID)
 	if err != nil {
@@ -347,7 +366,7 @@ const recordWebhookDelivery = `-- name: RecordWebhookDelivery :one
 INSERT INTO github_webhook_deliveries (delivery_id, event, action)
 VALUES ($1, $2, $3)
 ON CONFLICT (delivery_id) DO NOTHING
-RETURNING delivery_id, event, action, received_at
+RETURNING delivery_id, event, action, received_at, completed_at
 `
 
 type RecordWebhookDeliveryParams struct {
@@ -370,6 +389,7 @@ func (q *Queries) RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDe
 		&i.Event,
 		&i.Action,
 		&i.ReceivedAt,
+		&i.CompletedAt,
 	)
 	return i, err
 }
@@ -377,7 +397,7 @@ func (q *Queries) RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDe
 const setInstallationSelection = `-- name: SetInstallationSelection :one
 UPDATE github_installations
 SET repository_selection = $3, updated_at = now()
-WHERE id = $1 AND workspace_id = $2
+WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL
 RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at
 `
 
@@ -409,7 +429,7 @@ func (q *Queries) SetInstallationSelection(ctx context.Context, arg SetInstallat
 const setInstallationSuspended = `-- name: SetInstallationSuspended :one
 UPDATE github_installations
 SET suspended_at = $3, updated_at = now()
-WHERE id = $1 AND workspace_id = $2
+WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL
 RETURNING id, workspace_id, github_installation_id, account_login, account_type, repository_selection, connected_by, suspended_at, deleted_at, created_at, updated_at
 `
 

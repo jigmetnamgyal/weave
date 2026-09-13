@@ -19,6 +19,8 @@ type Querier interface {
 	// lock is needed and no second membership can be created.
 	ClaimInvitation(ctx context.Context, arg ClaimInvitationParams) (WorkspaceInvitation, error)
 	ClearInstallationPermissions(ctx context.Context, arg ClearInstallationPermissionsParams) error
+	// Mark a delivery's effect durable. Until this runs, a retry may reclaim it.
+	CompleteWebhookDelivery(ctx context.Context, deliveryID string) error
 	// Bind an installation to a workspace.
 	//
 	// No ON CONFLICT clause on purpose. The unique index on
@@ -70,6 +72,12 @@ type Querier interface {
 	// Withdrawn repositories are returned too, with granted = false, so the
 	// interface can say "access was removed" rather than silently dropping a
 	// repository someone was using yesterday.
+	//
+	// Repositories belonging to a removed installation are excluded. Their rows
+	// are kept for audit and for reading finished sessions, but the connection is
+	// gone, so listing them among a workspace's repositories would present history
+	// as current state — and they would match no connected account in the
+	// interface, which reads as a build mismatch.
 	ListRepositoriesForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Repository, error)
 	ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUID) ([]ListWorkspaceMembersRow, error)
 	ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) ([]ListWorkspacesForUserRow, error)

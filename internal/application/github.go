@@ -50,8 +50,8 @@ type InstallationRepository interface {
 	ListRepositories(ctx context.Context, workspaceID uuid.UUID) ([]domain.Repository, error)
 	GetRepository(ctx context.Context, repositoryID, workspaceID uuid.UUID) (domain.Repository, error)
 	ListPermissions(ctx context.Context, installationID, workspaceID uuid.UUID) (map[string]string, error)
-	RecordDelivery(ctx context.Context, deliveryID, event, action string) (bool, error)
-	ForgetDelivery(ctx context.Context, deliveryID string) error
+	ClaimDelivery(ctx context.Context, deliveryID, event, action string) (bool, error)
+	CompleteDelivery(ctx context.Context, deliveryID string) error
 	PruneDeliveries(ctx context.Context, retention time.Duration) (int64, error)
 }
 
@@ -253,7 +253,15 @@ func (s *InstallationService) CompleteInstall(
 		if reconcileErr := s.reconcile(tenantCtx, current, &remote); reconcileErr != nil {
 			return domain.Installation{}, fmt.Errorf("reconcile after access change: %w", reconcileErr)
 		}
-		return current, nil
+		// Re-read rather than returning `current`. Reconciliation persists
+		// GitHub's repository_selection, and the value read before it ran is
+		// precisely the one the caller changed — returning it would serialise
+		// the old selection back to a page that just updated it.
+		updated, getErr := s.installations.Get(tenantCtx, existing.InstallationID, state.WorkspaceID)
+		if getErr != nil {
+			return domain.Installation{}, getErr
+		}
+		return updated, nil
 	}
 	if err != nil {
 		return domain.Installation{}, err
@@ -464,23 +472,31 @@ type webhookPayload struct {
 // three happen. Asking GitHub what is true now is both simpler and correct
 // under all three.
 func (s *InstallationService) HandleWebhook(ctx context.Context, deliveryID, event string, body []byte) error {
-	// Deduplicate first. GitHub retries, and the retry must not produce a
-	// second effect — most of all for the suspend and delete paths.
-	fresh, err := s.installations.RecordDelivery(ctx, deliveryID, event, actionOf(body))
+	// Claim first. GitHub retries, and a retry of an effect that already
+	// succeeded must not produce a second one — most of all for suspend and
+	// removal.
+	//
+	// A claim is not the same as a completed delivery. One whose effect failed
+	// is reclaimable, so the retry is processed rather than collapsed into the
+	// record of an attempt that went nowhere.
+	mine, err := s.installations.ClaimDelivery(ctx, deliveryID, event, actionOf(body))
 	if err != nil {
-		return fmt.Errorf("record delivery: %w", err)
+		return fmt.Errorf("claim delivery: %w", err)
 	}
-	if !fresh {
+	if !mine {
 		return nil
 	}
 
-	// From here on the delivery record is provisional. Any path that returns
-	// an error removes it, so GitHub's retry is processed rather than
-	// collapsed into the record of an attempt that failed.
+	// The claim stays provisional until the effect is durable. Marking it on
+	// the way out, rather than deleting it on failure, is what makes this
+	// survive a cancelled request or a process that dies mid-delivery: nothing
+	// has to run for the retry to be correct.
 	applied := false
 	defer func() {
-		if !applied {
-			_ = s.installations.ForgetDelivery(ctx, deliveryID)
+		if applied {
+			// A failure here only means the next retry does the work again,
+			// and every effect below is idempotent.
+			_ = s.installations.CompleteDelivery(ctx, deliveryID)
 		}
 	}()
 

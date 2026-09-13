@@ -316,7 +316,8 @@ func TestSuspensionIsRecordedWithoutLosingRepositoriesIntegration(t *testing.T) 
 	}
 }
 
-// TestDeliveryDeduplication pins that a retried delivery produces one effect.
+// TestDeliveryDeduplication pins that a retried delivery, once its effect has
+// completed, produces no second effect.
 func TestDeliveryDeduplicationIntegration(t *testing.T) {
 	pool := newPool(t)
 	store := postgres.NewInstallationStore(pool)
@@ -324,20 +325,23 @@ func TestDeliveryDeduplicationIntegration(t *testing.T) {
 
 	delivery := "delivery-" + uuid.NewString()
 
-	first, err := store.RecordDelivery(ctx, delivery, "installation", "created")
+	first, err := store.ClaimDelivery(ctx, delivery, "installation", "created")
 	if err != nil {
-		t.Fatalf("RecordDelivery: %v", err)
+		t.Fatalf("ClaimDelivery: %v", err)
 	}
 	if !first {
 		t.Fatal("the first delivery was reported as already seen")
 	}
+	if err := store.CompleteDelivery(ctx, delivery); err != nil {
+		t.Fatalf("CompleteDelivery: %v", err)
+	}
 
-	second, err := store.RecordDelivery(ctx, delivery, "installation", "created")
+	second, err := store.ClaimDelivery(ctx, delivery, "installation", "created")
 	if err != nil {
-		t.Fatalf("RecordDelivery on retry: %v", err)
+		t.Fatalf("ClaimDelivery on retry: %v", err)
 	}
 	if second {
-		t.Error("a retried delivery was reported as new, so it would be applied twice")
+		t.Error("a retried delivery was claimed again, so it would be applied twice")
 	}
 }
 
@@ -431,16 +435,33 @@ func TestRemovingAnInstallationKeepsRepositoryHistoryIntegration(t *testing.T) {
 		t.Fatalf("MarkDeleted: %v", err)
 	}
 
-	// The repository row survives, withdrawn.
+	// The row survives in the table — that is what "kept for audit and for
+	// reading finished sessions" means — and it is withdrawn.
+	var kept int
+	var granted bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*), bool_or(granted) FROM repositories WHERE installation_id = $1",
+		installation.ID).Scan(&kept, &granted); err != nil {
+		t.Fatalf("read repositories: %v", err)
+	}
+	if kept != 1 {
+		t.Fatalf("removal left %d repository rows, want 1 kept for history", kept)
+	}
+	if granted {
+		t.Error("a removed installation still reports its repository as granted")
+	}
+
+	// But it is not part of the workspace's repositories any more. Surviving
+	// for audit and appearing as current state are different things, and
+	// listing it would present history as a live grant.
 	repositories, err := store.ListRepositories(ctx, workspace.ID)
 	if err != nil {
 		t.Fatalf("ListRepositories: %v", err)
 	}
-	if len(repositories) != 1 {
-		t.Fatalf("removal left %d repository rows, want 1 kept for history", len(repositories))
-	}
-	if repositories[0].Granted {
-		t.Error("a removed installation still reports its repository as granted")
+	for _, repository := range repositories {
+		if repository.InstallationID == installation.ID {
+			t.Error("a removed installation's repository is still listed for the workspace")
+		}
 	}
 
 	// And it is no longer a connection.
@@ -452,5 +473,109 @@ func TestRemovingAnInstallationKeepsRepositoryHistoryIntegration(t *testing.T) {
 		if candidate.ID == installation.ID {
 			t.Error("a removed installation is still listed as connected")
 		}
+	}
+}
+
+// TestRemovedInstallationCannotBeRevived is the regression test for the defect
+// that soft deletion introduced.
+//
+// Keeping the row so its repositories survive left it resolvable and mutable:
+// a delayed or reordered webhook could still find it, clear its suspension and
+// reconcile — and the upsert sets granted = true, restoring access for an
+// installation GitHub has removed. Keeping history must not mean keeping the
+// grant.
+func TestRemovedInstallationCannotBeRevivedIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewInstallationStore(pool)
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Revival Workspace")
+	githubID := nextGitHubID()
+	installation := connectInstallation(t, store, workspace, owner, githubID)
+
+	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
+		UserID:      owner.ID,
+		WorkspaceID: workspace.ID,
+	})
+	repositories := []domain.Repository{
+		{GitHubID: 900050, Owner: "acme", Name: "revived", DefaultBranch: "main", Private: true},
+	}
+	if err := store.Reconcile(ctx, installation.ID, workspace.ID,
+		domain.SelectionSelected, repositories, domain.RequiredPermissions); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if err := store.MarkDeleted(ctx, installation.ID, workspace.ID, application.AuditEvent{
+		WorkspaceID: workspace.ID, Action: application.AuditInstallationDeleted, Target: "test",
+	}); err != nil {
+		t.Fatalf("MarkDeleted: %v", err)
+	}
+
+	// A webhook arriving after removal must not resolve it at all. This is the
+	// first gate: without it every path below is reachable.
+	if _, err := store.Resolve(context.Background(), githubID); !errors.Is(err, application.ErrInstallationNotFound) {
+		t.Errorf("Resolve found a removed installation: %v", err)
+	}
+
+	// And the operational lookups refuse it, so a caller holding the id from
+	// somewhere else cannot reconcile through it either.
+	if _, err := store.Get(ctx, installation.ID, workspace.ID); !errors.Is(err, application.ErrInstallationNotFound) {
+		t.Errorf("Get returned a removed installation: %v", err)
+	}
+	if err := store.Reconcile(ctx, installation.ID, workspace.ID,
+		domain.SelectionAll, repositories, domain.RequiredPermissions); !errors.Is(err, application.ErrInstallationNotFound) {
+		t.Errorf("Reconcile on a removed installation returned %v, want ErrInstallationNotFound", err)
+	}
+
+	// The withdrawal stands: nothing above re-granted the repository.
+	var granted bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT granted FROM repositories WHERE installation_id = $1", installation.ID).Scan(&granted); err != nil {
+		t.Fatalf("read repository: %v", err)
+	}
+	if granted {
+		t.Error("a removed installation's repository was restored to granted")
+	}
+}
+
+// TestFailedDeliveryIsRetryable covers the half of deduplication that is easy
+// to get backwards.
+//
+// A retry of an effect that succeeded must be collapsed; a retry of one that
+// failed must be processed. A row that merely exists cannot distinguish them,
+// which is why completion is recorded separately from the claim.
+func TestFailedDeliveryIsRetryableIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewInstallationStore(pool)
+	ctx := context.Background()
+	delivery := "delivery-" + uuid.NewString()
+
+	mine, err := store.ClaimDelivery(ctx, delivery, "installation", "suspend")
+	if err != nil {
+		t.Fatalf("ClaimDelivery: %v", err)
+	}
+	if !mine {
+		t.Fatal("the first claim was refused")
+	}
+
+	// The effect fails, so completion is never recorded. GitHub retries.
+	reclaimed, err := store.ClaimDelivery(ctx, delivery, "installation", "suspend")
+	if err != nil {
+		t.Fatalf("ClaimDelivery on retry: %v", err)
+	}
+	if !reclaimed {
+		t.Error("a delivery whose effect never completed was treated as done, so the retry would be dropped")
+	}
+
+	// This time it succeeds.
+	if err := store.CompleteDelivery(ctx, delivery); err != nil {
+		t.Fatalf("CompleteDelivery: %v", err)
+	}
+
+	again, err := store.ClaimDelivery(ctx, delivery, "installation", "suspend")
+	if err != nil {
+		t.Fatalf("ClaimDelivery after completion: %v", err)
+	}
+	if again {
+		t.Error("a completed delivery was claimed again, so its effect would be applied twice")
 	}
 }

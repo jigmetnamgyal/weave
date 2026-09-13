@@ -348,19 +348,29 @@ func (s *InstallationStore) ListPermissions(ctx context.Context, installationID,
 	return permissions, err
 }
 
-// RecordDelivery notes a webhook delivery and reports whether it is new.
+// ClaimDelivery takes ownership of a webhook delivery, reporting whether this
+// caller should process it.
 //
-// Outside a tenant transaction because a delivery is recorded before we know
-// which workspace it concerns — and some name an installation we have no
-// record of at all. The table holds an id, an event name and a timestamp, so
-// there is no tenant data to scope.
+// Deduplication and retries pull against each other: a retry of an effect that
+// already succeeded must be collapsed, and a retry of one that failed must be
+// processed. A row that merely exists cannot tell those apart, which is why
+// completion is recorded separately.
 //
-// Returning false for a delivery already seen is the deduplication: GitHub
-// retries, and a retry must not produce a second effect.
-func (s *InstallationStore) RecordDelivery(ctx context.Context, deliveryID, event, action string) (bool, error) {
+// One statement rather than a read and a write. The insert claims an unseen
+// delivery; the ON CONFLICT arm reclaims one whose claim never completed —
+// because the effect failed, the process died, or the request was cancelled
+// before anything could be cleaned up. A completed delivery matches neither
+// and returns no row, which is the deduplication.
+//
+// Outside a tenant transaction because a delivery is claimed before we know
+// which workspace it concerns, and some name an installation we have no record
+// of at all.
+func (s *InstallationStore) ClaimDelivery(ctx context.Context, deliveryID, event, action string) (bool, error) {
 	const query = `INSERT INTO github_webhook_deliveries (delivery_id, event, action)
 	               VALUES ($1, $2, $3)
-	               ON CONFLICT (delivery_id) DO NOTHING
+	               ON CONFLICT (delivery_id) DO UPDATE
+	                 SET received_at = now(), event = EXCLUDED.event, action = EXCLUDED.action
+	                 WHERE github_webhook_deliveries.completed_at IS NULL
 	               RETURNING delivery_id`
 
 	var actionValue *string
@@ -368,36 +378,36 @@ func (s *InstallationStore) RecordDelivery(ctx context.Context, deliveryID, even
 		actionValue = &action
 	}
 
-	var recorded string
-	err := s.pool.QueryRow(ctx, query, deliveryID, event, actionValue).Scan(&recorded)
+	var claimed string
+	err := s.pool.QueryRow(ctx, query, deliveryID, event, actionValue).Scan(&claimed)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
-		return false, fmt.Errorf("record webhook delivery: %w", err)
+		return false, fmt.Errorf("claim webhook delivery: %w", err)
 	default:
 		return true, nil
 	}
 }
 
-// ForgetDelivery removes a delivery record so GitHub's retry is processed.
+// CompleteDelivery records that a delivery's effect is durable.
 //
-// Deduplication and retries pull in opposite directions, and recording the
-// delivery first gets the trade-off wrong on its own: a transient failure
-// returns non-2xx, GitHub retries the same delivery id, deduplication reports
-// it as already seen, and the effect is silently dropped forever. A missed
-// suspend would leave an installation authorising repositories GitHub has cut
-// off.
-//
-// So the record is treated as provisional until the effect succeeds. Removing
-// it on failure keeps the retry meaningful while still collapsing the ordinary
-// case, where the effect worked and GitHub retries anyway.
-func (s *InstallationStore) ForgetDelivery(ctx context.Context, deliveryID string) error {
-	if _, err := s.pool.Exec(ctx,
-		"DELETE FROM github_webhook_deliveries WHERE delivery_id = $1", deliveryID); err != nil {
-		return fmt.Errorf("forget webhook delivery: %w", err)
+// Until this runs the claim is provisional, so a retry reclaims it. Failing to
+// record completion is therefore safe in the direction that matters: the worst
+// outcome is that an effect is applied twice, and every effect here is
+// idempotent — reconciliation replaces a set, suspension and removal set a
+// state rather than toggling one.
+func (s *InstallationStore) CompleteDelivery(ctx context.Context, deliveryID string) error {
+	if err := s.queries().CompleteWebhookDelivery(ctx, deliveryID); err != nil {
+		return fmt.Errorf("complete webhook delivery: %w", err)
 	}
 	return nil
+}
+
+// queries returns a Queries bound to the pool, for the handful of operations
+// that are deliberately outside a tenant transaction.
+func (s *InstallationStore) queries() *postgresdb.Queries {
+	return postgresdb.New(s.pool)
 }
 
 // PruneDeliveries drops delivery records older than the retention window.

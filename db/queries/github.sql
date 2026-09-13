@@ -15,11 +15,11 @@ RETURNING *;
 -- Scoped by workspace, so an installation id from one tenant cannot be read
 -- through another even before the policies are consulted.
 SELECT * FROM github_installations
-WHERE id = $1 AND workspace_id = $2;
+WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL;
 
 -- name: GetInstallationByGitHubIDForWorkspace :one
 SELECT * FROM github_installations
-WHERE github_installation_id = $1 AND workspace_id = $2;
+WHERE github_installation_id = $1 AND workspace_id = $2 AND deleted_at IS NULL;
 
 
 
@@ -29,13 +29,13 @@ WHERE github_installation_id = $1 AND workspace_id = $2;
 -- what makes that possible.
 UPDATE github_installations
 SET suspended_at = $3, updated_at = now()
-WHERE id = $1 AND workspace_id = $2
+WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL
 RETURNING *;
 
 -- name: SetInstallationSelection :one
 UPDATE github_installations
 SET repository_selection = $3, updated_at = now()
-WHERE id = $1 AND workspace_id = $2
+WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL
 RETURNING *;
 
 -- name: MarkInstallationDeleted :exec
@@ -99,9 +99,16 @@ WHERE installation_id = $1 AND workspace_id = $2 AND granted = true;
 -- Withdrawn repositories are returned too, with granted = false, so the
 -- interface can say "access was removed" rather than silently dropping a
 -- repository someone was using yesterday.
-SELECT * FROM repositories
-WHERE workspace_id = $1
-ORDER BY owner, name;
+--
+-- Repositories belonging to a removed installation are excluded. Their rows
+-- are kept for audit and for reading finished sessions, but the connection is
+-- gone, so listing them among a workspace's repositories would present history
+-- as current state — and they would match no connected account in the
+-- interface, which reads as a build mismatch.
+SELECT r.* FROM repositories r
+JOIN github_installations i ON i.id = r.installation_id
+WHERE r.workspace_id = $1 AND i.deleted_at IS NULL
+ORDER BY r.owner, r.name;
 
 -- name: GetRepositoryForWorkspace :one
 SELECT * FROM repositories
@@ -121,6 +128,12 @@ SET access = EXCLUDED.access, recorded_at = now();
 SELECT * FROM repository_permissions
 WHERE installation_id = $1 AND workspace_id = $2
 ORDER BY permission;
+
+-- name: CompleteWebhookDelivery :exec
+-- Mark a delivery's effect durable. Until this runs, a retry may reclaim it.
+UPDATE github_webhook_deliveries
+SET completed_at = now()
+WHERE delivery_id = $1;
 
 -- name: RecordWebhookDelivery :one
 -- Deduplication. GitHub retries deliveries, and a retry must not produce a

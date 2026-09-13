@@ -35,10 +35,11 @@ type GithubInstallation struct {
 }
 
 type GithubWebhookDelivery struct {
-	DeliveryID string
-	Event      string
-	Action     *string
-	ReceivedAt pgtype.Timestamptz
+	DeliveryID  string
+	Event       string
+	Action      *string
+	ReceivedAt  pgtype.Timestamptz
+	CompletedAt pgtype.Timestamptz
 }
 
 type Repository struct {
