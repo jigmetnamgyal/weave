@@ -402,8 +402,30 @@ func (g *githubRoutes) createBranch(w http.ResponseWriter, r *http.Request) {
 		Base:         body.Base,
 	})
 	if err != nil {
-		g.handler.writeError(ctx, w, err, "create branch")
-		return
+		// The branch exists and its audit row does not. Those pull in opposite
+		// directions, and an earlier revision resolved that by returning the
+		// error — which this handler then turned into a bare 500, hiding the
+		// name and SHA of a ref that had just been written to a customer's
+		// repository. The caller could not identify what had been created.
+		//
+		// The caller gets what it asked for, because that is what happened.
+		// The gap is an operator's problem, so it goes to the log with
+		// everything needed to reconstruct the row, at error level.
+		if errors.Is(err, application.ErrAuditNotRecorded) && branch.Name != "" {
+			g.handler.logger.ErrorContext(ctx, "branch created but not audited",
+				slog.String("workspace_id", membership.WorkspaceID.String()),
+				slog.String("actor_user_id", membership.UserID.String()),
+				slog.String("repository_id", repositoryID.String()),
+				slog.String("branch", branch.Name),
+				slog.String("sha", branch.SHA),
+				slog.String("base", branch.Base),
+				slog.String("error", err.Error()),
+				slog.String("request_id", httpx.RequestID(ctx)),
+			)
+		} else {
+			g.handler.writeError(ctx, w, err, "create branch")
+			return
+		}
 	}
 
 	// 201 only when something was made. A retry that found its own earlier

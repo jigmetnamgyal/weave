@@ -133,9 +133,8 @@ func (s *InstallationService) CreateBranch(
 		// caller: swallowing the error would hide an unaudited write, and
 		// reporting a bare failure would suggest nothing happened when
 		// something irreversible did.
-		return branch, fmt.Errorf(
-			"branch %s was created at %s but could not be recorded in the audit trail: %w",
-			branch.Name, short(branch.SHA), err)
+		return branch, fmt.Errorf("%w: branch %s at %s: %v",
+			ErrAuditNotRecorded, branch.Name, short(branch.SHA), err)
 	}
 	return branch, nil
 }

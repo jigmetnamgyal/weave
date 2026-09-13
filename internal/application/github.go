@@ -47,6 +47,15 @@ const (
 	DeliveryInFlight
 )
 
+// ErrAuditNotRecorded is returned when an external write succeeded but its
+// audit row did not.
+//
+// A distinct error because the two facts it carries pull in opposite
+// directions: the operation did what was asked, and a record that should exist
+// does not. Collapsing it into a generic failure tells the caller nothing
+// happened when something irreversible did.
+var ErrAuditNotRecorded = errors.New("the change was made but could not be recorded in the audit trail")
+
 // ErrDeliveryInFlight is returned when another attempt is still processing a
 // delivery. The caller answers with a non-2xx status so GitHub retries later.
 var ErrDeliveryInFlight = errors.New("delivery is already being processed")
