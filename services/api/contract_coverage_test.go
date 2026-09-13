@@ -20,10 +20,15 @@ import (
 // contract, an undescribed endpoint is one the browser has no checked types
 // for at all.
 //
-// **What this does not check.** Only that a path exists on both sides. It says
-// nothing about whether the request and response *shapes* agree, which is the
-// expensive half and deliberately out of scope: verifying that needs the
-// handlers exercised against the schemas. A passing run here means the two
+// It compares method-and-path pairs, not paths. Comparing paths alone would
+// pass when a DELETE is added to a path the contract describes only for GET —
+// the endpoint would be served, undescribed, and typeless in the browser,
+// while both sets looked identical.
+//
+// **What this does not check.** Only that an operation exists on both sides.
+// It says nothing about whether the request and response *shapes* agree, which
+// is the expensive half and deliberately out of scope: verifying that needs
+// the handlers exercised against the schemas. A passing run here means the two
 // lists match, and no more than that. Read it as nothing more.
 func TestEveryRouteIsDescribedByTheContract(t *testing.T) {
 	registered := routesFromSource(t)
@@ -33,25 +38,35 @@ func TestEveryRouteIsDescribedByTheContract(t *testing.T) {
 		t.Fatal("found no registered routes; the source scan is broken, not the contract")
 	}
 
-	for _, route := range registered {
-		if !described[route] {
-			t.Errorf("route %s is served but the contract does not describe it — "+
-				"the web application has no generated types for it", route)
+	for _, operation := range registered {
+		if !described[operation] {
+			t.Errorf("%s is served but the contract does not describe it — "+
+				"the web application has no generated types for it", operation)
 		}
 	}
-	for route := range described {
-		if !contains(registered, route) {
+	for operation := range described {
+		if !contains(registered, operation) {
 			t.Errorf("the contract describes %s but no route serves it — "+
-				"generated types exist for an endpoint that does not answer", route)
+				"generated types exist for an endpoint that does not answer", operation)
 		}
 	}
 }
 
-// routePattern matches the route literals the handlers register, as
-// `mux.Handle("POST /v1/…"` or through the scoped helper.
-var routePattern = regexp.MustCompile(`"(GET|POST|PATCH|PUT|DELETE) (/v1/[^"]*)"`)
+// routePattern matches a route literal in a registration call, and only there.
+//
+// Anchoring on the call rather than on the string is what keeps this honest.
+// Matching any route-shaped literal in the package would count a path left
+// behind in a comment or a helper after its registration was deleted, and the
+// bidirectional check would then agree with itself about an endpoint nobody
+// serves.
+//
+// Two call shapes register routes here: `mux.Handle(...)` and `scoped(...)`,
+// the helper that wraps a pattern in the membership middleware.
+var routePattern = regexp.MustCompile(
+	`(?:\.Handle|\bscoped)\(\s*"(GET|POST|PATCH|PUT|DELETE) (/v1/[^"]*)"`)
 
-// routesFromSource scans the API's Go source for registered route literals.
+// routesFromSource scans the API's Go source for registered route literals,
+// returning them as "METHOD /path" pairs.
 //
 // Reading the source rather than the mux because http.ServeMux does not expose
 // its patterns. That makes this a textual check, which is worth knowing: it
@@ -77,7 +92,7 @@ func routesFromSource(t *testing.T) []string {
 			return err
 		}
 		for _, match := range routePattern.FindAllStringSubmatch(string(source), -1) {
-			seen[normalisePath(match[2])] = true
+			seen[match[1]+" "+normalisePath(match[2])] = true
 		}
 		return nil
 	})
@@ -93,7 +108,14 @@ func routesFromSource(t *testing.T) []string {
 	return routes
 }
 
-// pathsFromContract reads the paths the OpenAPI document describes.
+// httpMethods are the operation keys a path item may carry. Anything else
+// under a path — `parameters`, `summary` — is not an operation.
+var httpMethods = map[string]string{
+	"get": "GET", "post": "POST", "patch": "PATCH", "put": "PUT", "delete": "DELETE",
+}
+
+// pathsFromContract reads the operations the OpenAPI document describes, as
+// "METHOD /path" pairs.
 func pathsFromContract(t *testing.T) map[string]bool {
 	t.Helper()
 
@@ -103,15 +125,19 @@ func pathsFromContract(t *testing.T) map[string]bool {
 	}
 
 	var document struct {
-		Paths map[string]any `yaml:"paths"`
+		Paths map[string]map[string]any `yaml:"paths"`
 	}
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("parse contract: %v", err)
 	}
 
 	described := make(map[string]bool, len(document.Paths))
-	for path := range document.Paths {
-		described[normalisePath(path)] = true
+	for path, item := range document.Paths {
+		for key := range item {
+			if method, ok := httpMethods[strings.ToLower(key)]; ok {
+				described[method+" "+normalisePath(path)] = true
+			}
+		}
 	}
 	return described
 }

@@ -2,7 +2,7 @@ import "server-only";
 
 import { auth } from "@clerk/nextjs/server";
 
-import type { components } from "./api-types.gen";
+import type { components, operations } from "./api-types.gen";
 
 /**
  * Every response type here comes from `contracts/openapi/openapi.yaml`, via
@@ -18,6 +18,27 @@ import type { components } from "./api-types.gen";
  * hand-maintained file with a misleading name.
  */
 type Schemas = components["schemas"];
+
+/**
+ * The 200/201 body of a named operation, straight from the contract.
+ *
+ * Response *envelopes* need this as much as the objects inside them. A
+ * hand-written `{ repositories: Repository[] }` is still an unchecked
+ * assertion even when `Repository` itself is generated — rename that key in
+ * the contract and every caller keeps compiling while reading a field the API
+ * no longer sends. Which is the exact failure this unit exists to remove, so
+ * leaving the envelopes by hand would have closed half the hole and claimed
+ * the whole one.
+ */
+type Ok<K extends keyof operations> = operations[K] extends {
+  responses: infer R;
+}
+  ? R extends { 200: { content: { "application/json": infer B } } }
+    ? B
+    : R extends { 201: { content: { "application/json": infer B } } }
+      ? B
+      : never
+  : never;
 
 /** The authenticated user, as returned by `GET /v1/me`. */
 export type User = Schemas["User"];
@@ -107,8 +128,6 @@ function apiBaseUrl(): string {
   return url.replace(/\/$/, "");
 }
 
-type ListResponse<T> = { items: T[] };
-
 /**
  * Fetch the authenticated user from the control-plane API.
  *
@@ -161,7 +180,7 @@ export async function fetchCurrentUser(): Promise<Result<User>> {
 
 /** List the workspaces the caller belongs to. */
 export async function fetchWorkspaces(): Promise<Result<Workspace[]>> {
-  const result = await apiRequest<ListResponse<Workspace>>("/v1/workspaces");
+  const result = await apiRequest<Ok<"listWorkspaces">>("/v1/workspaces");
   return result.ok ? { ok: true, data: result.data.items } : result;
 }
 
@@ -175,7 +194,9 @@ export async function createWorkspace(name: string): Promise<Result<Workspace>> 
 
 /** List a workspace's members. */
 export async function fetchMembers(workspaceId: string): Promise<Result<Member[]>> {
-  const result = await apiRequest<ListResponse<Member>>(`/v1/workspaces/${workspaceId}/members`);
+  const result = await apiRequest<Ok<"listWorkspaceMembers">>(
+    `/v1/workspaces/${workspaceId}/members`
+  );
   return result.ok ? { ok: true, data: result.data.items } : result;
 }
 
@@ -185,7 +206,7 @@ export async function fetchInvitations(
   status?: Invitation["status"]
 ): Promise<Result<Invitation[]>> {
   const query = status ? `?status=${encodeURIComponent(status)}` : "";
-  const result = await apiRequest<ListResponse<Invitation>>(
+  const result = await apiRequest<Ok<"listWorkspaceInvitations">>(
     `/v1/workspaces/${workspaceId}/invitations${query}`
   );
   return result.ok ? { ok: true, data: result.data.items } : result;
@@ -227,10 +248,8 @@ export async function previewInvitation(token: string): Promise<Result<Invitatio
 }
 
 /** Accept an invitation. */
-export async function acceptInvitation(
-  token: string
-): Promise<Result<{ workspace_id: string; role: Role }>> {
-  return apiRequest<{ workspace_id: string; role: Role }>("/v1/invitations/accept", {
+export async function acceptInvitation(token: string): Promise<Result<Ok<"acceptInvitation">>> {
+  return apiRequest<Ok<"acceptInvitation">>("/v1/invitations/accept", {
     method: "POST",
     body: JSON.stringify({ token }),
   });
@@ -246,8 +265,8 @@ export async function acceptInvitation(
  */
 export async function beginGitHubInstall(
   workspaceId: string
-): Promise<Result<{ install_url: string }>> {
-  return apiRequest<{ install_url: string }>(`/v1/workspaces/${workspaceId}/github/install`, {
+): Promise<Result<Ok<"beginGitHubInstall">>> {
+  return apiRequest<Ok<"beginGitHubInstall">>(`/v1/workspaces/${workspaceId}/github/install`, {
     method: "POST",
   });
 }
@@ -266,7 +285,7 @@ export async function completeGitHubInstall(
 
 /** List a workspace's GitHub installations. */
 export async function fetchInstallations(workspaceId: string): Promise<Result<Installation[]>> {
-  const result = await apiRequest<{ installations: Installation[] }>(
+  const result = await apiRequest<Ok<"listGitHubInstallations">>(
     `/v1/workspaces/${workspaceId}/github/installations`
   );
   return result.ok ? { ok: true, data: result.data.installations } : result;
@@ -274,7 +293,7 @@ export async function fetchInstallations(workspaceId: string): Promise<Result<In
 
 /** List a workspace's repositories, withdrawn ones included. */
 export async function fetchRepositories(workspaceId: string): Promise<Result<Repository[]>> {
-  const result = await apiRequest<{ repositories: Repository[] }>(
+  const result = await apiRequest<Ok<"listWorkspaceRepositories">>(
     `/v1/workspaces/${workspaceId}/repositories`
   );
   return result.ok ? { ok: true, data: result.data.repositories } : result;
