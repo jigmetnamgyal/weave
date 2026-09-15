@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M2 complete; M3.0, M3.1 and M3.2 merged; M3.3 complete and awaiting review, which completes M3
+- Status: M3 complete; M4.1 (task and agent model) next, then M4.2 (session creation)
 
 ## Current Goal
 
@@ -18,8 +18,8 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 | M0 | Product, UI, architecture, standards, and AI workflow specifications accepted | Complete |
 | M1 | Monorepo, local infrastructure, CI, observability bootstrap, and environment validation | Complete |
 | M2 | Authentication, workspaces, membership, authorization matrix, and tenant isolation | Complete |
-| M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | In progress |
-| M4 | Task model, agent profiles, provider capabilities, and session creation | Not started |
+| M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
+| M4 | Task model, agent profiles, provider capabilities, and session creation | In progress |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Not started |
 | M6 | Claude Code adapter, normalized events, live session room, and reconnect | Not started |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
@@ -28,7 +28,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## Completed
 
-- Built branch operations: name generation and Git-rule validation in the domain, ref reading and creation in the GitHub adapter, and a service that re-checks reach against GitHub before writing (Unit M3.3 — see Verification Record). The first external side effect Weave performs on a customer's repository, so invariant 11 (protected branches are never written to) and invariant 5 (the side effect is idempotent) both become enforced rather than aspirational.
+- Built branch operations: name generation and Git-rule validation in the domain, ref reading and creation in the GitHub adapter, and a service that re-checks reach against GitHub before writing (Unit M3.3 — see Verification Record). Merged 2026-09-15 in PR #8 after five review rounds and ten findings, three of which were regressions introduced by the preceding round's fix — all three in the same seam, what happens when the external write succeeds and the local record does not. **Completes M3.**
 - Generated the web application's API types from `contracts/openapi/openapi.yaml` with a CI drift check, replacing every hand-written response type and envelope in `apps/web/lib/api.ts` and adding a method-aware route-coverage test in both directions (Unit M3.2 — see Verification Record). Merged 2026-09-13 in PR #7. Closes the exception accepted on PR #6, and was done before M3.3 so that repository operations migrate two layers of hand-written helpers rather than three. **Deliberate interpretation, recorded rather than left implicit:** it generates types, not a request client — `Result<T>` stays, because it makes failure unignorable where a client that throws would not. **Not closed:** nothing verifies the contract against what the handlers actually serve; route coverage is the cheap half, and shape verification is not attempted.
 - Built GitHub App installation and repository access: `github_installations`, `repositories`, `repository_permissions` and a delivery log, all with row-level security in the creating migration; installation binding authorized by a single-use state recorded before the redirect; signature-verified, deduplicated webhooks; reconciliation before use; and a health check that names the missing permission (Unit M3.1 — see Verification Record and ADR-005). Merged 2026-09-13 in PR #6 after five review rounds and ten findings, five of which were regressions introduced by fixes in the preceding round — every one in the webhook-delivery path.
 - Built row-level security: a non-owning `weave_app` role the API connects as, transaction-scoped tenant context via `SET LOCAL`, forced policies on `workspaces`, `workspace_members`, `workspace_invitations` and `audit_events`, and two `SECURITY DEFINER` functions for the lookups that legitimately cannot be workspace-scoped (Unit M3.0 — see Verification Record and ADR-012). Merged 2026-09-11 in PR #5 after two review rounds and eleven findings, including a live defect that made the invitation preview 404 for every legitimate invitee. Shipped ahead of ADR-010's stated gate because M3.1 roughly doubles the tenant-owned surface.
@@ -47,19 +47,29 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M3.3 is complete and awaiting review.
+Nothing in progress. M3.3 merged in PR #8 on 2026-09-15, completing M3; the M4.1 spec is written and M4.1 is next.
 
 ## Next Up
 
-### Milestone M4 — Task Model and Session Creation
+### Unit M4.1 — Task and Agent Model
 
-M3 is complete: installation, repository access, webhook ingestion and branch operations. M4 is the task model, agent profiles, provider capabilities and session creation.
+**Source:** `context/features-specs/10-task-and-agent-model.md` (written 2026-09-15)
 
-**Two things M3 leaves for whoever starts M4.**
+**Outcome:** the records a session will be created from — a task describing what someone wants done, and a versioned agent profile describing what will attempt it and what that provider supports.
 
-`CreateBranch` exists and nothing calls it yet. It was built because M3's line asked for branch operations, and the session workflow is what will use it — `context/architecture.md` step 3, "the workflow validates quota and GitHub access, creates the branch". Wire it there rather than adding a second path.
+**M4 is split, as M3 was.** Its line covers four tables and a state machine; the seam is that tasks and agent profiles are static definitions while session creation is a lifecycle with an outbox and a Temporal workflow. M4.1 is the definitions, M4.2 the lifecycle.
 
-Push and pull-request webhooks remain unsubscribed, and the reason is now only half about consumers. **Moving the webhook URL off the public smee.io channel is a prerequisite**: those payloads carry commit messages, author email addresses and file paths, and a smee channel is readable by anyone holding its URL.
+**The decision it turns on: an agent profile is versioned, and a session will reference a version rather than a profile.** Invariants 9 and 10 make session history append-only and terminal history immutable, which is unachievable if the thing a session ran under can be edited afterwards — change a model or a tool policy and every finished session silently claims settings it never saw, with nothing recording that it happened. `agent_versions` is append-only, enforced by trigger the way `audit_events` already is.
+
+**Open decision this unit must make and record:** which permission governs tasks and agent profiles. Either reuse `workspace:manage` or add `task:manage` and `agent:manage` — and `TestMatrixIsExhaustive` will force every role pairing to be decided either way. Reusing is defensible for a first cut; inventing permissions nothing distinguishes is not.
+
+**Deferred to M5, deliberately:** capabilities are declared here and negotiated against a live provider there. The two must agree, and the way they will be made to agree is a test in M5 that fails when a declared capability has no adapter support.
+
+### Unit M4.2 — Session Creation
+
+Follows M4.1. `sessions`, `session_participants`, `session_state_transitions`, the eighteen-state machine with optimistic concurrency, and `CreateSession` writing the session, policy snapshot, branch intent and outbox event atomically.
+
+**It is the first caller of `CreateBranch`,** which M3.3 built and nothing yet uses — `context/architecture.md` step 3, "the workflow validates quota and GitHub access, creates the branch". Wire it there rather than adding a second path. The branch name should derive from the session id, which is the stable identity the M3.3 endpoint had to require a name for the lack of.
 
 ## Open Questions
 
@@ -173,4 +183,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-14 — Unit M3.3 complete, awaiting review. M3 finished; M4 next.
+2026-09-15 — M3 complete (M3.3 merged in PR #8). M4.1 spec written; M4.1 next.
