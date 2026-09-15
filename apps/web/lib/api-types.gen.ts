@@ -564,6 +564,101 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{workspaceId}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        /** List a workspace's sessions, newest first */
+        get: operations["listSessions"];
+        put?: never;
+        /**
+         * Start a session from a ready task
+         * @description Writes the session, its first participant, its first state transition,
+         *     and the durable record that something will pick it up — all in one
+         *     transaction. A session that exists without that record is a session
+         *     nothing would ever start, and no retry would fix it.
+         *
+         *     Nothing runs yet, and no branch is created. `branch_name` on the
+         *     response is the branch the workflow **will** create; it does not exist
+         *     when this returns.
+         */
+        post: operations["createSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** Read one session */
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/sessions/{sessionId}/transitions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * List a session's state history, oldest first
+         * @description Append-only. Invariant 9 makes session history append-only and ordered,
+         *     so a correction is a new transition rather than an edit to an old one —
+         *     the database refuses UPDATE, DELETE and TRUNCATE on this table.
+         */
+        get: operations["listSessionTransitions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/sessions/{sessionId}/participants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** List who is in a session */
+        get: operations["listSessionParticipants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/github/webhook": {
         parameters: {
             query?: never;
@@ -692,6 +787,108 @@ export interface components {
             tool_policy?: {
                 [key: string]: unknown;
             };
+        };
+        Session: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            task_id: string;
+            /**
+             * Format: uuid
+             * @description The pinned settings. A session references a version rather than an
+             *     agent because a version cannot be edited, so the pin is also the
+             *     policy snapshot — reading it back says exactly what this session
+             *     runs under, however the profile has since changed.
+             */
+            agent_version_id: string;
+            state: components["schemas"]["SessionState"];
+            /**
+             * @description Optimistic concurrency. A state change states the version it
+             *     observed and is refused if the session has moved since.
+             */
+            version: number;
+            /** Format: uuid */
+            repository_id: string;
+            /**
+             * @description The branch the workflow will create. **It does not exist yet.** The
+             *     name is derived from the session id rather than generated, so an
+             *     activity that retries finds the branch it already made instead of
+             *     cutting a second one.
+             */
+            branch_name: string;
+            /**
+             * @description Empty means the repository's default branch, resolved when the
+             *     branch is cut rather than now — the default can change in between,
+             *     and the workflow is the thing holding a GitHub token.
+             */
+            base_branch?: string;
+            /**
+             * Format: uuid
+             * @description The terminal session this one continues. Terminal history is
+             *     immutable, so reopening creates a linked session rather than
+             *     reviving the old one.
+             */
+            continues_id?: string;
+            /**
+             * @description The states this session may move to, from the transition table the
+             *     server holds. Served rather than reimplemented in the browser: two
+             *     copies of a rule disagree eventually.
+             */
+            next_states: components["schemas"]["SessionState"][];
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        SessionInput: {
+            /** Format: uuid */
+            task_id: string;
+            /** Format: uuid */
+            agent_version_id: string;
+            /** @description Omit for the repository's default branch. */
+            base_branch?: string;
+        };
+        /**
+         * @description The sixteen states in `context/architecture.md`. `completed`,
+         *     `cancelled`, `failed` and `expired` are terminal and have no outgoing
+         *     transitions at all.
+         * @enum {string}
+         */
+        SessionState: "draft" | "queued" | "provisioning" | "running" | "waiting_for_input" | "waiting_for_approval" | "pausing" | "paused" | "resuming" | "review_ready" | "finalizing" | "completed" | "cancelling" | "cancelled" | "failed" | "expired";
+        SessionTransition: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description Absent on the first transition. A session comes into existence
+             *     already in a state, so recording a move it never made would be a
+             *     fiction in a trail that cannot be edited.
+             */
+            previous_state?: components["schemas"]["SessionState"];
+            next_state: components["schemas"]["SessionState"];
+            observed_version: number;
+            reason?: string;
+            /**
+             * Format: uuid
+             * @description Absent when the system moved the session. A timeout is not
+             *     attributable to a person, and naming one would be a false statement.
+             */
+            actor_user_id?: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        SessionParticipant: {
+            /** Format: uuid */
+            user_id: string;
+            /**
+             * @description What someone is doing in this session, which is not the same as
+             *     what they may do in the workspace — those are the membership roles.
+             * @enum {string}
+             */
+            capacity: "owner" | "collaborator" | "observer";
+            /** Format: date-time */
+            created_at: string;
         };
         /**
          * @description `fake` is a first-class provider, not a placeholder: a deterministic
@@ -1024,6 +1221,7 @@ export interface components {
     parameters: {
         TaskId: string;
         AgentId: string;
+        SessionId: string;
         InstallationId: string;
         WorkspaceId: string;
     };
@@ -1999,6 +2197,190 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["PermissionDenied"];
             /** @description The workspace or the agent was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every session in the workspace. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sessions: components["schemas"]["Session"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["WorkspaceNotFound"];
+        };
+    };
+    createSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionInput"];
+            };
+        };
+        responses: {
+            /** @description The queued session. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            /** @description The workspace, the task, or the agent version was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description The task is not ready. Nothing about the request is malformed — the
+             *     task is in a state a session cannot be created from, and it is the
+             *     task that changes rather than the request.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /**
+             * @description The workspace or the session was not found. A session belonging to
+             *     another workspace is absent rather than forbidden, so that guessing
+             *     identifiers cannot become tenant enumeration.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSessionTransitions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every transition the session has made. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        transitions: components["schemas"]["SessionTransition"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /** @description The workspace or the session was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSessionParticipants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every participant in the session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        participants: components["schemas"]["SessionParticipant"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /** @description The workspace or the session was not found. */
             404: {
                 headers: {
                     [name: string]: unknown;
