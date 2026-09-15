@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	"github.com/jigmetnamgyal/weave/internal/application"
@@ -387,5 +391,116 @@ func TestAnAgentCannotPointAtAnotherAgentsVersionIntegration(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "agents_current_version_fkey") {
 		t.Errorf("refusal does not name the pointer's constraint: %v", err)
+	}
+}
+
+// TestConcurrentPatchesDoNotLoseEachOtherIntegration is why the merge runs
+// inside the store's transaction rather than above it.
+//
+// A PATCH is a read-modify-write. With the read in one transaction and the
+// write in another, two edits to different fields both read the same row and
+// the second writes its own field alongside stale copies of everything else —
+// so one person's edit silently disappears while both requests return 200.
+//
+// What this pins is the transaction boundary, not the row lock: authorizeActor
+// already takes LockWorkspace on every mutation, so removing FOR UPDATE from
+// the task read changes nothing. Reinstating the old split-transaction shape
+// fails this test on every run, which is how it was checked — a concurrency
+// test that has never been seen to fail is not evidence of anything.
+//
+// Both goroutines are released together and each patches a different field,
+// so a passing run means both survived rather than that they did not overlap.
+func TestConcurrentPatchesDoNotLoseEachOtherIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewTaskStore(pool)
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Concurrent Patch Workspace")
+	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
+		UserID: owner.ID, WorkspaceID: workspace.ID,
+	})
+	actor := application.Actor{UserID: owner.ID, Required: domain.PermissionSessionCreate}
+	event := func(domain.Task) application.AuditEvent {
+		return application.AuditEvent{
+			WorkspaceID: workspace.ID, ActorUserID: owner.ID,
+			Action: application.AuditTaskUpdated, Target: "concurrent",
+		}
+	}
+
+	taskID, _ := domain.NewTaskID()
+	if _, err := store.Create(ctx, domain.Task{
+		ID: taskID, WorkspaceID: workspace.ID,
+		Title: "original title", Body: "original body",
+		Status: domain.TaskDraft, CreatedBy: owner.ID,
+	}, actor, application.AuditEvent{
+		WorkspaceID: workspace.ID, ActorUserID: owner.ID,
+		Action: application.AuditTaskCreated, Target: taskID.String(),
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Each patch holds its read for a moment before writing, so the two
+	// overlap the way two requests would.
+	patch := func(mutate func(*domain.Task)) error {
+		_, err := store.Update(ctx, taskID, workspace.ID,
+			func(existing domain.Task) (domain.Task, error) {
+				time.Sleep(50 * time.Millisecond)
+				mutate(&existing)
+				return existing, nil
+			}, actor, event)
+		return err
+	}
+
+	// Warm the pool before starting. pgxpool creates connections lazily, and
+	// the second connection's handshake alone took long enough to stagger the
+	// two patches — the second read landing after the first had committed, so
+	// the test passed without the two ever overlapping. Measured while
+	// checking this test against the unlocked code, which it wrongly passed.
+	warm := make([]*pgxpool.Conn, 0, 2)
+	for range 2 {
+		conn, err := pool.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("warm pool: %v", err)
+		}
+		warm = append(warm, conn)
+	}
+	for _, conn := range warm {
+		conn.Release()
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wait sync.WaitGroup
+	wait.Add(2)
+
+	go func() {
+		defer wait.Done()
+		<-start
+		errs <- patch(func(task *domain.Task) { task.Title = "patched title" })
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		errs <- patch(func(task *domain.Task) { task.Body = "patched body" })
+	}()
+
+	close(start)
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent patch: %v", err)
+		}
+	}
+
+	final, err := store.Get(ctx, taskID, workspace.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if final.Title != "patched title" {
+		t.Errorf("title = %q — the title patch was overwritten by the other request", final.Title)
+	}
+	if final.Body != "patched body" {
+		t.Errorf("body = %q — the body patch was overwritten by the other request", final.Body)
 	}
 }

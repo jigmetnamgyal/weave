@@ -98,6 +98,22 @@ type Querier interface {
 	// edits both read the same MAX(version) and one fails on the unique index —
 	// an error the caller can do nothing useful with.
 	LockAgentForUpdate(ctx context.Context, arg LockAgentForUpdateParams) (Agent, error)
+	// Read at the start of a patch, in the transaction that writes it.
+	//
+	// What makes a patch safe is that the read happens here rather than in an
+	// earlier transaction: a read-modify-write split across two transactions lets
+	// two concurrent edits to different fields both read the same row, the second
+	// writing its own field alongside stale copies of the rest and silently
+	// undoing the first. That was measured — reproducing the split shape fails the
+	// concurrency test every run.
+	//
+	// FOR UPDATE is not what prevents it today. authorizeActor takes LockWorkspace
+	// before this runs, which already serializes every mutation in a workspace, so
+	// this narrower lock is redundant in the current arrangement — the same
+	// relationship LockAgentForUpdate has. It is here so this transaction states
+	// the row it depends on rather than relying on the workspace lock staying as
+	// coarse as it is.
+	LockTaskForUpdate(ctx context.Context, arg LockTaskForUpdateParams) (Task, error)
 	// Serialises membership changes within a workspace. Taken before any check
 	// that counts owners, so two concurrent demotions cannot both observe two
 	// owners and both proceed.

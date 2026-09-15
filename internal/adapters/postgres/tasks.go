@@ -64,27 +64,60 @@ func (s *TaskStore) Create(
 	return created, err
 }
 
-// Update replaces a task's editable fields.
+// Update applies a patch to a task inside the transaction that writes it.
+//
+// The merge running here rather than above is the whole point of the shape. A
+// PATCH is a read-modify-write, and with the read in one transaction and the
+// write in another, two concurrent edits to different fields both read the
+// same row and the second writes its own field alongside stale copies of the
+// rest — silently undoing the first while both requests answer 200. That is
+// what the code did before, and the concurrency test fails every run against
+// the old shape.
+//
+// The row lock is not what prevents it: authorizeActor takes LockWorkspace
+// first, which already serializes every mutation in a workspace. See the
+// comment on LockTaskForUpdate for why the narrower lock is taken anyway.
+//
+// apply carries the merge and its validation, which belong to the application
+// layer; event is built from the merged result, since the audit detail records
+// what was written rather than what was asked for.
 func (s *TaskStore) Update(
 	ctx context.Context,
-	task domain.Task,
+	taskID, workspaceID uuid.UUID,
+	apply func(domain.Task) (domain.Task, error),
 	actor application.Actor,
-	event application.AuditEvent,
+	event func(domain.Task) application.AuditEvent,
 ) (domain.Task, error) {
 	var updated domain.Task
 
 	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
-		if err := authorizeActor(ctx, q, task.WorkspaceID, actor); err != nil {
+		if err := authorizeActor(ctx, q, workspaceID, actor); err != nil {
+			return err
+		}
+
+		locked, err := q.LockTaskForUpdate(ctx, postgresdb.LockTaskForUpdateParams{
+			ID:          taskID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrTaskNotFound
+			}
+			return fmt.Errorf("lock task: %w", err)
+		}
+
+		merged, err := apply(taskToDomain(locked))
+		if err != nil {
 			return err
 		}
 
 		row, err := q.UpdateTask(ctx, postgresdb.UpdateTaskParams{
-			ID:           task.ID,
-			WorkspaceID:  task.WorkspaceID,
-			RepositoryID: nullableUUID(task.RepositoryID),
-			Title:        task.Title,
-			Body:         task.Body,
-			Status:       string(task.Status),
+			ID:           taskID,
+			WorkspaceID:  workspaceID,
+			RepositoryID: nullableUUID(merged.RepositoryID),
+			Title:        merged.Title,
+			Body:         merged.Body,
+			Status:       string(merged.Status),
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -93,7 +126,7 @@ func (s *TaskStore) Update(
 			return translateTaskError(err)
 		}
 		updated = taskToDomain(row)
-		return appendAudit(ctx, q, event)
+		return appendAudit(ctx, q, event(updated))
 	})
 	return updated, err
 }

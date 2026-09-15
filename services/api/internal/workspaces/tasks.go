@@ -142,17 +142,28 @@ func (t *taskRoutes) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// `repository_id` is the only nullable field in the schema, so null in any
+	// other is a malformed request rather than a clear. Refused rather than
+	// treated as an omission, which would answer 200 to a request that asked
+	// for something the contract does not offer.
+	for field, sent := range map[string]bool{
+		"title":  body.Title.Present && body.Title.Value == nil,
+		"body":   body.Body.Present && body.Body.Value == nil,
+		"status": body.Status.Present && body.Status.Value == nil,
+	} {
+		if sent {
+			httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest,
+				field+" cannot be null.")
+			return
+		}
+	}
+
 	command := application.UpdateTaskCommand{
 		TaskID: taskID,
 		Title:  body.Title.Value,
 		Body:   body.Body.Value,
 	}
 	if body.Status.Present {
-		if body.Status.Value == nil {
-			httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest,
-				"status cannot be null.")
-			return
-		}
 		status, err := domain.ParseTaskStatus(*body.Status.Value)
 		if err != nil {
 			t.handler.writeError(ctx, w, err, "parse status")

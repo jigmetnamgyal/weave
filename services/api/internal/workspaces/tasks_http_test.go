@@ -252,6 +252,37 @@ func TestAPatchCanStillClearTheRepository(t *testing.T) {
 	}
 }
 
+// TestAPatchRefusesANullWhereTheSchemaHasNoNull separates a malformed request
+// from an omission.
+//
+// `repository_id` is the only nullable field, so a null elsewhere asks for
+// something the contract does not offer. Treating it as an omission would
+// answer 200 to a request that was never honoured.
+func TestAPatchRefusesANullWhereTheSchemaHasNoNull(t *testing.T) {
+	for _, field := range []string{"title", "body", "status"} {
+		t.Run(field, func(t *testing.T) {
+			rec := serveTask(t, domain.RoleDeveloper, http.MethodPatch,
+				"/v1/workspaces/"+workspaceA.String()+"/tasks/"+existingTask.String(),
+				`{"`+field+`":null}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 for a null %s: %s", rec.Code, field, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestClearingTheRepositoryOfATaskThatStaysReadyIsRefused is the case the
+// merged-result check exists for: neither half appears in the request alone.
+func TestClearingTheRepositoryOfATaskThatStaysReadyIsRefused(t *testing.T) {
+	rec := serveTask(t, domain.RoleDeveloper, http.MethodPatch,
+		"/v1/workspaces/"+workspaceA.String()+"/tasks/"+existingTask.String(),
+		`{"repository_id":null}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 — the stored task stays ready with no repository: %s",
+			rec.Code, rec.Body.String())
+	}
+}
+
 // serveTask runs one request through the task and agent routes.
 func serveTask(t *testing.T, role domain.Role, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -296,8 +327,18 @@ type fakeTasks struct{}
 func (fakeTasks) Create(_ context.Context, task domain.Task, _ application.Actor, _ application.AuditEvent) (domain.Task, error) {
 	return task, nil
 }
-func (fakeTasks) Update(_ context.Context, task domain.Task, _ application.Actor, _ application.AuditEvent) (domain.Task, error) {
-	return task, nil
+func (f fakeTasks) Update(
+	ctx context.Context,
+	taskID, workspaceID uuid.UUID,
+	apply func(domain.Task) (domain.Task, error),
+	_ application.Actor,
+	_ func(domain.Task) application.AuditEvent,
+) (domain.Task, error) {
+	existing, err := f.Get(ctx, taskID, workspaceID)
+	if err != nil {
+		return domain.Task{}, err
+	}
+	return apply(existing)
 }
 func (fakeTasks) Get(_ context.Context, taskID, workspaceID uuid.UUID) (domain.Task, error) {
 	if taskID == existingTask {

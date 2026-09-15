@@ -118,6 +118,49 @@ func (q *Queries) ListTasksForWorkspace(ctx context.Context, workspaceID uuid.UU
 	return items, nil
 }
 
+const lockTaskForUpdate = `-- name: LockTaskForUpdate :one
+SELECT id, workspace_id, repository_id, title, body, status, created_by, created_at, updated_at FROM tasks
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockTaskForUpdateParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+// Read at the start of a patch, in the transaction that writes it.
+//
+// What makes a patch safe is that the read happens here rather than in an
+// earlier transaction: a read-modify-write split across two transactions lets
+// two concurrent edits to different fields both read the same row, the second
+// writing its own field alongside stale copies of the rest and silently
+// undoing the first. That was measured — reproducing the split shape fails the
+// concurrency test every run.
+//
+// FOR UPDATE is not what prevents it today. authorizeActor takes LockWorkspace
+// before this runs, which already serializes every mutation in a workspace, so
+// this narrower lock is redundant in the current arrangement — the same
+// relationship LockAgentForUpdate has. It is here so this transaction states
+// the row it depends on rather than relying on the workspace lock staying as
+// coarse as it is.
+func (q *Queries) LockTaskForUpdate(ctx context.Context, arg LockTaskForUpdateParams) (Task, error) {
+	row := q.db.QueryRow(ctx, lockTaskForUpdate, arg.ID, arg.WorkspaceID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.RepositoryID,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateTask = `-- name: UpdateTask :one
 UPDATE tasks
 SET repository_id = $3,

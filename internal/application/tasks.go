@@ -21,7 +21,17 @@ const (
 // TaskRepository is the persistence port for tasks.
 type TaskRepository interface {
 	Create(ctx context.Context, task domain.Task, actor Actor, event AuditEvent) (domain.Task, error)
-	Update(ctx context.Context, task domain.Task, actor Actor, event AuditEvent) (domain.Task, error)
+	// Update reads the task, hands it to apply, and writes the result — all in
+	// one transaction. The merge is passed in rather than done above this
+	// because a read here and a write there is exactly how concurrent patches
+	// lose each other's changes.
+	Update(
+		ctx context.Context,
+		taskID, workspaceID uuid.UUID,
+		apply func(domain.Task) (domain.Task, error),
+		actor Actor,
+		event func(domain.Task) AuditEvent,
+	) (domain.Task, error)
 	Get(ctx context.Context, taskID, workspaceID uuid.UUID) (domain.Task, error)
 	List(ctx context.Context, workspaceID uuid.UUID) ([]domain.Task, error)
 }
@@ -144,58 +154,59 @@ func (s *TaskService) Update(
 			ErrPermissionDenied, membership.Role, taskPermission)
 	}
 
-	// Read first, so that updating a task belonging to another workspace is a
-	// not-found rather than a write that the policies happen to match nothing
-	// for — the caller gets the same answer either way, but only one of them
-	// is a deliberate decision. The row read here is also what the patch is
-	// applied to, so the two reasons are the same read.
-	existing, err := s.tasks.Get(ctx, command.TaskID, membership.WorkspaceID)
-	if err != nil {
-		return domain.Task{}, err
-	}
+	// The merge is a closure so that the row it reads is the row the write
+	// locks — the store runs both in one transaction. A task belonging to
+	// another workspace is a not-found there rather than a write the policies
+	// happen to match nothing for: the caller gets the same answer either way,
+	// but only one of them is a deliberate decision.
+	apply := func(existing domain.Task) (domain.Task, error) {
+		var err error
 
-	title := existing.Title
-	if command.Title != nil {
-		if title, err = domain.ValidateTaskTitle(*command.Title); err != nil {
+		title := existing.Title
+		if command.Title != nil {
+			if title, err = domain.ValidateTaskTitle(*command.Title); err != nil {
+				return domain.Task{}, err
+			}
+		}
+		body := existing.Body
+		if command.Body != nil {
+			if body, err = domain.ValidateTaskBody(*command.Body); err != nil {
+				return domain.Task{}, err
+			}
+		}
+		status := existing.Status
+		if command.Status != nil {
+			status = *command.Status
+		}
+		repositoryID := existing.RepositoryID
+		if command.RepositoryIDSet {
+			repositoryID = command.RepositoryID
+		}
+
+		// Checked against the merged result rather than against what was sent:
+		// clearing the repository of a task that stays ready is the failure
+		// this catches, and neither half of it appears in the request alone.
+		if err := domain.ReadyRequiresRepository(status, repositoryID); err != nil {
 			return domain.Task{}, err
 		}
-	}
-	body := existing.Body
-	if command.Body != nil {
-		if body, err = domain.ValidateTaskBody(*command.Body); err != nil {
-			return domain.Task{}, err
-		}
-	}
-	status := existing.Status
-	if command.Status != nil {
-		status = *command.Status
-	}
-	repositoryID := existing.RepositoryID
-	if command.RepositoryIDSet {
-		repositoryID = command.RepositoryID
+
+		existing.Title = title
+		existing.Body = body
+		existing.Status = status
+		existing.RepositoryID = repositoryID
+		return existing, nil
 	}
 
-	// Checked against the merged result rather than against what was sent:
-	// clearing the repository of a task that stays ready is the failure this
-	// catches, and neither half of it appears in the request alone.
-	if err := domain.ReadyRequiresRepository(status, repositoryID); err != nil {
-		return domain.Task{}, err
-	}
-
-	return s.tasks.Update(ctx, domain.Task{
-		ID:           command.TaskID,
-		WorkspaceID:  membership.WorkspaceID,
-		RepositoryID: repositoryID,
-		Title:        title,
-		Body:         body,
-		Status:       status,
-	}, Actor{UserID: membership.UserID, Required: taskPermission},
-		AuditEvent{
-			WorkspaceID: membership.WorkspaceID,
-			ActorUserID: membership.UserID,
-			Action:      AuditTaskUpdated,
-			Target:      command.TaskID.String(),
-			Detail:      map[string]any{"title": title, "status": string(status)},
+	return s.tasks.Update(ctx, command.TaskID, membership.WorkspaceID, apply,
+		Actor{UserID: membership.UserID, Required: taskPermission},
+		func(updated domain.Task) AuditEvent {
+			return AuditEvent{
+				WorkspaceID: membership.WorkspaceID,
+				ActorUserID: membership.UserID,
+				Action:      AuditTaskUpdated,
+				Target:      command.TaskID.String(),
+				Detail:      map[string]any{"title": updated.Title, "status": string(updated.Status)},
+			}
 		})
 }
 

@@ -474,8 +474,15 @@ export interface paths {
         /**
          * Change some of a task's editable fields
          * @description A partial update: a field that is omitted is left as it is. Sending
-         *     `repository_id` as `null` clears it, which is how a ready task moves
-         *     back to a draft naming nothing — omitting it would leave it alone.
+         *     `repository_id` as `null` clears it, and omitting it leaves it alone.
+         *
+         *     Clearing it does not change the status. A ready task must name a
+         *     repository, so clearing one without also sending `status: draft` is
+         *     refused — moving a ready task back to a draft naming nothing means
+         *     sending both.
+         *
+         *     `repository_id` is the only field that accepts `null`; a `null` in any
+         *     other is refused rather than read as an omission.
          */
         patch: operations["updateTask"];
         trace?: never;
