@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M3 complete; M4.1 complete, reviewed and fixed, awaiting merge; M4.2 (session creation) next
+- Status: M3 complete; M4.1 merged; M4.2 (session creation) in progress
 
 ## Current Goal
 
@@ -48,15 +48,41 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M4.1 is complete; both review passes are resolved and it awaits merge.
+**Unit M4.2 — Session Creation**, per `context/features-specs/11-session-creation.md`.
+
+Two decisions the spec required be made before writing the tables, recorded here first so the code follows them rather than the other way round.
+
+**The pin is the policy snapshot; there is no separate table.** A session references `agent_version_id`, and `agent_versions` is already immutable — append-only, enforced by two triggers, which M4.1 built for exactly this reason. A snapshot table would hold a byte-for-byte copy of a row that cannot change, which is not a second record of the truth but a second thing that could disagree with it. The architecture document lists `policy_sets` and `policy_versions`, and those are the workspace-level policy of M7; the session-level snapshot it also mentions earns a table on the day a session's policy can be *narrower* than its agent's, because a narrowed result is information that exists nowhere else. It cannot be narrowed today, so the table would record nothing.
+
+**The outbox, with each outcome decided before the columns.** This is the M3.1 shape — claim, work, acknowledge — where three attempts each traded one failure mode for another, so the outcomes come first:
+
+| When | What must happen | What the row needs |
+| --- | --- | --- |
+| Nothing has claimed it | It is visible to the next claimer | `completed_at IS NULL`, `available_at <= now()`, no live lease |
+| Claimed and succeeded | Never delivered again; kept for a while so a question about it can be answered | `completed_at` set; pruned on a retention window, as `github_webhook_deliveries` already is |
+| Claimed and failed | Delivered again, later, and the reason is legible | lease cleared, `attempts` incremented, `available_at` pushed out, `last_error` recorded |
+| Claimed, then the publisher died | Delivered again without anyone intervening | the claim is a **lease with an expiry**, not a flag — a flag set by a process that never returns is a row nothing will ever touch again |
+| Claimed twice at once | Exactly one claimer gets it | the claim is one conditional `UPDATE ... RETURNING`, never a read followed by a write |
+
+The lease is the answer to the fourth outcome and the reason a boolean `claimed` column is wrong. M3.1 reached that conclusion too, and then acknowledged work still in flight; that specific trap is absent here because nothing external is being acknowledged — the row is the only record.
+
+**Known gap, stated rather than discovered later:** the publisher is out of scope, so the fourth and fifth outcomes are designed and *not exercised*. Nothing claims a row until M5, so no test has watched a lease expire or two claimers race. The columns and the protocol are in the migration; the evidence is not. M5 builds the claimer and owes both tests.
 
 ## Next Up
 
 ### Unit M4.2 — Session Creation
 
-Follows M4.1. `sessions`, `session_participants`, `session_state_transitions`, the eighteen-state machine with optimistic concurrency, and `CreateSession` writing the session, policy snapshot, branch intent and outbox event atomically.
+Specced in `context/features-specs/11-session-creation.md`. `sessions`, `session_participants`, `session_state_transitions`, `outbox_events`, the state machine with optimistic concurrency, and `CreateSession` writing the session, policy snapshot, branch intent and outbox event atomically.
 
-**It is the first caller of `CreateBranch`,** which M3.3 built and nothing yet uses — `context/architecture.md` step 3, "the workflow validates quota and GitHub access, creates the branch". Wire it there rather than adding a second path. The branch name should derive from the session id, which is the stable identity the M3.3 endpoint had to require a name for the lack of.
+**Two corrections to what this entry said before, both made while writing the spec.**
+
+It is **not** "the eighteen-state machine" — `context/architecture.md` lists **sixteen** states. The number was wrong here twice and was repeated when closing M4.1.
+
+It is **not** the first caller of `CreateBranch`. Architecture, Session Execution, step 3 puts branch creation inside the Temporal workflow, which is M5 — the SDK is not a dependency yet and `services/worker` is a `doc.go` saying so. Calling GitHub inline would also put a network round trip inside the transaction that has to be atomic, and would break invariant 2. M4.2 writes the branch **intent**; M5 acts on it. `CreateBranch` therefore stays unused for one more unit.
+
+The name in that intent is still derived from the session id, for the reason M3.3 recorded: a name generated per attempt makes a retry create a second branch. Note that `domain.NewBranchName` cannot be reused as it stands — its suffix comes from `crypto/rand`, which is the non-determinism M3.3 rejected.
+
+**Open decision the unit must make and record:** an agent version is already immutable, so a separate policy snapshot either duplicates the pin or exists because a session's policy can be narrower than its agent's. Pick one with reasoning rather than creating a table because the architecture document lists a name.
 
 ## Open Questions
 
@@ -173,4 +199,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-15 — Unit M4.1 complete; the CodeRabbit and Greptile reviews are resolved and the fixes pushed. Next: M4.2, session creation.
+2026-09-15 — Unit M4.1 merged to main as 314a6c9. Both review rounds resolved. M4.2 specced in `context/features-specs/11-session-creation.md`; implementation not started.
