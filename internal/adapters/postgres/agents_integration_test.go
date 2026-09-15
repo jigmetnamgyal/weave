@@ -335,3 +335,57 @@ func TestAReadyTaskDoesNotMakeAWorkspaceUndeletableIntegration(t *testing.T) {
 		t.Fatalf("a ready task made its workspace undeletable: %v", err)
 	}
 }
+
+// TestAnAgentCannotPointAtAnotherAgentsVersionIntegration pins the constraint
+// behind the current-version pointer.
+//
+// The first version keyed it on the workspace, which stops an agent pointing
+// at another tenant's version but allows it to point at a sibling's — after
+// which the profile reports a model and a tool policy belonging to a different
+// agent, and a session pinned through it records settings that were never
+// chosen for it. Asserted with SQL because no store method offers the mistake;
+// the constraint is what has to refuse it.
+func TestAnAgentCannotPointAtAnotherAgentsVersionIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewAgentStore(pool)
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Sibling Agents Workspace")
+	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
+		UserID: owner.ID, WorkspaceID: workspace.ID,
+	})
+	actor := application.Actor{UserID: owner.ID, Required: domain.PermissionWorkspaceManage}
+
+	create := func(name string) (domain.Agent, domain.AgentVersion) {
+		t.Helper()
+		agentID, _ := domain.NewAgentID()
+		versionID, _ := domain.NewAgentVersionID()
+		agent, version, err := store.Create(ctx,
+			domain.Agent{ID: agentID, WorkspaceID: workspace.ID, Name: name, CreatedBy: owner.ID},
+			domain.AgentVersion{
+				ID: versionID, AgentID: agentID, WorkspaceID: workspace.ID, Version: 1,
+				Provider: domain.ProviderFake, Model: "deterministic-" + name,
+				ToolPolicy: []byte(`{}`), CreatedBy: owner.ID,
+			}, actor, application.AuditEvent{
+				WorkspaceID: workspace.ID, ActorUserID: owner.ID,
+				Action: application.AuditAgentCreated, Target: agentID.String(),
+			})
+		if err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+		return agent, version
+	}
+
+	alpha, _ := create("alpha")
+	_, betaVersion := create("beta")
+
+	_, err := pool.Exec(context.Background(),
+		"UPDATE agents SET current_version_id = $1 WHERE id = $2",
+		betaVersion.ID, alpha.ID)
+	if err == nil {
+		t.Fatal("an agent was allowed to point at a sibling agent's version")
+	}
+	if !strings.Contains(err.Error(), "agents_current_version_fkey") {
+		t.Errorf("refusal does not name the pointer's constraint: %v", err)
+	}
+}

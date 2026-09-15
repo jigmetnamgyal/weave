@@ -2,6 +2,7 @@ package workspaces
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -40,6 +41,42 @@ type taskRequest struct {
 	Body         string `json:"body"`
 	RepositoryID string `json:"repository_id"`
 	Status       string `json:"status"`
+}
+
+// taskPatchRequest is the PATCH body, where an omitted field and a field sent
+// as null are different requests.
+//
+// Plain `string` fields cannot express that difference — both arrive as "" —
+// which is what made the first version of this handler destroy a body it was
+// never asked to touch. `optional` records whether the key was present at all.
+type taskPatchRequest struct {
+	Title        optional[string] `json:"title"`
+	Body         optional[string] `json:"body"`
+	RepositoryID optional[string] `json:"repository_id"`
+	Status       optional[string] `json:"status"`
+}
+
+// optional distinguishes three states of a JSON field: absent, null, and set.
+//
+// UnmarshalJSON is called only when the key is present, which is what makes
+// Present meaningful — there is no other way to learn it after decoding.
+type optional[T any] struct {
+	Present bool
+	Value   *T
+}
+
+func (o *optional[T]) UnmarshalJSON(data []byte) error {
+	o.Present = true
+	if string(data) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var value T
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	o.Value = &value
+	return nil
 }
 
 type taskResponse struct {
@@ -100,23 +137,43 @@ func (t *taskRoutes) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body taskRequest
+	var body taskPatchRequest
 	if !t.handler.decode(ctx, w, r, &body) {
 		return
 	}
 
-	repositoryID, status, ok := t.parse(ctx, w, body)
-	if !ok {
-		return
+	command := application.UpdateTaskCommand{
+		TaskID: taskID,
+		Title:  body.Title.Value,
+		Body:   body.Body.Value,
+	}
+	if body.Status.Present {
+		if body.Status.Value == nil {
+			httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest,
+				"status cannot be null.")
+			return
+		}
+		status, err := domain.ParseTaskStatus(*body.Status.Value)
+		if err != nil {
+			t.handler.writeError(ctx, w, err, "parse status")
+			return
+		}
+		command.Status = &status
+	}
+	if body.RepositoryID.Present {
+		command.RepositoryIDSet = true
+		if body.RepositoryID.Value != nil {
+			parsed, err := uuid.Parse(*body.RepositoryID.Value)
+			if err != nil {
+				httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest,
+					"repository_id must be a UUID.")
+				return
+			}
+			command.RepositoryID = &parsed
+		}
 	}
 
-	task, err := t.service.Update(ctx, membership, application.UpdateTaskCommand{
-		TaskID:       taskID,
-		Title:        body.Title,
-		Body:         body.Body,
-		RepositoryID: repositoryID,
-		Status:       status,
-	})
+	task, err := t.service.Update(ctx, membership, command)
 	if err != nil {
 		t.handler.writeError(ctx, w, err, "update task")
 		return

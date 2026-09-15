@@ -124,7 +124,7 @@ CREATE TABLE agent_versions (
         FOREIGN KEY (agent_id, workspace_id)
         REFERENCES agents (id, workspace_id) ON DELETE CASCADE,
     -- Referenced by the current-version pointer on agents.
-    CONSTRAINT agent_versions_id_workspace_key UNIQUE (id, workspace_id),
+    CONSTRAINT agent_versions_agent_id_key UNIQUE (agent_id, id),
     CONSTRAINT agent_versions_agent_version_key UNIQUE (agent_id, version),
     CONSTRAINT agent_versions_version_positive CHECK (version > 0),
     -- `fake` is not a placeholder to remove later: the session notes require a
@@ -149,13 +149,24 @@ CREATE INDEX agent_versions_workspace_idx ON agent_versions (workspace_id);
 
 -- The pointer, added now that both tables exist.
 --
--- Composite, so an agent cannot point at a version belonging to another
--- workspace. RESTRICT rather than CASCADE: a version is never deleted, and if
--- one somehow were, losing the agent with it would be worse than the error.
+-- Keyed on the agent rather than on the workspace. `(current_version_id,
+-- workspace_id)` was the first version and is too weak: it stops an agent
+-- pointing at another tenant's version but allows it to point at a sibling
+-- agent's, which would make the profile report settings belonging to a
+-- different agent entirely. Pointing at the owning agent's version subsumes
+-- the workspace check, since agent_versions_agent_fkey already binds a
+-- version's workspace to its agent's.
+--
+-- The NULL case still works: an agent has no version between its own insert
+-- and its first version's, and MATCH SIMPLE — the default — does not check a
+-- composite key when one of its columns is NULL.
+--
+-- RESTRICT rather than CASCADE: a version is never deleted, and if one somehow
+-- were, losing the agent with it would be worse than the error.
 ALTER TABLE agents
     ADD CONSTRAINT agents_current_version_fkey
-    FOREIGN KEY (current_version_id, workspace_id)
-    REFERENCES agent_versions (id, workspace_id) ON DELETE RESTRICT;
+    FOREIGN KEY (id, current_version_id)
+    REFERENCES agent_versions (agent_id, id) ON DELETE RESTRICT;
 
 -- --------------------------------------------------------------------------
 -- Append-only enforcement for agent_versions

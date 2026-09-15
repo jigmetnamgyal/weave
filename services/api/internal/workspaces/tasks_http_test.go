@@ -196,6 +196,62 @@ func TestAToolPolicyMustBeAJSONObject(t *testing.T) {
 	}
 }
 
+// TestAPatchLeavesOmittedFieldsAlone is what PATCH means.
+//
+// The schema requires only a title, so a client renaming a task sends only a
+// title — and replacement semantics under a PATCH verb then silently wipe the
+// body and revert a ready task to draft. The fake store echoes what it is
+// given, so what comes back is what would have been written.
+func TestAPatchLeavesOmittedFieldsAlone(t *testing.T) {
+	rec := serveTask(t, domain.RoleDeveloper, http.MethodPatch,
+		"/v1/workspaces/"+workspaceA.String()+"/tasks/"+existingTask.String(),
+		`{"title":"renamed"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var response taskResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response.Title != "renamed" {
+		t.Errorf("title = %q, want the patched value", response.Title)
+	}
+	if response.Body != storedBody {
+		t.Errorf("an omitted body was overwritten:\n want %q\n  got %q", storedBody, response.Body)
+	}
+	if response.Status != string(domain.TaskReady) {
+		t.Errorf("status = %q, want it left at ready — an omitted status reverted the task",
+			response.Status)
+	}
+	if response.RepositoryID != storedRepository.String() {
+		t.Errorf("repository_id = %q, want it left alone", response.RepositoryID)
+	}
+}
+
+// TestAPatchCanStillClearTheRepository separates "omitted" from "sent as
+// null", which is the distinction that makes a partial update usable: without
+// it there is no way to move a ready task back to a draft with no repository.
+func TestAPatchCanStillClearTheRepository(t *testing.T) {
+	rec := serveTask(t, domain.RoleDeveloper, http.MethodPatch,
+		"/v1/workspaces/"+workspaceA.String()+"/tasks/"+existingTask.String(),
+		`{"status":"draft","repository_id":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var response taskResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response.RepositoryID != "" {
+		t.Errorf("repository_id = %q, want it cleared by an explicit null", response.RepositoryID)
+	}
+	if response.Body != storedBody {
+		t.Errorf("clearing the repository also overwrote the body: %q", response.Body)
+	}
+}
+
 // serveTask runs one request through the task and agent routes.
 func serveTask(t *testing.T, role domain.Role, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -224,6 +280,15 @@ func serveTask(t *testing.T, role domain.Role, method, path, body string) *httpt
 
 // --- fakes -----------------------------------------------------------------
 
+// The task the store already holds, which the patch tests merge onto. It is a
+// ready task with a body and a repository, because those are the three fields
+// a partial update could silently destroy.
+var (
+	existingTask     = uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	storedRepository = uuid.MustParse("22222222-2222-4222-8222-222222222222")
+	storedBody       = "the description someone wrote"
+)
+
 // fakeTasks echoes what it was given, which is the point: a store that altered
 // the body would hide the very thing the round-trip test is checking.
 type fakeTasks struct{}
@@ -235,6 +300,13 @@ func (fakeTasks) Update(_ context.Context, task domain.Task, _ application.Actor
 	return task, nil
 }
 func (fakeTasks) Get(_ context.Context, taskID, workspaceID uuid.UUID) (domain.Task, error) {
+	if taskID == existingTask {
+		repository := storedRepository
+		return domain.Task{
+			ID: taskID, WorkspaceID: workspaceID, Title: "as stored",
+			Body: storedBody, RepositoryID: &repository, Status: domain.TaskReady,
+		}, nil
+	}
 	return domain.Task{ID: taskID, WorkspaceID: workspaceID, Title: "t", Status: domain.TaskDraft}, nil
 }
 func (fakeTasks) List(context.Context, uuid.UUID) ([]domain.Task, error) { return nil, nil }

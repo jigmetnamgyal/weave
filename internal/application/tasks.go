@@ -114,15 +114,26 @@ func (s *TaskService) Create(
 }
 
 // UpdateTaskCommand is a request to change a task.
+//
+// Every field is optional, because the route is a PATCH and a PATCH that
+// replaces is a PATCH that destroys: the contract requires only a title, so a
+// caller renaming a task sends only a title, and a replacing handler would
+// wipe the body and revert a ready task to draft without anyone asking it to.
+// A nil field is one the caller did not mention and this leaves alone.
+//
+// RepositoryID needs three states rather than two, so it carries its own flag:
+// absent, set to a repository, and explicitly cleared. Without the third there
+// is no way to move a ready task back to a draft that names nothing.
 type UpdateTaskCommand struct {
-	TaskID       uuid.UUID
-	Title        string
-	Body         string
-	RepositoryID *uuid.UUID
-	Status       domain.TaskStatus
+	TaskID          uuid.UUID
+	Title           *string
+	Body            *string
+	Status          *domain.TaskStatus
+	RepositoryID    *uuid.UUID
+	RepositoryIDSet bool
 }
 
-// Update replaces a task's editable fields.
+// Update applies the fields a caller sent, leaving the rest as they are.
 func (s *TaskService) Update(
 	ctx context.Context,
 	membership domain.Membership,
@@ -136,37 +147,55 @@ func (s *TaskService) Update(
 	// Read first, so that updating a task belonging to another workspace is a
 	// not-found rather than a write that the policies happen to match nothing
 	// for — the caller gets the same answer either way, but only one of them
-	// is a deliberate decision.
-	if _, err := s.tasks.Get(ctx, command.TaskID, membership.WorkspaceID); err != nil {
+	// is a deliberate decision. The row read here is also what the patch is
+	// applied to, so the two reasons are the same read.
+	existing, err := s.tasks.Get(ctx, command.TaskID, membership.WorkspaceID)
+	if err != nil {
 		return domain.Task{}, err
 	}
 
-	title, err := domain.ValidateTaskTitle(command.Title)
-	if err != nil {
-		return domain.Task{}, err
+	title := existing.Title
+	if command.Title != nil {
+		if title, err = domain.ValidateTaskTitle(*command.Title); err != nil {
+			return domain.Task{}, err
+		}
 	}
-	body, err := domain.ValidateTaskBody(command.Body)
-	if err != nil {
-		return domain.Task{}, err
+	body := existing.Body
+	if command.Body != nil {
+		if body, err = domain.ValidateTaskBody(*command.Body); err != nil {
+			return domain.Task{}, err
+		}
 	}
-	if err := domain.ReadyRequiresRepository(command.Status, command.RepositoryID); err != nil {
+	status := existing.Status
+	if command.Status != nil {
+		status = *command.Status
+	}
+	repositoryID := existing.RepositoryID
+	if command.RepositoryIDSet {
+		repositoryID = command.RepositoryID
+	}
+
+	// Checked against the merged result rather than against what was sent:
+	// clearing the repository of a task that stays ready is the failure this
+	// catches, and neither half of it appears in the request alone.
+	if err := domain.ReadyRequiresRepository(status, repositoryID); err != nil {
 		return domain.Task{}, err
 	}
 
 	return s.tasks.Update(ctx, domain.Task{
 		ID:           command.TaskID,
 		WorkspaceID:  membership.WorkspaceID,
-		RepositoryID: command.RepositoryID,
+		RepositoryID: repositoryID,
 		Title:        title,
 		Body:         body,
-		Status:       command.Status,
+		Status:       status,
 	}, Actor{UserID: membership.UserID, Required: taskPermission},
 		AuditEvent{
 			WorkspaceID: membership.WorkspaceID,
 			ActorUserID: membership.UserID,
 			Action:      AuditTaskUpdated,
 			Target:      command.TaskID.String(),
-			Detail:      map[string]any{"title": title, "status": string(command.Status)},
+			Detail:      map[string]any{"title": title, "status": string(status)},
 		})
 }
 

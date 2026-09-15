@@ -740,12 +740,16 @@ paths:
     patch:
       operationId: updateTask
       tags: [tasks]
-      summary: Replace a task's editable fields
+      summary: Change some of a task's editable fields
+      description: |
+        A partial update: a field that is omitted is left as it is. Sending
+        `repository_id` as `null` clears it, which is how a ready task moves
+        back to a draft naming nothing — omitting it would leave it alone.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/TaskInput" }
+            schema: { $ref: "#/components/schemas/TaskPatch" }
       responses:
         "200":
           description: The updated task.
@@ -1025,6 +1029,19 @@ components:
         title: { type: string, maxLength: 200 }
         body: { type: string, maxLength: 50000 }
         repository_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+
+    TaskPatch:
+      type: object
+      description: |
+        Every field is optional and omitting one leaves it unchanged. This is
+        deliberately not TaskInput: a schema requiring a title on a PATCH
+        invites a caller to send only the title, and anything treating the
+        remainder as empty would destroy a body nobody asked it to touch.
+      properties:
+        title: { type: string, maxLength: 200 }
+        body: { type: string, maxLength: 50000 }
+        repository_id: { type: string, format: uuid, nullable: true }
         status: { $ref: "#/components/schemas/TaskStatus" }
 
     TaskStatus:

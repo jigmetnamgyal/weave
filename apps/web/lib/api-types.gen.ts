@@ -471,7 +471,12 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Replace a task's editable fields */
+        /**
+         * Change some of a task's editable fields
+         * @description A partial update: a field that is omitted is left as it is. Sending
+         *     `repository_id` as `null` clears it, which is how a ready task moves
+         *     back to a draft naming nothing — omitting it would leave it alone.
+         */
         patch: operations["updateTask"];
         trace?: never;
     };
@@ -607,6 +612,19 @@ export interface components {
             body?: string;
             /** Format: uuid */
             repository_id?: string;
+            status?: components["schemas"]["TaskStatus"];
+        };
+        /**
+         * @description Every field is optional and omitting one leaves it unchanged. This is
+         *     deliberately not TaskInput: a schema requiring a title on a PATCH
+         *     invites a caller to send only the title, and anything treating the
+         *     remainder as empty would destroy a body nobody asked it to touch.
+         */
+        TaskPatch: {
+            title?: string;
+            body?: string;
+            /** Format: uuid */
+            repository_id?: string | null;
             status?: components["schemas"]["TaskStatus"];
         };
         /**
@@ -1780,7 +1798,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TaskInput"];
+                "application/json": components["schemas"]["TaskPatch"];
             };
         };
         responses: {
