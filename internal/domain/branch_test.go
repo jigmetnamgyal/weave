@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/jigmetnamgyal/weave/internal/domain"
 )
 
@@ -72,9 +74,10 @@ func TestValidateBranchNameAcceptsOrdinaryNames(t *testing.T) {
 	}
 }
 
-// TestNewBranchNameIsValidAndUnique checks that generation cannot produce
-// something validation would reject, including from hostile input.
-func TestNewBranchNameIsValidAndUnique(t *testing.T) {
+// TestSessionBranchNameIsValidAndUnique checks that derivation cannot produce
+// something validation would reject, including from hostile input, and that
+// two sessions do not land on the same branch.
+func TestSessionBranchNameIsValidAndUnique(t *testing.T) {
 	hostile := []string{
 		"../../etc/passwd",
 		"refs/heads/main",
@@ -88,20 +91,74 @@ func TestNewBranchNameIsValidAndUnique(t *testing.T) {
 	seen := map[string]bool{}
 	for _, slug := range hostile {
 		for i := 0; i < 20; i++ {
-			name, err := domain.NewBranchName(slug)
+			id, err := domain.NewSessionID()
 			if err != nil {
-				t.Fatalf("NewBranchName(%q) = %v", slug, err)
+				t.Fatalf("NewSessionID: %v", err)
+			}
+			name, err := domain.SessionBranchName(id, slug)
+			if err != nil {
+				t.Fatalf("SessionBranchName(%q) = %v", slug, err)
 			}
 			if err := domain.ValidateBranchName(name); err != nil {
-				t.Fatalf("generated %q from %q, which validation rejects: %v", name, slug, err)
+				t.Fatalf("derived %q from %q, which validation rejects: %v", name, slug, err)
 			}
 			if !strings.HasPrefix(name, domain.BranchPrefix) {
-				t.Fatalf("generated %q, which is outside the namespace", name)
+				t.Fatalf("derived %q, which is outside the namespace", name)
 			}
 			if seen[name] {
-				t.Fatalf("generated %q twice; the suffix is not doing its job", name)
+				t.Fatalf("derived %q twice from different session ids", name)
 			}
 			seen[name] = true
 		}
+	}
+}
+
+// TestSessionBranchNameIsAPureFunctionOfTheSessionID is the property the
+// whole derivation exists for.
+//
+// The branch is cut by a workflow activity that retries. If the name were
+// regenerated per attempt, a retry after a lost response would create a second
+// branch rather than finding the first — which is precisely the bug M3.3
+// shipped and then removed, and the reason its endpoint requires the caller to
+// supply a name. Same id and same slug must give the same name, always.
+func TestSessionBranchNameIsAPureFunctionOfTheSessionID(t *testing.T) {
+	id, err := domain.NewSessionID()
+	if err != nil {
+		t.Fatalf("NewSessionID: %v", err)
+	}
+
+	first, err := domain.SessionBranchName(id, "add rate limiting")
+	if err != nil {
+		t.Fatalf("SessionBranchName: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		again, err := domain.SessionBranchName(id, "add rate limiting")
+		if err != nil {
+			t.Fatalf("SessionBranchName: %v", err)
+		}
+		if again != first {
+			t.Fatalf("derivation is not pure: %q then %q", first, again)
+		}
+	}
+
+	// A different session must not land on the same branch, or two sessions
+	// would write to one ref.
+	other, err := domain.NewSessionID()
+	if err != nil {
+		t.Fatalf("NewSessionID: %v", err)
+	}
+	if name, err := domain.SessionBranchName(other, "add rate limiting"); err != nil {
+		t.Fatalf("SessionBranchName: %v", err)
+	} else if name == first {
+		t.Errorf("two sessions derived the same branch name %q", name)
+	}
+}
+
+// TestSessionBranchNameRefusesTheNilID guards the case where a caller derives
+// a name before generating an id — every session would then share one branch,
+// and the failure would look like a collision rather than a missing id.
+func TestSessionBranchNameRefusesTheNilID(t *testing.T) {
+	if _, err := domain.SessionBranchName(uuid.Nil, "anything"); err == nil {
+		t.Error("SessionBranchName(uuid.Nil) = nil, want an error")
 	}
 }

@@ -479,6 +479,30 @@ func (h *Handler) writeError(ctx context.Context, w http.ResponseWriter, err err
 	case errors.Is(err, application.ErrAgentNotFound):
 		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Agent not found.")
 
+	// Sessions.
+	case errors.Is(err, domain.ErrInvalidSession):
+		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
+
+	case errors.Is(err, domain.ErrTaskNotRunnable):
+		// 409 rather than 400: nothing about the request is malformed, the
+		// task is simply in a state this cannot be done from, and the caller
+		// fixes it by changing the task rather than the request.
+		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
+			"A session can only be created from a task that is ready.")
+
+	case errors.Is(err, domain.ErrTransitionNotAllowed):
+		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict, err.Error())
+
+	case errors.Is(err, domain.ErrSessionVersionConflict):
+		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
+			"The session changed since you last read it. Reload and try again.")
+
+	case errors.Is(err, application.ErrSessionNotFound):
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Session not found.")
+
+	case errors.Is(err, application.ErrAgentVersionNotFound):
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Agent version not found.")
+
 	case errors.Is(err, application.ErrVersionConflict):
 		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
 			"The workspace changed since you last read it. Reload and try again.")

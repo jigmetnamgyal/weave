@@ -12,8 +12,12 @@ import (
 )
 
 type Querier interface {
+	AddSessionParticipant(ctx context.Context, arg AddSessionParticipantParams) (SessionParticipant, error)
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	AppendAuditEvent(ctx context.Context, arg AppendAuditEventParams) (AuditEvent, error)
+	// Append-only, enforced by trigger as well as by there being no other
+	// statement that touches this table.
+	AppendSessionTransition(ctx context.Context, arg AppendSessionTransitionParams) (SessionStateTransition, error)
 	// Single-statement claim: the WHERE clause is what makes the token single
 	// use. Two concurrent accepts race here and exactly one matches a row, so no
 	// lock is needed and no second membership can be created.
@@ -38,9 +42,15 @@ type Querier interface {
 	// refuse both. Editing a profile means writing another row.
 	CreateAgentVersion(ctx context.Context, arg CreateAgentVersionParams) (AgentVersion, error)
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (WorkspaceInvitation, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
+	// Written in the same transaction as the thing it promises. That is the whole
+	// mechanism: writing the session and then publishing leaves a window where the
+	// session exists and nothing will pick it up, open exactly when the process
+	// dies.
+	EnqueueOutboxEvent(ctx context.Context, arg EnqueueOutboxEventParams) (OutboxEvent, error)
 	GetAgentForWorkspace(ctx context.Context, arg GetAgentForWorkspaceParams) (Agent, error)
 	GetAgentVersionForWorkspace(ctx context.Context, arg GetAgentVersionForWorkspaceParams) (AgentVersion, error)
 	GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg GetInstallationByGitHubIDForWorkspaceParams) (GithubInstallation, error)
@@ -63,6 +73,9 @@ type Querier interface {
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
 	GetRepositoryForWorkspace(ctx context.Context, arg GetRepositoryForWorkspaceParams) (Repository, error)
+	// Scoped by workspace, so a session id from one tenant cannot be read through
+	// another even before the policies are consulted.
+	GetSessionForWorkspace(ctx context.Context, arg GetSessionForWorkspaceParams) (Session, error)
 	// Scoped by workspace, so a task id from one tenant cannot be read through
 	// another even before the policies are consulted.
 	GetTaskForWorkspace(ctx context.Context, arg GetTaskForWorkspaceParams) (Task, error)
@@ -81,6 +94,13 @@ type Querier interface {
 	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
 	ListInstallationPermissions(ctx context.Context, arg ListInstallationPermissionsParams) ([]RepositoryPermission, error)
 	ListInvitationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]ListInvitationsForWorkspaceRow, error)
+	// Reads what a claimer would find, without claiming it.
+	//
+	// `leased_until` is a lease and not a flag: a row whose lease has expired is
+	// pending again, because the publisher holding it died and no operator is
+	// going to notice a boolean nobody will ever clear. The claim itself lands in
+	// M5 as a single conditional UPDATE, so that two claimers cannot both win.
+	ListPendingOutboxEvents(ctx context.Context, workspaceID uuid.UUID) ([]OutboxEvent, error)
 	// Withdrawn repositories are returned too, with granted = false, so the
 	// interface can say "access was removed" rather than silently dropping a
 	// repository someone was using yesterday.
@@ -91,6 +111,9 @@ type Querier interface {
 	// as current state — and they would match no connected account in the
 	// interface, which reads as a build mismatch.
 	ListRepositoriesForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Repository, error)
+	ListSessionParticipants(ctx context.Context, arg ListSessionParticipantsParams) ([]SessionParticipant, error)
+	ListSessionTransitions(ctx context.Context, arg ListSessionTransitionsParams) ([]SessionStateTransition, error)
+	ListSessionsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Session, error)
 	ListTasksForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Task, error)
 	ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUID) ([]ListWorkspaceMembersRow, error)
 	ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) ([]ListWorkspacesForUserRow, error)

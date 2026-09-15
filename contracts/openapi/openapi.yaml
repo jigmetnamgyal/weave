@@ -914,6 +914,150 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/workspaces/{workspaceId}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    post:
+      operationId: createSession
+      tags: [sessions]
+      summary: Start a session from a ready task
+      description: |
+        Writes the session, its first participant, its first state transition,
+        and the durable record that something will pick it up — all in one
+        transaction. A session that exists without that record is a session
+        nothing would ever start, and no retry would fix it.
+
+        Nothing runs yet, and no branch is created. `branch_name` on the
+        response is the branch the workflow **will** create; it does not exist
+        when this returns.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionInput" }
+      responses:
+        "201":
+          description: The queued session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404":
+          description: The workspace, the task, or the agent version was not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            The task is not ready. Nothing about the request is malformed — the
+            task is in a state a session cannot be created from, and it is the
+            task that changes rather than the request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listSessions
+      tags: [sessions]
+      summary: List a workspace's sessions, newest first
+      responses:
+        "200":
+          description: Every session in the workspace.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/workspaces/{workspaceId}/sessions/{sessionId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Read one session
+      responses:
+        "200":
+          description: The session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: |
+            The workspace or the session was not found. A session belonging to
+            another workspace is absent rather than forbidden, so that guessing
+            identifiers cannot become tenant enumeration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/workspaces/{workspaceId}/sessions/{sessionId}/transitions:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: listSessionTransitions
+      tags: [sessions]
+      summary: List a session's state history, oldest first
+      description: |
+        Append-only. Invariant 9 makes session history append-only and ordered,
+        so a correction is a new transition rather than an edit to an old one —
+        the database refuses UPDATE, DELETE and TRUNCATE on this table.
+      responses:
+        "200":
+          description: Every transition the session has made.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transitions]
+                properties:
+                  transitions:
+                    type: array
+                    items: { $ref: "#/components/schemas/SessionTransition" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: The workspace or the session was not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/workspaces/{workspaceId}/sessions/{sessionId}/participants:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: listSessionParticipants
+      tags: [sessions]
+      summary: List who is in a session
+      responses:
+        "200":
+          description: Every participant in the session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [participants]
+                properties:
+                  participants:
+                    type: array
+                    items: { $ref: "#/components/schemas/SessionParticipant" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: The workspace or the session was not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/github/webhook:
     post:
       operationId: receiveGitHubWebhook
@@ -982,6 +1126,11 @@ components:
       schema: { type: string, format: uuid }
     AgentId:
       name: agentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: sessionId
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -1117,6 +1266,143 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Capability" }
         tool_policy: { type: object, additionalProperties: true }
+
+    Session:
+      type: object
+      required:
+        [
+          id,
+          task_id,
+          agent_version_id,
+          state,
+          version,
+          repository_id,
+          branch_name,
+          next_states,
+          created_by,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        agent_version_id:
+          type: string
+          format: uuid
+          description: |
+            The pinned settings. A session references a version rather than an
+            agent because a version cannot be edited, so the pin is also the
+            policy snapshot — reading it back says exactly what this session
+            runs under, however the profile has since changed.
+        state: { $ref: "#/components/schemas/SessionState" }
+        version:
+          type: integer
+          description: |
+            Optimistic concurrency. A state change states the version it
+            observed and is refused if the session has moved since.
+        repository_id: { type: string, format: uuid }
+        branch_name:
+          type: string
+          description: |
+            The branch the workflow will create. **It does not exist yet.** The
+            name is derived from the session id rather than generated, so an
+            activity that retries finds the branch it already made instead of
+            cutting a second one.
+        base_branch:
+          type: string
+          description: |
+            Empty means the repository's default branch, resolved when the
+            branch is cut rather than now — the default can change in between,
+            and the workflow is the thing holding a GitHub token.
+        continues_id:
+          type: string
+          format: uuid
+          description: |
+            The terminal session this one continues. Terminal history is
+            immutable, so reopening creates a linked session rather than
+            reviving the old one.
+        next_states:
+          type: array
+          items: { $ref: "#/components/schemas/SessionState" }
+          description: |
+            The states this session may move to, from the transition table the
+            server holds. Served rather than reimplemented in the browser: two
+            copies of a rule disagree eventually.
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SessionInput:
+      type: object
+      required: [task_id, agent_version_id]
+      properties:
+        task_id: { type: string, format: uuid }
+        agent_version_id: { type: string, format: uuid }
+        base_branch:
+          type: string
+          maxLength: 200
+          description: Omit for the repository's default branch.
+
+    SessionState:
+      type: string
+      enum:
+        [
+          draft,
+          queued,
+          provisioning,
+          running,
+          waiting_for_input,
+          waiting_for_approval,
+          pausing,
+          paused,
+          resuming,
+          review_ready,
+          finalizing,
+          completed,
+          cancelling,
+          cancelled,
+          failed,
+          expired,
+        ]
+      description: |
+        The sixteen states in `context/architecture.md`. `completed`,
+        `cancelled`, `failed` and `expired` are terminal and have no outgoing
+        transitions at all.
+
+    SessionTransition:
+      type: object
+      required: [id, next_state, observed_version, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        previous_state:
+          allOf: [{ $ref: "#/components/schemas/SessionState" }]
+          description: |
+            Absent on the first transition. A session comes into existence
+            already in a state, so recording a move it never made would be a
+            fiction in a trail that cannot be edited.
+        next_state: { $ref: "#/components/schemas/SessionState" }
+        observed_version: { type: integer }
+        reason: { type: string }
+        actor_user_id:
+          type: string
+          format: uuid
+          description: |
+            Absent when the system moved the session. A timeout is not
+            attributable to a person, and naming one would be a false statement.
+        created_at: { type: string, format: date-time }
+
+    SessionParticipant:
+      type: object
+      required: [user_id, capacity, created_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        capacity:
+          type: string
+          enum: [owner, collaborator, observer]
+          description: |
+            What someone is doing in this session, which is not the same as
+            what they may do in the workspace — those are the membership roles.
+        created_at: { type: string, format: date-time }
 
     Provider:
       type: string
