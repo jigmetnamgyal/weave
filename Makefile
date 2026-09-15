@@ -30,7 +30,7 @@ APP_DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$APP_DATABASE_URL)
 .DEFAULT_GOAL := help
 
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
-        fmt fmt-check lint lint-go typecheck test test-integration build ci tidy \
+        fmt fmt-check lint lint-go typecheck test test-integration build ci tidy tidy-check \
         migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check \
         contracts contracts-check
 
@@ -143,6 +143,15 @@ build: ## Build the API binary and the web application (CI gate)
 tidy: ## Ensure go.mod and go.sum are current
 	@go mod tidy
 
+# The CI workflow verifies this and `make ci` did not, so the local gates were
+# not a superset of CI's — a green run locally still failed in CI twelve
+# seconds later on PR #7. A local gate exists to catch things before CI does;
+# leaving the gap and relabelling the target would have been honest about a
+# gate that still let a known failure through.
+tidy-check: tidy ## Fail when go.mod or go.sum are stale (CI gate)
+	@git diff --exit-code -- go.mod go.sum \
+		|| (echo "go.mod or go.sum are out of date. Commit the result of 'make tidy'." && exit 1)
+
 # --- Database ----------------------------------------------------------------
 
 # Installs the pinned tool only when the pinned version is not already present.
@@ -186,5 +195,5 @@ contracts-check: contracts ## Fail when the generated API types are stale (CI ga
 	@git diff --exit-code -- apps/web/lib/api-types.gen.ts \
 		|| (echo "Generated API types are out of date. Commit the result of 'make contracts'." && exit 1)
 
-ci: fmt-check lint lint-go sqlc-check contracts-check typecheck test build ## Run every local quality gate
+ci: fmt-check lint lint-go tidy-check sqlc-check contracts-check typecheck test build ## Run every local quality gate
 	@echo "All quality gates passed."

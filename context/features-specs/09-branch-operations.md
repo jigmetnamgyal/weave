@@ -146,4 +146,4 @@ unprotected and looks entirely correct.
 - No token or key appears in a log line, verified by grep.
 - The `make ci` question above is answered either way, and the answer is
   recorded in the tracker.
-- `make ci` and `make test-integration` pass.
+- `make ci` and `make test-integration` pass

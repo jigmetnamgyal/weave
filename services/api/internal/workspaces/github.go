@@ -43,6 +43,8 @@ func (h *Handler) RegisterGitHub(
 		h.requireMembership(http.HandlerFunc(gh.reconcile)))
 	mux.Handle("GET /v1/workspaces/{workspaceID}/repositories",
 		h.requireMembership(http.HandlerFunc(gh.listRepositories)))
+	mux.Handle("POST /v1/workspaces/{workspaceID}/repositories/{repositoryID}/branches",
+		h.requireMembership(http.HandlerFunc(gh.createBranch)))
 
 	// Authenticated but not workspace-scoped: which workspace this belongs to
 	// comes from the state token, not from the caller. That is the whole point
@@ -354,6 +356,91 @@ func (g *githubRoutes) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type createBranchRequest struct {
+	// Name is required. A caller that may retry needs the same request to name
+	// the same branch — generating one here would make each attempt create
+	// another, which is the opposite of the idempotency this endpoint claims.
+	Name string `json:"name"`
+	Base string `json:"base"`
+}
+
+type branchResponse struct {
+	Name string `json:"name"`
+	SHA  string `json:"sha"`
+	Base string `json:"base"`
+	// Created is false when the branch already existed at the requested base.
+	// Reported rather than hidden: the caller asked for a branch at a commit
+	// and has one, but "already there" and "just made" are different facts.
+	Created bool `json:"created"`
+}
+
+func (g *githubRoutes) createBranch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	membership, ok := membershipFrom(ctx)
+	if !ok {
+		g.handler.serverError(ctx, w, "membership missing from context", errors.New("route not wrapped"))
+		return
+	}
+
+	repositoryID, err := uuid.Parse(r.PathValue("repositoryID"))
+	if err != nil {
+		g.handler.notFound(ctx, w)
+		return
+	}
+
+	var body createBranchRequest
+	if !g.handler.decode(ctx, w, r, &body) {
+		return
+	}
+
+	branch, err := g.service.CreateBranch(ctx, membership, application.CreateBranchCommand{
+		RepositoryID: repositoryID,
+		Name:         body.Name,
+		Base:         body.Base,
+	})
+	if err != nil {
+		// The branch exists and its audit row does not. Those pull in opposite
+		// directions, and an earlier revision resolved that by returning the
+		// error — which this handler then turned into a bare 500, hiding the
+		// name and SHA of a ref that had just been written to a customer's
+		// repository. The caller could not identify what had been created.
+		//
+		// The caller gets what it asked for, because that is what happened.
+		// The gap is an operator's problem, so it goes to the log with
+		// everything needed to reconstruct the row, at error level.
+		if errors.Is(err, application.ErrAuditNotRecorded) && branch.Name != "" {
+			g.handler.logger.ErrorContext(ctx, "branch created but not audited",
+				slog.String("workspace_id", membership.WorkspaceID.String()),
+				slog.String("actor_user_id", membership.UserID.String()),
+				slog.String("repository_id", repositoryID.String()),
+				slog.String("branch", branch.Name),
+				slog.String("sha", branch.SHA),
+				slog.String("base", branch.Base),
+				slog.String("error", err.Error()),
+				slog.String("request_id", httpx.RequestID(ctx)),
+			)
+		} else {
+			g.handler.writeError(ctx, w, err, "create branch")
+			return
+		}
+	}
+
+	// 201 only when something was made. A retry that found its own earlier
+	// work gets 200: the resource exists either way, and the status is the
+	// only place that distinction survives into the response.
+	status := http.StatusOK
+	if branch.Created {
+		status = http.StatusCreated
+	}
+	httpx.WriteJSON(ctx, w, status, branchResponse{
+		Name:    branch.Name,
+		SHA:     branch.SHA,
+		Base:    branch.Base,
+		Created: branch.Created,
+	})
 }
 
 func toInstallationResponse(installation domain.Installation) installationResponse {
