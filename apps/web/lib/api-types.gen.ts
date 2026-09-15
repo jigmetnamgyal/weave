@@ -423,6 +423,147 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{workspaceId}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        /** List a workspace's tasks, newest first */
+        get: operations["listTasks"];
+        put?: never;
+        /**
+         * Create a task
+         * @description A task is the input to a session, so `session:create` governs it:
+         *     anyone who may start a session must be able to describe the work, and
+         *     anyone who may not has no use for a task.
+         *
+         *     The body is untrusted input. It is stored and returned byte-identical,
+         *     never interpolated into a command, a prompt template, a ref name or a
+         *     log format string, and never normalised on the way out — the stored
+         *     value and the returned value must agree, or nobody can tell what is
+         *     actually stored.
+         */
+        post: operations["createTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/tasks/{taskId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                taskId: components["parameters"]["TaskId"];
+            };
+            cookie?: never;
+        };
+        /** Return one task */
+        get: operations["getTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change some of a task's editable fields
+         * @description A partial update: a field that is omitted is left as it is. Sending
+         *     `repository_id` as `null` clears it, and omitting it leaves it alone.
+         *
+         *     Clearing it does not change the status. A ready task must name a
+         *     repository, so clearing one without also sending `status: draft` is
+         *     refused — moving a ready task back to a draft naming nothing means
+         *     sending both.
+         *
+         *     `repository_id` is the only field that accepts `null`; a `null` in any
+         *     other is refused rather than read as an omission.
+         */
+        patch: operations["updateTask"];
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        /** List a workspace's agent profiles */
+        get: operations["listAgents"];
+        put?: never;
+        /**
+         * Create an agent profile and its first version
+         * @description Governed by `workspace:manage` rather than `session:create`, because a
+         *     version carries the tool policy — what an agent is allowed to do inside
+         *     a customer's repository. A developer may run agents and not redefine
+         *     what they may do.
+         *
+         *     The profile and its first version are written together. An agent with
+         *     no version is a profile that cannot be used and that nothing would
+         *     notice until a session failed.
+         */
+        post: operations["createAgent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/agents/{agentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                agentId: components["parameters"]["AgentId"];
+            };
+            cookie?: never;
+        };
+        /** Return one agent profile */
+        get: operations["getAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/agents/{agentId}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                agentId: components["parameters"]["AgentId"];
+            };
+            cookie?: never;
+        };
+        /** List an agent's versions, newest first */
+        get: operations["listAgentVersions"];
+        put?: never;
+        /**
+         * Record new settings for an agent
+         * @description This is what editing a profile means. The previous version is untouched
+         *     and cannot be modified — the table refuses it — because a session is
+         *     pinned to the version it ran under, and editing one would rewrite what
+         *     finished sessions claim to have done.
+         */
+        post: operations["addAgentVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/github/webhook": {
         parameters: {
             query?: never;
@@ -452,6 +593,120 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Task: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            /** @description Untrusted input, returned byte-identical to what was stored. */
+            body: string;
+            /**
+             * Format: uuid
+             * @description What the task runs against. Absent while a draft, required at
+             *     `ready` — a task that cannot name a repository cannot become a
+             *     session, and the database enforces that rather than the handler.
+             */
+            repository_id?: string;
+            status: components["schemas"]["TaskStatus"];
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        TaskInput: {
+            title: string;
+            body?: string;
+            /** Format: uuid */
+            repository_id?: string;
+            status?: components["schemas"]["TaskStatus"];
+        };
+        /**
+         * @description Every field is optional and omitting one leaves it unchanged. This is
+         *     deliberately not TaskInput: a schema requiring a title on a PATCH
+         *     invites a caller to send only the title, and anything treating the
+         *     remainder as empty would destroy a body nobody asked it to touch.
+         */
+        TaskPatch: {
+            title?: string;
+            body?: string;
+            /** Format: uuid */
+            repository_id?: string | null;
+            status?: components["schemas"]["TaskStatus"];
+        };
+        /**
+         * @description A closed set. A status nothing recognises is a task that silently
+         *     never runs.
+         * @enum {string}
+         */
+        TaskStatus: "draft" | "ready" | "archived";
+        Agent: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /**
+             * Format: uuid
+             * @description The settings in use. A session is pinned to this rather than to the
+             *     agent, so that editing the profile later cannot rewrite what the
+             *     session ran under.
+             */
+            current_version_id?: string;
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AgentVersion: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            agent_id: string;
+            version: number;
+            provider: components["schemas"]["Provider"];
+            model: string;
+            /**
+             * @description What this provider supports. The interface derives its controls
+             *     from this rather than assuming — no feature may assume every
+             *     provider offers pause, structured tool calls or token accounting.
+             */
+            capabilities: components["schemas"]["Capability"][];
+            /**
+             * @description What the agent is allowed to do. Opaque until M7, and versioned
+             *     because it is a security control: a session must be readable
+             *     against the policy it actually ran under.
+             */
+            tool_policy: {
+                [key: string]: unknown;
+            };
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        AgentVersionInput: {
+            provider: components["schemas"]["Provider"];
+            model: string;
+            capabilities?: components["schemas"]["Capability"][];
+            tool_policy?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * @description `fake` is a first-class provider, not a placeholder: a deterministic
+         *     adapter verifies orchestration, events and approvals before a paid
+         *     provider is wired in.
+         * @enum {string}
+         */
+        Provider: "claude_code" | "codex" | "fake";
+        /**
+         * @description A closed set, named after the adapter contract. Free text would make an
+         *     unrecognised capability a typo that silently disables a feature rather
+         *     than a rejected write.
+         * @enum {string}
+         */
+        Capability: "pause" | "resume" | "cancel" | "send_instruction" | "structured_tool_calls" | "token_accounting";
         Branch: {
             name: string;
             /** @description The commit the branch points at. */
@@ -767,6 +1022,8 @@ export interface components {
         };
     };
     parameters: {
+        TaskId: string;
+        AgentId: string;
         InstallationId: string;
         WorkspaceId: string;
     };
@@ -1433,6 +1690,316 @@ export interface operations {
              *     worse than an error.
              */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workspace's tasks. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Task"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["WorkspaceNotFound"];
+        };
+    };
+    createTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskInput"];
+            };
+        };
+        responses: {
+            /** @description The task was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Task"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            404: components["responses"]["WorkspaceNotFound"];
+        };
+    };
+    getTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                taskId: components["parameters"]["TaskId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The task. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Task"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /**
+             * @description The workspace is not the caller's or does not exist, or no task of
+             *     that id is in it. Deliberately indistinguishable: a response
+             *     confirming a workspace exists but is not yours turns identifier
+             *     guessing into tenant enumeration.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                taskId: components["parameters"]["TaskId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskPatch"];
+            };
+        };
+        responses: {
+            /** @description The updated task. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Task"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            /** @description The workspace or the task was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listAgents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workspace's agents. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Agent"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["WorkspaceNotFound"];
+        };
+    };
+    createAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                } & components["schemas"]["AgentVersionInput"];
+            };
+        };
+        responses: {
+            /** @description The profile and the version it starts at. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        agent: components["schemas"]["Agent"];
+                        version: components["schemas"]["AgentVersion"];
+                    };
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            404: components["responses"]["WorkspaceNotFound"];
+            /** @description An agent of that name already exists in the workspace. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                agentId: components["parameters"]["AgentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The agent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Agent"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /** @description The workspace or the agent was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listAgentVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                agentId: components["parameters"]["AgentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every version recorded for the agent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["AgentVersion"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /** @description The workspace or the agent was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    addAgentVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                agentId: components["parameters"]["AgentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentVersionInput"];
+            };
+        };
+        responses: {
+            /** @description The new version, which the agent now points at. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentVersion"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            /** @description The workspace or the agent was not found. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

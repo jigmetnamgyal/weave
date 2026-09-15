@@ -29,6 +29,10 @@ tags:
     description: |
   - name: github
     description: GitHub App installations and the repositories they grant.
+  - name: tasks
+    description: Units of work a session is created from.
+  - name: agents
+    description: Versioned agent profiles and declared provider capabilities.
       Accepting an invitation is the one workspace operation available to
       someone who is not yet a member, so these routes sit outside the
       workspace path and are authorized by the token rather than by
@@ -658,6 +662,258 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/workspaces/{workspaceId}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    post:
+      operationId: createTask
+      tags: [tasks]
+      summary: Create a task
+      description: |
+        A task is the input to a session, so `session:create` governs it:
+        anyone who may start a session must be able to describe the work, and
+        anyone who may not has no use for a task.
+
+        The body is untrusted input. It is stored and returned byte-identical,
+        never interpolated into a command, a prompt template, a ref name or a
+        log format string, and never normalised on the way out — the stored
+        value and the returned value must agree, or nobody can tell what is
+        actually stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskInput" }
+      responses:
+        "201":
+          description: The task was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    get:
+      operationId: listTasks
+      tags: [tasks]
+      summary: List a workspace's tasks, newest first
+      responses:
+        "200":
+          description: The workspace's tasks.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/workspaces/{workspaceId}/tasks/{taskId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/TaskId"
+    get:
+      operationId: getTask
+      tags: [tasks]
+      summary: Return one task
+      responses:
+        "200":
+          description: The task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: |
+            The workspace is not the caller's or does not exist, or no task of
+            that id is in it. Deliberately indistinguishable: a response
+            confirming a workspace exists but is not yours turns identifier
+            guessing into tenant enumeration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      operationId: updateTask
+      tags: [tasks]
+      summary: Change some of a task's editable fields
+      description: |
+        A partial update: a field that is omitted is left as it is. Sending
+        `repository_id` as `null` clears it, and omitting it leaves it alone.
+
+        Clearing it does not change the status. A ready task must name a
+        repository, so clearing one without also sending `status: draft` is
+        refused — moving a ready task back to a draft naming nothing means
+        sending both.
+
+        `repository_id` is the only field that accepts `null`; a `null` in any
+        other is refused rather than read as an omission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskPatch" }
+      responses:
+        "200":
+          description: The updated task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404":
+          description: The workspace or the task was not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/workspaces/{workspaceId}/agents:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    post:
+      operationId: createAgent
+      tags: [agents]
+      summary: Create an agent profile and its first version
+      description: |
+        Governed by `workspace:manage` rather than `session:create`, because a
+        version carries the tool policy — what an agent is allowed to do inside
+        a customer's repository. A developer may run agents and not redefine
+        what they may do.
+
+        The profile and its first version are written together. An agent with
+        no version is a profile that cannot be used and that nothing would
+        notice until a session failed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [name]
+                  properties:
+                    name: { type: string, maxLength: 80 }
+                - $ref: "#/components/schemas/AgentVersionInput"
+      responses:
+        "201":
+          description: The profile and the version it starts at.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agent, version]
+                properties:
+                  agent: { $ref: "#/components/schemas/Agent" }
+                  version: { $ref: "#/components/schemas/AgentVersion" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409":
+          description: An agent of that name already exists in the workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listAgents
+      tags: [agents]
+      summary: List a workspace's agent profiles
+      responses:
+        "200":
+          description: The workspace's agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Agent" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /v1/workspaces/{workspaceId}/agents/{agentId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      operationId: getAgent
+      tags: [agents]
+      summary: Return one agent profile
+      responses:
+        "200":
+          description: The agent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agent" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: The workspace or the agent was not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/workspaces/{workspaceId}/agents/{agentId}/versions:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: "#/components/parameters/AgentId"
+    post:
+      operationId: addAgentVersion
+      tags: [agents]
+      summary: Record new settings for an agent
+      description: |
+        This is what editing a profile means. The previous version is untouched
+        and cannot be modified — the table refuses it — because a session is
+        pinned to the version it ran under, and editing one would rewrite what
+        finished sessions claim to have done.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentVersionInput" }
+      responses:
+        "201":
+          description: The new version, which the agent now points at.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentVersion" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404":
+          description: The workspace or the agent was not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listAgentVersions
+      tags: [agents]
+      summary: List an agent's versions, newest first
+      responses:
+        "200":
+          description: Every version recorded for the agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentVersion" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: The workspace or the agent was not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/github/webhook:
     post:
       operationId: receiveGitHubWebhook
@@ -719,6 +975,16 @@ paths:
 
 components:
   parameters:
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     InstallationId:
       name: installationId
       in: path
@@ -740,6 +1006,134 @@ components:
         as `Authorization: Bearer <token>`.
 
   schemas:
+    Task:
+      type: object
+      required: [id, title, body, status, created_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string, maxLength: 200 }
+        body:
+          type: string
+          maxLength: 50000
+          description: |
+            Untrusted input, returned byte-identical to what was stored.
+        repository_id:
+          type: string
+          format: uuid
+          description: |
+            What the task runs against. Absent while a draft, required at
+            `ready` — a task that cannot name a repository cannot become a
+            session, and the database enforces that rather than the handler.
+        status: { $ref: "#/components/schemas/TaskStatus" }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TaskInput:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, maxLength: 200 }
+        body: { type: string, maxLength: 50000 }
+        repository_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+
+    TaskPatch:
+      type: object
+      description: |
+        Every field is optional and omitting one leaves it unchanged. This is
+        deliberately not TaskInput: a schema requiring a title on a PATCH
+        invites a caller to send only the title, and anything treating the
+        remainder as empty would destroy a body nobody asked it to touch.
+      properties:
+        title: { type: string, maxLength: 200 }
+        body: { type: string, maxLength: 50000 }
+        repository_id: { type: string, format: uuid, nullable: true }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+
+    TaskStatus:
+      type: string
+      enum: [draft, ready, archived]
+      description: |
+        A closed set. A status nothing recognises is a task that silently
+        never runs.
+
+    Agent:
+      type: object
+      required: [id, name, created_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, maxLength: 80 }
+        current_version_id:
+          type: string
+          format: uuid
+          description: |
+            The settings in use. A session is pinned to this rather than to the
+            agent, so that editing the profile later cannot rewrite what the
+            session ran under.
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AgentVersion:
+      type: object
+      required:
+        [id, agent_id, version, provider, model, capabilities, tool_policy, created_by, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        agent_id: { type: string, format: uuid }
+        version: { type: integer }
+        provider: { $ref: "#/components/schemas/Provider" }
+        model: { type: string, maxLength: 200 }
+        capabilities:
+          type: array
+          items: { $ref: "#/components/schemas/Capability" }
+          description: |
+            What this provider supports. The interface derives its controls
+            from this rather than assuming — no feature may assume every
+            provider offers pause, structured tool calls or token accounting.
+        tool_policy:
+          type: object
+          # Open, and it has to be said explicitly: `type: object` with no
+          # properties and no additionalProperties generates
+          # `Record<string, never>`, a type permitting no keys at all — so the
+          # browser could neither send nor read a policy while the column
+          # holds arbitrary jsonb. The object is opaque, not empty.
+          additionalProperties: true
+          description: |
+            What the agent is allowed to do. Opaque until M7, and versioned
+            because it is a security control: a session must be readable
+            against the policy it actually ran under.
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    AgentVersionInput:
+      type: object
+      required: [provider, model]
+      properties:
+        provider: { $ref: "#/components/schemas/Provider" }
+        model: { type: string, maxLength: 200 }
+        capabilities:
+          type: array
+          items: { $ref: "#/components/schemas/Capability" }
+        tool_policy: { type: object, additionalProperties: true }
+
+    Provider:
+      type: string
+      enum: [claude_code, codex, fake]
+      description: |
+        `fake` is a first-class provider, not a placeholder: a deterministic
+        adapter verifies orchestration, events and approvals before a paid
+        provider is wired in.
+
+    Capability:
+      type: string
+      enum: [pause, resume, cancel, send_instruction, structured_tool_calls, token_accounting]
+      description: |
+        A closed set, named after the adapter contract. Free text would make an
+        unrecognised capability a typo that silently disables a feature rather
+        than a rejected write.
+
     Branch:
       type: object
       required: [name, sha, base, created]
