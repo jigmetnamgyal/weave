@@ -22,6 +22,12 @@ var (
 	ErrInstallationNotFound = errors.New("installation not found")
 	// ErrRepositoryNotFound is returned when no repository matches.
 	ErrRepositoryNotFound = errors.New("repository not found")
+	// ErrTaskNotFound is returned when no task matches, for any reason. A
+	// caller who is not a member and one naming a task that never existed
+	// receive the same thing, so probing cannot distinguish them.
+	ErrTaskNotFound = errors.New("task not found")
+	// ErrAgentNotFound is returned when no agent matches.
+	ErrAgentNotFound = errors.New("agent not found")
 	// ErrInstallStateInvalid is returned when the state value on a callback is
 	// unknown, expired, or already used. One error for all three: they are
 	// indistinguishable to the caller by design, because telling an attacker

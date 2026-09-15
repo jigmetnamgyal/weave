@@ -9,6 +9,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// Agent identity and the pointer to the settings currently in use. Editable; the settings are not.
+type Agent struct {
+	ID               uuid.UUID
+	WorkspaceID      uuid.UUID
+	Name             string
+	CurrentVersionID pgtype.UUID
+	CreatedBy        uuid.UUID
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
+// Append-only. A session is pinned to a version, so editing one would rewrite what finished sessions claim to have done.
+type AgentVersion struct {
+	ID           uuid.UUID
+	AgentID      uuid.UUID
+	WorkspaceID  uuid.UUID
+	Version      int32
+	Provider     string
+	Model        string
+	Capabilities []string
+	ToolPolicy   []byte
+	CreatedBy    uuid.UUID
+	CreatedAt    pgtype.Timestamptz
+}
+
 // Append-only security log. Deliberately has no foreign keys so records outlive what they describe.
 type AuditEvent struct {
 	ID          uuid.UUID
@@ -62,6 +87,19 @@ type RepositoryPermission struct {
 	Permission     string
 	Access         string
 	RecordedAt     pgtype.Timestamptz
+}
+
+// A unit of work someone wants done. The body is untrusted input: stored and returned as data, never interpolated.
+type Task struct {
+	ID           uuid.UUID
+	WorkspaceID  uuid.UUID
+	RepositoryID pgtype.UUID
+	Title        string
+	Body         string
+	Status       string
+	CreatedBy    uuid.UUID
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
 }
 
 // Application users. One row per identity-provider subject.

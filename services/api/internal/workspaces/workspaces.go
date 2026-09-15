@@ -459,6 +459,26 @@ func (h *Handler) writeError(ctx context.Context, w http.ResponseWriter, err err
 	case errors.Is(err, application.ErrRepositoryNotFound):
 		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Repository not found.")
 
+	// Tasks and agent profiles.
+	case errors.Is(err, domain.ErrInvalidTask), errors.Is(err, domain.ErrInvalidAgent):
+		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
+
+	case errors.Is(err, domain.ErrTaskNotReady):
+		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest,
+			"A task cannot be ready without naming the repository it runs against.")
+
+	case errors.Is(err, domain.ErrUnknownCapability):
+		httpx.WriteError(ctx, w, http.StatusBadRequest, httpx.CodeInvalidRequest, err.Error())
+
+	case errors.Is(err, domain.ErrAgentNameTaken):
+		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict, err.Error())
+
+	case errors.Is(err, application.ErrTaskNotFound):
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Task not found.")
+
+	case errors.Is(err, application.ErrAgentNotFound):
+		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Agent not found.")
+
 	case errors.Is(err, application.ErrVersionConflict):
 		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
 			"The workspace changed since you last read it. Reload and try again.")

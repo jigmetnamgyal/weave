@@ -33,9 +33,16 @@ type Querier interface {
 	// Used under LockWorkspace to enforce that a workspace never loses its last
 	// owner.
 	CountWorkspaceOwners(ctx context.Context, workspaceID uuid.UUID) (int64, error)
+	CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error)
+	// Append-only: there is no update or delete for this table, and the triggers
+	// refuse both. Editing a profile means writing another row.
+	CreateAgentVersion(ctx context.Context, arg CreateAgentVersionParams) (AgentVersion, error)
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (WorkspaceInvitation, error)
+	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
+	GetAgentForWorkspace(ctx context.Context, arg GetAgentForWorkspaceParams) (Agent, error)
+	GetAgentVersionForWorkspace(ctx context.Context, arg GetAgentVersionForWorkspaceParams) (AgentVersion, error)
 	GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg GetInstallationByGitHubIDForWorkspaceParams) (GithubInstallation, error)
 	// Scoped by workspace, so an installation id from one tenant cannot be read
 	// through another even before the policies are consulted.
@@ -56,6 +63,9 @@ type Querier interface {
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
 	GetRepositoryForWorkspace(ctx context.Context, arg GetRepositoryForWorkspaceParams) (Repository, error)
+	// Scoped by workspace, so a task id from one tenant cannot be read through
+	// another even before the policies are consulted.
+	GetTaskForWorkspace(ctx context.Context, arg GetTaskForWorkspaceParams) (Task, error)
 	GetUserByExternalID(ctx context.Context, externalID string) (User, error)
 	// Scoped by member, not just by id. A caller who is not a member gets no row,
 	// so "not found" and "not yours" are indistinguishable from the outside and
@@ -65,6 +75,8 @@ type Querier interface {
 	// What the workspace currently has connected. Removed installations are kept
 	// for their repository history but are not connections any more.
 	ListActiveInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error)
+	ListAgentVersionsForWorkspace(ctx context.Context, arg ListAgentVersionsForWorkspaceParams) ([]AgentVersion, error)
+	ListAgentsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Agent, error)
 	// Operator and test support.
 	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
 	ListInstallationPermissions(ctx context.Context, arg ListInstallationPermissionsParams) ([]RepositoryPermission, error)
@@ -79,8 +91,13 @@ type Querier interface {
 	// as current state — and they would match no connected account in the
 	// interface, which reads as a build mismatch.
 	ListRepositoriesForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Repository, error)
+	ListTasksForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Task, error)
 	ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUID) ([]ListWorkspaceMembersRow, error)
 	ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) ([]ListWorkspacesForUserRow, error)
+	// Taken before computing the next version number. Without it two concurrent
+	// edits both read the same MAX(version) and one fails on the unique index —
+	// an error the caller can do nothing useful with.
+	LockAgentForUpdate(ctx context.Context, arg LockAgentForUpdateParams) (Agent, error)
 	// Serialises membership changes within a workspace. Taken before any check
 	// that counts owners, so two concurrent demotions cannot both observe two
 	// owners and both proceed.
@@ -92,6 +109,9 @@ type Querier interface {
 	// an old audit entry or a finished session readable. Withdrawing the
 	// repositories is a separate statement in the same transaction.
 	MarkInstallationDeleted(ctx context.Context, arg MarkInstallationDeletedParams) error
+	// Read under the agent's row lock by the caller, so two concurrent edits
+	// cannot both compute the same next number and collide on the unique index.
+	NextAgentVersionNumber(ctx context.Context, arg NextAgentVersionNumberParams) (int32, error)
 	// Deliveries are only needed while deduplication might see a retry. GitHub
 	// gives up well inside this window.
 	PruneWebhookDeliveries(ctx context.Context, retention pgtype.Interval) error
@@ -103,6 +123,7 @@ type Querier interface {
 	// delivery has been seen, which is how the caller distinguishes the two
 	// without a separate read and the race that would come with it.
 	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) (GithubWebhookDelivery, error)
+	RenameAgent(ctx context.Context, arg RenameAgentParams) (Agent, error)
 	// Optimistic concurrency: the caller supplies the version it read. A stale
 	// version matches no row, which the store reports as a conflict rather than
 	// silently overwriting a concurrent edit.
@@ -110,12 +131,19 @@ type Querier interface {
 	// Only an outstanding invitation can be revoked; revoking an accepted or
 	// already-revoked one matches no row.
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
+	// The pointer is the only mutable thing about a profile. Moving it changes
+	// what the next session will use and nothing about what past sessions did.
+	SetAgentCurrentVersion(ctx context.Context, arg SetAgentCurrentVersionParams) (Agent, error)
 	SetInstallationSelection(ctx context.Context, arg SetInstallationSelectionParams) (GithubInstallation, error)
 	// Suspension is recorded, never deleted. Unsuspending must restore the
 	// previous state rather than require a fresh install, and keeping the rows is
 	// what makes that possible.
 	SetInstallationSuspended(ctx context.Context, arg SetInstallationSuspendedParams) (GithubInstallation, error)
 	SlugExists(ctx context.Context, slug string) (bool, error)
+	// The body is written back exactly as given. Nothing here normalises it: the
+	// stored value and the returned value must agree, or nobody can tell what is
+	// actually stored.
+	UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error)
 	UpdateWorkspaceMemberRole(ctx context.Context, arg UpdateWorkspaceMemberRoleParams) (WorkspaceMember, error)
 	// Reconciliation writes every repository GitHub currently grants.
 	//

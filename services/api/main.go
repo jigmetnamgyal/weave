@@ -172,10 +172,15 @@ func run() error {
 	// notices until it is a problem.
 	go pruneDeliveries(ctx, logger, installationService)
 
+	taskService := application.NewTaskService(postgres.NewTaskStore(appPool))
+	agentService := application.NewAgentService(postgres.NewAgentStore(appPool))
+
 	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
 	workspaceHandler.Register(protected)
 	workspaceHandler.RegisterInvitations(protected, invitationService)
 	workspaceHandler.RegisterGitHub(protected, installationService, cfg.GitHubWebhookSecret)
+	workspaceHandler.RegisterTasks(protected, taskService)
+	workspaceHandler.RegisterAgents(protected, agentService)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())
