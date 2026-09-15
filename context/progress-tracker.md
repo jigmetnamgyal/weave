@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M3 complete; M4.1 complete, reviewed and fixed, awaiting merge; M4.2 (session creation) next
+- Status: M3 complete; M4.1 merged; M4.2 (session creation) specced and next
 
 ## Current Goal
 
@@ -48,15 +48,23 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-Nothing in progress. M4.1 is complete; both review passes are resolved and it awaits merge.
+Nothing in progress. M4.1 merged to main as 314a6c9 (PR #9). M4.2 is specced in `context/features-specs/11-session-creation.md` and not yet started.
 
 ## Next Up
 
 ### Unit M4.2 — Session Creation
 
-Follows M4.1. `sessions`, `session_participants`, `session_state_transitions`, the eighteen-state machine with optimistic concurrency, and `CreateSession` writing the session, policy snapshot, branch intent and outbox event atomically.
+Specced in `context/features-specs/11-session-creation.md`. `sessions`, `session_participants`, `session_state_transitions`, `outbox_events`, the state machine with optimistic concurrency, and `CreateSession` writing the session, policy snapshot, branch intent and outbox event atomically.
 
-**It is the first caller of `CreateBranch`,** which M3.3 built and nothing yet uses — `context/architecture.md` step 3, "the workflow validates quota and GitHub access, creates the branch". Wire it there rather than adding a second path. The branch name should derive from the session id, which is the stable identity the M3.3 endpoint had to require a name for the lack of.
+**Two corrections to what this entry said before, both made while writing the spec.**
+
+It is **not** "the eighteen-state machine" — `context/architecture.md` lists **sixteen** states. The number was wrong here twice and was repeated when closing M4.1.
+
+It is **not** the first caller of `CreateBranch`. Architecture, Session Execution, step 3 puts branch creation inside the Temporal workflow, which is M5 — the SDK is not a dependency yet and `services/worker` is a `doc.go` saying so. Calling GitHub inline would also put a network round trip inside the transaction that has to be atomic, and would break invariant 2. M4.2 writes the branch **intent**; M5 acts on it. `CreateBranch` therefore stays unused for one more unit.
+
+The name in that intent is still derived from the session id, for the reason M3.3 recorded: a name generated per attempt makes a retry create a second branch. Note that `domain.NewBranchName` cannot be reused as it stands — its suffix comes from `crypto/rand`, which is the non-determinism M3.3 rejected.
+
+**Open decision the unit must make and record:** an agent version is already immutable, so a separate policy snapshot either duplicates the pin or exists because a session's policy can be narrower than its agent's. Pick one with reasoning rather than creating a table because the architecture document lists a name.
 
 ## Open Questions
 
@@ -173,4 +181,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-15 — Unit M4.1 complete; the CodeRabbit and Greptile reviews are resolved and the fixes pushed. Next: M4.2, session creation.
+2026-09-15 — Unit M4.1 merged to main as 314a6c9. Both review rounds resolved. M4.2 specced in `context/features-specs/11-session-creation.md`; implementation not started.
