@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -24,7 +25,10 @@ var (
 	ErrAgentNameTaken = errors.New("an agent of that name already exists in this workspace")
 )
 
-// agentNameMaxLen matches the CHECK constraint in the migration.
+// agentNameMaxLen matches the CHECK constraint in the migration, and is
+// counted in characters for the same reason the task bounds are: PostgreSQL's
+// length() counts characters and Go's len() counts bytes, so counting bytes
+// here would refuse a name the column would have stored.
 const agentNameMaxLen = 80
 
 // Provider is the coding agent behind a profile.
@@ -165,7 +169,7 @@ func ValidateAgentName(name string) (string, error) {
 	switch {
 	case trimmed == "":
 		return "", fmt.Errorf("%w: a name is required", ErrInvalidAgent)
-	case len(trimmed) > agentNameMaxLen:
+	case utf8.RuneCountInString(trimmed) > agentNameMaxLen:
 		return "", fmt.Errorf("%w: a name may be at most %d characters", ErrInvalidAgent, agentNameMaxLen)
 	}
 	return trimmed, nil
@@ -182,7 +186,7 @@ func ValidateModel(model string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: a model is required", ErrInvalidAgent)
 	}
-	if len(trimmed) > 200 {
+	if utf8.RuneCountInString(trimmed) > 200 {
 		return "", fmt.Errorf("%w: a model identifier may be at most 200 characters", ErrInvalidAgent)
 	}
 	return trimmed, nil

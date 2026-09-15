@@ -33,9 +33,22 @@ CREATE TABLE tasks (
     -- Composite, so a task cannot reference another workspace's repository.
     -- Without it, workspace_id here would be an unchecked copy — and the copy
     -- is what every policy below reads.
+    --
+    -- NO ACTION, which is the default and is left implicit. `SET NULL
+    -- (repository_id)` was tried first and is wrong: it works for a draft but
+    -- a ready task's new NULL violates tasks_ready_has_repository below, so
+    -- the deletion aborts anyway — measured, deleting an installation raised
+    -- `new row for relation "tasks" violates check constraint`. That is the
+    -- same refusal NO ACTION gives, arrived at by accident and reported
+    -- against a row the caller was not touching. Nothing deletes a repository
+    -- today (a withdrawn grant sets `granted = false` and an uninstall sets
+    -- `deleted_at`), so the choice costs nothing now and forces whoever writes
+    -- that path later to decide what happens to the tasks rather than inherit
+    -- a guess. Deleting a workspace still cascades: the task row is gone
+    -- before the constraint is checked, verified against PostgreSQL.
     CONSTRAINT tasks_repository_fkey
         FOREIGN KEY (repository_id, workspace_id)
-        REFERENCES repositories (id, workspace_id) ON DELETE SET NULL (repository_id),
+        REFERENCES repositories (id, workspace_id),
     CONSTRAINT tasks_status_valid
         CHECK (status IN ('draft', 'ready', 'archived')),
     -- A task cannot be ready to run without naming what it runs against.

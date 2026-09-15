@@ -3,6 +3,7 @@ package workspaces
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,6 +108,94 @@ func TestAnUnknownCapabilityIsRefused(t *testing.T) {
 	}
 }
 
+// TestAViewerCanReadTasksAndAgents is the other half of the permission
+// decision, and the half a reviewer read as a missing check.
+//
+// Reads are governed by `workspace:read`, which every role holds, and not by
+// the permission that governs writing. A viewer exists to see a workspace's
+// work without changing it; gating these reads on `session:create` would have
+// hardened nothing and made the role blind to what it was invited to watch.
+// Asserted at the transport because that is where the answer is either 200 or
+// 403.
+func TestAViewerCanReadTasksAndAgents(t *testing.T) {
+	paths := map[string]string{
+		"tasks":  "/v1/workspaces/" + workspaceA.String() + "/tasks",
+		"agents": "/v1/workspaces/" + workspaceA.String() + "/agents",
+	}
+	for name, path := range paths {
+		t.Run(name, func(t *testing.T) {
+			rec := serveTask(t, domain.RoleViewer, http.MethodGet, path, "")
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200 for a viewer reading %s: %s",
+					rec.Code, name, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestATitleIsBoundedInCharactersNotBytes pins the bound the database and the
+// contract both use.
+//
+// PostgreSQL's length() counts characters and Go's len() counts bytes, so a
+// byte count here would refuse a title the column would have stored — and the
+// message would tell the caller they exceeded 200 characters while they were
+// nowhere near it. 200 CJK characters is 600 bytes.
+func TestATitleIsBoundedInCharactersNotBytes(t *testing.T) {
+	atTheLimit := strings.Repeat("漢", 200)
+	payload, err := json.Marshal(map[string]string{"title": atTheLimit})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec := serveTask(t, domain.RoleDeveloper, http.MethodPost,
+		"/v1/workspaces/"+workspaceA.String()+"/tasks", string(payload))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 for a 200-character title: %s", rec.Code, rec.Body.String())
+	}
+
+	overIt, err := json.Marshal(map[string]string{"title": strings.Repeat("漢", 201)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec = serveTask(t, domain.RoleDeveloper, http.MethodPost,
+		"/v1/workspaces/"+workspaceA.String()+"/tasks", string(overIt))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for a 201-character title", rec.Code)
+	}
+}
+
+// TestAToolPolicyMustBeAJSONObject checks the shape the contract promises.
+//
+// `json.RawMessage` accepts any JSON value and the `jsonb` column stores any
+// JSON value, so without this a policy could be stored as null, a number or an
+// array. It is opaque to this unit, which is why the shape has to be enforced
+// here: M7 interprets it, and finding a string there is finding it too late.
+func TestAToolPolicyMustBeAJSONObject(t *testing.T) {
+	refused := map[string]string{
+		"null":   `null`,
+		"array":  `[{"allow":"*"}]`,
+		"string": `"everything"`,
+		"number": `7`,
+	}
+	for name, policy := range refused {
+		t.Run(name, func(t *testing.T) {
+			rec := serveTask(t, domain.RoleOwner, http.MethodPost,
+				"/v1/workspaces/"+workspaceA.String()+"/agents",
+				`{"name":"a","provider":"fake","model":"m","tool_policy":`+policy+`}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 for a %s policy: %s",
+					rec.Code, name, rec.Body.String())
+			}
+		})
+	}
+
+	rec := serveTask(t, domain.RoleOwner, http.MethodPost,
+		"/v1/workspaces/"+workspaceA.String()+"/agents",
+		`{"name":"a","provider":"fake","model":"m","tool_policy":{"allow":["read"]}}`)
+	if rec.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 for an object policy: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // serveTask runs one request through the task and agent routes.
 func serveTask(t *testing.T, role domain.Role, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -117,7 +206,10 @@ func serveTask(t *testing.T, role domain.Role, method, path, body string) *httpt
 	handler.RegisterTasks(mux, application.NewTaskService(&fakeTasks{}))
 	handler.RegisterAgents(mux, application.NewAgentService(&fakeAgents{}))
 
-	var reader *strings.Reader
+	// Typed nil, not a nil interface, is what a `*strings.Reader` variable
+	// left unset would give httptest — which panics on it. No test passed an
+	// empty body until the read tests did.
+	var reader io.Reader
 	if body != "" {
 		reader = strings.NewReader(body)
 	}

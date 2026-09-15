@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -22,6 +23,12 @@ var (
 // in step. The database is the one that matters — a path that skips validation
 // still cannot write something unbounded — and these exist so the caller gets
 // a useful message rather than a constraint violation.
+//
+// Counted in characters, not bytes, because that is what the database counts:
+// PostgreSQL's length() counts characters, and the contract's maxLength does
+// too. Go's len() counts bytes, so using it here would reject a 60-emoji title
+// the column would have accepted — the caller refused for exceeding a limit
+// they are nowhere near.
 const (
 	taskTitleMaxLen = 200
 	taskBodyMaxLen  = 50000
@@ -84,7 +91,7 @@ func ValidateTaskTitle(title string) (string, error) {
 	switch {
 	case trimmed == "":
 		return "", fmt.Errorf("%w: a title is required", ErrInvalidTask)
-	case len(trimmed) > taskTitleMaxLen:
+	case utf8.RuneCountInString(trimmed) > taskTitleMaxLen:
 		return "", fmt.Errorf("%w: a title may be at most %d characters", ErrInvalidTask, taskTitleMaxLen)
 	}
 	return trimmed, nil
@@ -98,7 +105,7 @@ func ValidateTaskTitle(title string) (string, error) {
 // returned value disagree — after which nobody can tell what is actually
 // stored. It is bounded, and nothing else.
 func ValidateTaskBody(body string) (string, error) {
-	if len(body) > taskBodyMaxLen {
+	if utf8.RuneCountInString(body) > taskBodyMaxLen {
 		return "", fmt.Errorf("%w: a body may be at most %d characters", ErrInvalidTask, taskBodyMaxLen)
 	}
 	return body, nil

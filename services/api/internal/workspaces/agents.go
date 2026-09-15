@@ -157,7 +157,7 @@ func (a *agentRoutes) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agent, err := a.service.Get(ctx, membership.WorkspaceID, agentID)
+	agent, err := a.service.Get(ctx, membership, agentID)
 	if err != nil {
 		a.handler.writeError(ctx, w, err, "get agent")
 		return
@@ -174,7 +174,7 @@ func (a *agentRoutes) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agents, err := a.service.List(ctx, membership.WorkspaceID)
+	agents, err := a.service.List(ctx, membership)
 	if err != nil {
 		a.handler.writeError(ctx, w, err, "list agents")
 		return
@@ -202,7 +202,7 @@ func (a *agentRoutes) listVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	versions, err := a.service.ListVersions(ctx, membership.WorkspaceID, agentID)
+	versions, err := a.service.ListVersions(ctx, membership, agentID)
 	if err != nil {
 		a.handler.writeError(ctx, w, err, "list agent versions")
 		return

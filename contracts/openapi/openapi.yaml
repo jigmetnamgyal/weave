@@ -1070,6 +1070,12 @@ components:
             provider offers pause, structured tool calls or token accounting.
         tool_policy:
           type: object
+          # Open, and it has to be said explicitly: `type: object` with no
+          # properties and no additionalProperties generates
+          # `Record<string, never>`, a type permitting no keys at all — so the
+          # browser could neither send nor read a policy while the column
+          # holds arbitrary jsonb. The object is opaque, not empty.
+          additionalProperties: true
           description: |
             What the agent is allowed to do. Opaque until M7, and versioned
             because it is a security control: a session must be readable
@@ -1086,7 +1092,7 @@ components:
         capabilities:
           type: array
           items: { $ref: "#/components/schemas/Capability" }
-        tool_policy: { type: object }
+        tool_policy: { type: object, additionalProperties: true }
 
     Provider:
       type: string

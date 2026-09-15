@@ -652,7 +652,9 @@ export interface components {
              *     because it is a security control: a session must be readable
              *     against the policy it actually ran under.
              */
-            tool_policy: Record<string, never>;
+            tool_policy: {
+                [key: string]: unknown;
+            };
             /** Format: uuid */
             created_by: string;
             /** Format: date-time */
@@ -662,7 +664,9 @@ export interface components {
             provider: components["schemas"]["Provider"];
             model: string;
             capabilities?: components["schemas"]["Capability"][];
-            tool_policy?: Record<string, never>;
+            tool_policy?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * @description `fake` is a first-class provider, not a placeholder: a deterministic

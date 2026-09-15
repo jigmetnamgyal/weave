@@ -170,12 +170,32 @@ func (s *TaskService) Update(
 		})
 }
 
+// readPermission governs reading tasks and agent profiles.
+//
+// `workspace:read`, not the permission that governs writing them, and the
+// distinction is the whole point of having two. A viewer holds `workspace:read`
+// and not `session:create`: the role exists to see a workspace's work without
+// changing it, so gating these reads on the write permission would not harden
+// anything, it would make the viewer role blind to the work it was invited to
+// watch. Every role holds `workspace:read`, so this denies nobody today. It is
+// stated rather than left implicit because a read path that checks nothing
+// reads as an oversight, and because the next role added has to answer for it.
+const readPermission = domain.PermissionWorkspaceRead
+
 // Get returns one task.
-func (s *TaskService) Get(ctx context.Context, workspaceID, taskID uuid.UUID) (domain.Task, error) {
-	return s.tasks.Get(ctx, taskID, workspaceID)
+func (s *TaskService) Get(ctx context.Context, membership domain.Membership, taskID uuid.UUID) (domain.Task, error) {
+	if !membership.Can(readPermission) {
+		return domain.Task{}, fmt.Errorf("%w: %s requires %s",
+			ErrPermissionDenied, membership.Role, readPermission)
+	}
+	return s.tasks.Get(ctx, taskID, membership.WorkspaceID)
 }
 
 // List returns a workspace's tasks.
-func (s *TaskService) List(ctx context.Context, workspaceID uuid.UUID) ([]domain.Task, error) {
-	return s.tasks.List(ctx, workspaceID)
+func (s *TaskService) List(ctx context.Context, membership domain.Membership) ([]domain.Task, error) {
+	if !membership.Can(readPermission) {
+		return nil, fmt.Errorf("%w: %s requires %s",
+			ErrPermissionDenied, membership.Role, readPermission)
+	}
+	return s.tasks.List(ctx, membership.WorkspaceID)
 }

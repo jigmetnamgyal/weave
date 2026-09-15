@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
@@ -263,5 +264,74 @@ func TestTaskAndAgentTablesAreClosedWithoutContextIntegration(t *testing.T) {
 		if count != 0 {
 			t.Errorf("%s returned %d rows for another tenant's workspace, want 0", table, count)
 		}
+	}
+}
+
+// TestAReadyTaskDoesNotMakeAWorkspaceUndeletableIntegration pins the two
+// halves of the repository foreign key's behaviour.
+//
+// `ON DELETE SET NULL (repository_id)` was the first choice and was wrong: a
+// ready task's new NULL violates tasks_ready_has_repository, so the deletion
+// aborts anyway — the same refusal NO ACTION gives, reached by accident and
+// reported as a check-constraint violation on a row the caller never touched.
+// Both behaviours are asserted here because the pair is the point: deleting a
+// tenant must work, and deleting a repository out from under a live task must
+// not.
+func TestAReadyTaskDoesNotMakeAWorkspaceUndeletableIntegration(t *testing.T) {
+	pool := newPool(t)
+	installations := postgres.NewInstallationStore(pool)
+	tasks := postgres.NewTaskStore(pool)
+
+	owner := seedUser(t, pool)
+	workspace := seedWorkspace(t, pool, owner, "Ready Task Workspace")
+	installation := connectInstallation(t, installations, workspace, owner, nextGitHubID())
+	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{
+		UserID: owner.ID, WorkspaceID: workspace.ID,
+	})
+
+	if err := installations.Reconcile(ctx, installation.ID, workspace.ID,
+		domain.SelectionSelected, []domain.Repository{
+			{GitHubID: nextGitHubID(), Owner: "acme", Name: "ready", DefaultBranch: "main"},
+		}, domain.RequiredPermissions); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	repositories, err := installations.ListRepositories(ctx, workspace.ID)
+	if err != nil {
+		t.Fatalf("ListRepositories: %v", err)
+	}
+	if len(repositories) != 1 {
+		t.Fatalf("got %d repositories, want 1", len(repositories))
+	}
+	repository := repositories[0]
+
+	taskID, _ := domain.NewTaskID()
+	if _, err := tasks.Create(ctx, domain.Task{
+		ID: taskID, WorkspaceID: workspace.ID, RepositoryID: &repository.ID,
+		Title: "ready to run", Status: domain.TaskReady, CreatedBy: owner.ID,
+	}, application.Actor{UserID: owner.ID, Required: domain.PermissionSessionCreate},
+		application.AuditEvent{
+			WorkspaceID: workspace.ID, ActorUserID: owner.ID,
+			Action: application.AuditTaskCreated, Target: taskID.String(),
+		}); err != nil {
+		t.Fatalf("Create task: %v", err)
+	}
+
+	// Deleting the repository under a live task is refused, and the refusal
+	// names the task's foreign key rather than a constraint on a row the
+	// caller was not touching.
+	_, err = pool.Exec(context.Background(),
+		"DELETE FROM repositories WHERE id = $1", repository.ID)
+	if err == nil {
+		t.Fatal("deleting a repository a ready task references should be refused")
+	}
+	if !strings.Contains(err.Error(), "tasks_repository_fkey") {
+		t.Errorf("refusal does not name the foreign key, so the cause is unclear: %v", err)
+	}
+
+	// Deleting the workspace still works, which is what the cleanup in every
+	// other test depends on.
+	if _, err := pool.Exec(context.Background(),
+		"DELETE FROM workspaces WHERE id = $1", workspace.ID); err != nil {
+		t.Fatalf("a ready task made its workspace undeletable: %v", err)
 	}
 }

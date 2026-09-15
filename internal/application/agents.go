@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -204,23 +205,52 @@ func (s *AgentService) validate(
 	if len(policy) == 0 {
 		policy = []byte("{}")
 	}
+
+	// A policy must be a JSON object, checked here because nothing else
+	// checks it. The contract says object, but `json.RawMessage` accepts any
+	// JSON value and the `jsonb` column stores any JSON value, so `null`, a
+	// number or an array would be written and read back happily. The policy is
+	// opaque to this unit, which is exactly why the shape has to be enforced
+	// at the boundary: M7 is where it is interpreted, and discovering there
+	// that a stored policy is a string is discovering it too late.
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(policy, &object); err != nil || object == nil {
+		return "", "", "", nil, nil,
+			fmt.Errorf("%w: a tool policy must be a JSON object", domain.ErrInvalidAgent)
+	}
+
 	return validName, validProvider, validModel, validCapabilities, policy, nil
 }
 
 // Get returns one agent.
-func (s *AgentService) Get(ctx context.Context, workspaceID, agentID uuid.UUID) (domain.Agent, error) {
-	return s.agents.Get(ctx, agentID, workspaceID)
+//
+// Reads are governed by readPermission, for the reasoning recorded beside it
+// in tasks.go.
+func (s *AgentService) Get(ctx context.Context, membership domain.Membership, agentID uuid.UUID) (domain.Agent, error) {
+	if !membership.Can(readPermission) {
+		return domain.Agent{}, fmt.Errorf("%w: %s requires %s",
+			ErrPermissionDenied, membership.Role, readPermission)
+	}
+	return s.agents.Get(ctx, agentID, membership.WorkspaceID)
 }
 
 // List returns a workspace's agents.
-func (s *AgentService) List(ctx context.Context, workspaceID uuid.UUID) ([]domain.Agent, error) {
-	return s.agents.List(ctx, workspaceID)
+func (s *AgentService) List(ctx context.Context, membership domain.Membership) ([]domain.Agent, error) {
+	if !membership.Can(readPermission) {
+		return nil, fmt.Errorf("%w: %s requires %s",
+			ErrPermissionDenied, membership.Role, readPermission)
+	}
+	return s.agents.List(ctx, membership.WorkspaceID)
 }
 
 // ListVersions returns an agent's versions, newest first.
-func (s *AgentService) ListVersions(ctx context.Context, workspaceID, agentID uuid.UUID) ([]domain.AgentVersion, error) {
-	if _, err := s.agents.Get(ctx, agentID, workspaceID); err != nil {
+func (s *AgentService) ListVersions(ctx context.Context, membership domain.Membership, agentID uuid.UUID) ([]domain.AgentVersion, error) {
+	if !membership.Can(readPermission) {
+		return nil, fmt.Errorf("%w: %s requires %s",
+			ErrPermissionDenied, membership.Role, readPermission)
+	}
+	if _, err := s.agents.Get(ctx, agentID, membership.WorkspaceID); err != nil {
 		return nil, err
 	}
-	return s.agents.ListVersions(ctx, agentID, workspaceID)
+	return s.agents.ListVersions(ctx, agentID, membership.WorkspaceID)
 }

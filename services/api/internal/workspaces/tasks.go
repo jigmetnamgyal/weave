@@ -139,7 +139,7 @@ func (t *taskRoutes) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := t.service.Get(ctx, membership.WorkspaceID, taskID)
+	task, err := t.service.Get(ctx, membership, taskID)
 	if err != nil {
 		t.handler.writeError(ctx, w, err, "get task")
 		return
@@ -156,7 +156,7 @@ func (t *taskRoutes) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasks, err := t.service.List(ctx, membership.WorkspaceID)
+	tasks, err := t.service.List(ctx, membership)
 	if err != nil {
 		t.handler.writeError(ctx, w, err, "list tasks")
 		return
