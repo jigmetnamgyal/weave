@@ -228,17 +228,48 @@ func (fakeSessionTasks) Get(_ context.Context, taskID, workspaceID uuid.UUID) (d
 // assertion mean something: a store that rewrote the name would hide it.
 type fakeSessions struct{}
 
-func (fakeSessions) Create(
-	_ context.Context,
+func (f fakeSessions) Create(
+	ctx context.Context,
 	session domain.Session,
 	_ domain.SessionParticipant,
 	_ domain.SessionStateTransition,
 	_ application.OutboxEvent,
+	verifyTask func(domain.Task) error,
 	_ application.Actor,
 	_ application.AuditEvent,
 ) (domain.Session, error) {
+	// The fake runs the verification the real store runs against the locked
+	// row, so a handler that stopped passing it would fail here rather than
+	// pass while the check silently disappeared.
+	locked, err := fakeSessionTasks{}.Get(ctx, session.TaskID, session.WorkspaceID)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := verifyTask(locked); err != nil {
+		return domain.Session{}, err
+	}
 	session.Version = 1
 	return session, nil
+}
+
+func (fakeSessions) Transition(
+	_ context.Context,
+	sessionID, workspaceID uuid.UUID,
+	decide func(domain.Session) (domain.SessionStateTransition, error),
+	_ application.Actor,
+	_ func(domain.Session) application.AuditEvent,
+) (domain.Session, error) {
+	current := domain.Session{
+		ID: sessionID, WorkspaceID: workspaceID,
+		State: domain.SessionQueued, Version: 1,
+	}
+	transition, err := decide(current)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	current.State = transition.NextState
+	current.Version++
+	return current, nil
 }
 
 func (fakeSessions) Get(_ context.Context, sessionID, workspaceID uuid.UUID) (domain.Session, error) {

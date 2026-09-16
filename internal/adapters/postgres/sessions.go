@@ -48,6 +48,7 @@ func (s *SessionStore) Create(
 	participant domain.SessionParticipant,
 	transition domain.SessionStateTransition,
 	event application.OutboxEvent,
+	verifyTask func(domain.Task) error,
 	actor application.Actor,
 	audit application.AuditEvent,
 ) (domain.Session, error) {
@@ -58,6 +59,27 @@ func (s *SessionStore) Create(
 		// handler authorized from a snapshot and the actor may have been
 		// removed or demoted since.
 		if err := authorizeActor(ctx, q, session.WorkspaceID, actor); err != nil {
+			return err
+		}
+
+		// The task, locked and re-checked here rather than trusted from the
+		// read that chose it. That read was its own transaction and the PATCH
+		// route can commit in between, so without this a queued session could
+		// reference a task patched back to a draft, or carry a branch intent
+		// for a repository the task has since moved off. The composite
+		// foreign key does not catch either: it checks identity and
+		// workspace, never status.
+		locked, err := q.LockTaskForUpdate(ctx, postgresdb.LockTaskForUpdateParams{
+			ID:          session.TaskID,
+			WorkspaceID: session.WorkspaceID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrTaskNotFound
+			}
+			return fmt.Errorf("lock task: %w", err)
+		}
+		if err := verifyTask(taskToDomain(locked)); err != nil {
 			return err
 		}
 
@@ -127,6 +149,94 @@ func (s *SessionStore) Create(
 		return domain.Session{}, err
 	}
 	return created, nil
+}
+
+// Transition moves a session to another state and records the move.
+//
+// Lock, decide, write, append — all in one transaction. The decision is passed
+// in as a closure because the rules are the domain's: which state pairs are
+// legal, and whether the version the caller observed is still current. What
+// this contributes is that the row the closure inspects is the row the update
+// then writes, which is the only way "the version has not moved" can be true
+// when it is acted on.
+//
+// No HTTP route reaches this in M4.2. It exists because the alternative is an
+// insert-only transition query that looks like the way to record a move, which
+// would let M5 write immutable history for a transition the session never
+// actually made.
+func (s *SessionStore) Transition(
+	ctx context.Context,
+	sessionID, workspaceID uuid.UUID,
+	decide func(domain.Session) (domain.SessionStateTransition, error),
+	actor application.Actor,
+	audit func(domain.Session) application.AuditEvent,
+) (domain.Session, error) {
+	var moved domain.Session
+
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		if err := authorizeActor(ctx, q, workspaceID, actor); err != nil {
+			return err
+		}
+
+		locked, err := q.LockSessionForUpdate(ctx, postgresdb.LockSessionForUpdateParams{
+			ID:          sessionID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrSessionNotFound
+			}
+			return fmt.Errorf("lock session: %w", err)
+		}
+		current := sessionToDomain(locked)
+
+		transition, err := decide(current)
+		if err != nil {
+			return err
+		}
+
+		row, err := q.UpdateSessionState(ctx, postgresdb.UpdateSessionStateParams{
+			ID:          sessionID,
+			WorkspaceID: workspaceID,
+			State:       string(transition.NextState),
+			Version:     transition.ObservedVersion,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// The lock is held, so the row cannot have moved underneath
+				// this. Reaching here means the observed version never matched
+				// in the first place, which the closure should already have
+				// refused — treated as a conflict rather than a missing row so
+				// a caller is never told a session vanished.
+				return domain.ErrSessionVersionConflict
+			}
+			return translateSessionError(err)
+		}
+
+		previous := current.State
+		if _, err := q.AppendSessionTransition(ctx, postgresdb.AppendSessionTransitionParams{
+			ID:              transition.ID,
+			SessionID:       sessionID,
+			WorkspaceID:     workspaceID,
+			PreviousState:   nullableState(&previous),
+			NextState:       string(transition.NextState),
+			ObservedVersion: transition.ObservedVersion,
+			Reason:          transition.Reason,
+			ActorUserID:     nullableUUID(transition.ActorUserID),
+		}); err != nil {
+			return translateSessionError(err)
+		}
+
+		moved = sessionToDomain(row)
+		return appendAudit(ctx, q, audit(moved))
+	})
+	if err != nil {
+		// The zero session, for the reason Create returns one: the rollback
+		// has removed the state change, so handing back a moved session would
+		// describe something that did not happen.
+		return domain.Session{}, err
+	}
+	return moved, nil
 }
 
 // Get returns one session, scoped to the workspace in context.

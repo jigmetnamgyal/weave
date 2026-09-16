@@ -64,3 +64,22 @@ WHERE workspace_id = $1
   AND available_at <= now()
   AND (leased_until IS NULL OR leased_until < now())
 ORDER BY available_at, id;
+
+-- name: LockSessionForUpdate :one
+-- Taken before a state change. The version read here is the one the change is
+-- checked against, and holding the lock is what stops two transitions reading
+-- the same version and both believing they are current.
+SELECT * FROM sessions
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
+
+-- name: UpdateSessionState :one
+-- The version predicate is belt-and-braces behind LockSessionForUpdate: the
+-- lock already serialises writers, and this refuses to write at all if the row
+-- moved between the two — which is the thing that must never silently happen.
+UPDATE sessions
+SET state      = $3,
+    version    = version + 1,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND version = $4
+RETURNING *;

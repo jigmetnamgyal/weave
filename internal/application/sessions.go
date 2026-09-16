@@ -22,7 +22,13 @@ var (
 
 // Audit action names for sessions. Stable strings: operators query them and
 // they must not change meaning between releases.
-const AuditSessionCreated = "session.created"
+const (
+	AuditSessionCreated = "session.created"
+	// AuditSessionTransitioned records a state change. One action rather than
+	// one per state: an operator querying "what happened to this session"
+	// wants the sequence, and the states are in the detail.
+	AuditSessionTransitioned = "session.transitioned"
+)
 
 // Outbox topics. Stable strings for the same reason, and the consumer
 // dispatches on them — a rename is a new topic, not a changed meaning.
@@ -51,14 +57,34 @@ type SessionRepository interface {
 	// audit event and the outbox record in one transaction. All of it or none
 	// of it — a session with no promise attached is a session nothing will
 	// ever start.
+	//
+	// verifyTask is called with the task row locked inside that transaction.
+	// The check cannot be done above this: a task read in an earlier
+	// transaction can be patched back to a draft, or pointed at a different
+	// repository, before this one takes its locks — after which a queued
+	// session would reference a task that is no longer runnable, or carry a
+	// branch intent for a repository the task has moved off.
 	Create(
 		ctx context.Context,
 		session domain.Session,
 		participant domain.SessionParticipant,
 		transition domain.SessionStateTransition,
 		event OutboxEvent,
+		verifyTask func(domain.Task) error,
 		actor Actor,
 		audit AuditEvent,
+	) (domain.Session, error)
+	// Transition locks the session, hands it to decide, and writes the new
+	// state and the history row together. decide carries the domain rules —
+	// which pairs are legal and whether the observed version is current — and
+	// runs with the row locked, which is what makes "the version has not
+	// moved" true at the moment it is acted on.
+	Transition(
+		ctx context.Context,
+		sessionID, workspaceID uuid.UUID,
+		decide func(domain.Session) (domain.SessionStateTransition, error),
+		actor Actor,
+		audit func(domain.Session) AuditEvent,
 	) (domain.Session, error)
 	Get(ctx context.Context, sessionID, workspaceID uuid.UUID) (domain.Session, error)
 	List(ctx context.Context, workspaceID uuid.UUID) ([]domain.Session, error)
@@ -229,10 +255,32 @@ func (s *SessionService) Create(
 		Payload:     payload,
 	}
 
+	// Re-checked against the locked row, not against the one read above.
+	//
+	// The read that produced `task` happened in its own transaction, and the
+	// task PATCH route can commit between the two — this is the same shape as
+	// the lost update M4.1 fixed in TaskService.Update, arriving here in a
+	// different disguise. The closure runs with the row locked, so what it
+	// sees is what the session is about to reference.
+	verifyTask := func(locked domain.Task) error {
+		if locked.Status != domain.TaskReady {
+			return fmt.Errorf("%w: this task is %s", domain.ErrTaskNotRunnable, locked.Status)
+		}
+		// The repository is checked as well as the status, because the branch
+		// intent was derived from the earlier read. A task repointed at
+		// another repository would leave the session naming a branch to be cut
+		// somewhere the task no longer concerns.
+		if locked.RepositoryID == nil || *locked.RepositoryID != session.RepositoryID {
+			return fmt.Errorf("%w: its repository changed while the session was being created",
+				domain.ErrTaskNotRunnable)
+		}
+		return nil
+	}
+
 	// The audit detail names the task and the agent version, not the task
 	// body: an audit trail is read by operators and machinery that was not
 	// written expecting arbitrary untrusted text.
-	return s.sessions.Create(ctx, session, participant, transition, event,
+	return s.sessions.Create(ctx, session, participant, transition, event, verifyTask,
 		Actor{UserID: membership.UserID, Required: sessionPermission},
 		AuditEvent{
 			WorkspaceID: membership.WorkspaceID,
@@ -244,6 +292,92 @@ func (s *SessionService) Create(
 				"agent_version_id": version.ID.String(),
 				"branch_name":      branchName,
 			},
+		})
+}
+
+// TransitionSessionCommand is a request to move a session to another state.
+type TransitionSessionCommand struct {
+	SessionID uuid.UUID
+	To        domain.SessionState
+	// ObservedVersion is the version the caller read. The move is refused if
+	// the session has changed since — two callers acting on the same reading
+	// must not both succeed.
+	ObservedVersion int32
+	Reason          string
+}
+
+// Transition moves a session, refusing an illegal move or a stale reading.
+//
+// `session:control` rather than `session:create`: pausing, resuming and
+// cancelling are what this permission was written for, and the matrix already
+// separates the two. Nothing routes to this in M4.2 — M5's workflow is the
+// first caller — but the rules live here rather than in the workflow, because
+// a state machine enforced by its callers is enforced by whoever remembers to.
+func (s *SessionService) Transition(
+	ctx context.Context,
+	membership domain.Membership,
+	command TransitionSessionCommand,
+) (domain.Session, error) {
+	if !membership.Can(domain.PermissionSessionControl) {
+		return domain.Session{}, fmt.Errorf("%w: %s requires %s",
+			ErrPermissionDenied, membership.Role, domain.PermissionSessionControl)
+	}
+
+	reason, err := domain.ValidateTransitionReason(command.Reason)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if !command.To.Valid() {
+		return domain.Session{}, fmt.Errorf("%w: unknown state %q", domain.ErrInvalidSession, command.To)
+	}
+
+	transitionID, err := domain.NewTransitionID()
+	if err != nil {
+		return domain.Session{}, err
+	}
+
+	decide := func(current domain.Session) (domain.SessionStateTransition, error) {
+		// Version first. A caller acting on a stale reading may be asking for
+		// a move that is legal from the state they saw and wrong from the
+		// state the session is actually in, so refusing on the version says
+		// what went wrong more usefully than refusing on the pair would.
+		if current.Version != command.ObservedVersion {
+			return domain.SessionStateTransition{}, fmt.Errorf(
+				"%w: you read version %d and it is now %d",
+				domain.ErrSessionVersionConflict, command.ObservedVersion, current.Version)
+		}
+		// Terminal states need no special case: the table gives them no
+		// outgoing edges at all, which is invariant 10 stated as data rather
+		// than as a rule someone has to remember to check.
+		if !domain.CanTransition(current.State, command.To) {
+			return domain.SessionStateTransition{}, fmt.Errorf(
+				"%w: %s cannot become %s",
+				domain.ErrTransitionNotAllowed, current.State, command.To)
+		}
+		return domain.SessionStateTransition{
+			ID:              transitionID,
+			SessionID:       command.SessionID,
+			WorkspaceID:     membership.WorkspaceID,
+			NextState:       command.To,
+			ObservedVersion: command.ObservedVersion,
+			Reason:          reason,
+			ActorUserID:     &membership.UserID,
+		}, nil
+	}
+
+	return s.sessions.Transition(ctx, command.SessionID, membership.WorkspaceID, decide,
+		Actor{UserID: membership.UserID, Required: domain.PermissionSessionControl},
+		func(moved domain.Session) AuditEvent {
+			return AuditEvent{
+				WorkspaceID: membership.WorkspaceID,
+				ActorUserID: membership.UserID,
+				Action:      AuditSessionTransitioned,
+				Target:      command.SessionID.String(),
+				Detail: map[string]any{
+					"to":      string(moved.State),
+					"version": moved.Version,
+				},
+			}
 		})
 }
 

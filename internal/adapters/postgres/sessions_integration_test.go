@@ -140,7 +140,16 @@ func (f sessionFixture) createSession(
 			NextState: domain.SessionQueued, ObservedVersion: 1,
 			Reason: "session created", ActorUserID: &f.owner.ID,
 		},
-		event, f.actor, audit)
+		event, verifyTaskIsReady, f.actor, audit)
+}
+
+// verifyTaskIsReady is the check the service passes into Create, kept here so
+// every test exercises the same rule the production path does.
+func verifyTaskIsReady(locked domain.Task) error {
+	if locked.Status != domain.TaskReady {
+		return domain.ErrTaskNotRunnable
+	}
+	return nil
 }
 
 // TestCreatingASessionWritesEverythingTogetherIntegration is the success half
@@ -445,7 +454,7 @@ func TestASessionCannotPinAnotherWorkspacesRowsIntegration(t *testing.T) {
 					ID: eventID, WorkspaceID: mine.workspace.ID,
 					Topic: application.TopicSessionCreated, SubjectID: sessionID,
 				},
-				mine.actor,
+				verifyTaskIsReady, mine.actor,
 				application.AuditEvent{
 					WorkspaceID: mine.workspace.ID, ActorUserID: mine.owner.ID,
 					Action: application.AuditSessionCreated, Target: sessionID.String(),
@@ -462,5 +471,166 @@ func TestASessionCannotPinAnotherWorkspacesRowsIntegration(t *testing.T) {
 				t.Errorf("refusal for a borrowed %s was not translated: %v", name, err)
 			}
 		})
+	}
+}
+
+// TestATransitionAgainstAStaleVersionIsRefusedIntegration is the optimistic
+// concurrency the spec asks for, and it needs real PostgreSQL because the
+// version it checks is the one in the locked row.
+//
+// Two callers read version 1 and both act. The first moves the session and
+// takes it to version 2; the second is still holding 1 and must be refused,
+// or the second move would overwrite the first with nothing recording that it
+// happened — and the history row would claim a move the session never made.
+func TestATransitionAgainstAStaleVersionIsRefusedIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewSessionStore(pool)
+	fixture := seedSessionFixture(t, pool, "Session Transition Workspace")
+
+	session, err := fixture.createSession(t, store, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	controller := application.Actor{UserID: fixture.owner.ID, Required: domain.PermissionSessionControl}
+	audit := func(moved domain.Session) application.AuditEvent {
+		return application.AuditEvent{
+			WorkspaceID: fixture.workspace.ID, ActorUserID: fixture.owner.ID,
+			Action: application.AuditSessionTransitioned, Target: moved.ID.String(),
+		}
+	}
+	move := func(to domain.SessionState, observed int32) (domain.Session, error) {
+		transitionID, _ := domain.NewTransitionID()
+		return store.Transition(fixture.ctx, session.ID, fixture.workspace.ID,
+			func(current domain.Session) (domain.SessionStateTransition, error) {
+				if current.Version != observed {
+					return domain.SessionStateTransition{}, domain.ErrSessionVersionConflict
+				}
+				if !domain.CanTransition(current.State, to) {
+					return domain.SessionStateTransition{}, domain.ErrTransitionNotAllowed
+				}
+				return domain.SessionStateTransition{
+					ID: transitionID, SessionID: session.ID, WorkspaceID: fixture.workspace.ID,
+					NextState: to, ObservedVersion: observed, ActorUserID: &fixture.owner.ID,
+				}, nil
+			}, controller, audit)
+	}
+
+	moved, err := move(domain.SessionProvisioning, 1)
+	if err != nil {
+		t.Fatalf("first transition: %v", err)
+	}
+	if moved.State != domain.SessionProvisioning {
+		t.Errorf("state = %q, want provisioning", moved.State)
+	}
+	if moved.Version != 2 {
+		t.Errorf("version = %d, want 2 — a transition must advance it", moved.Version)
+	}
+
+	// The second caller, still holding version 1.
+	if _, err := move(domain.SessionRunning, 1); !errors.Is(err, domain.ErrSessionVersionConflict) {
+		t.Fatalf("stale transition = %v, want a version conflict", err)
+	}
+
+	// And nothing was written by the refused attempt: two rows would mean the
+	// history recorded a move that never happened.
+	transitions, err := store.ListTransitions(fixture.ctx, session.ID, fixture.workspace.ID)
+	if err != nil {
+		t.Fatalf("ListTransitions: %v", err)
+	}
+	if len(transitions) != 2 {
+		t.Fatalf("got %d transitions, want 2 (creation and the one move)", len(transitions))
+	}
+	if transitions[1].PreviousState == nil || *transitions[1].PreviousState != domain.SessionQueued {
+		t.Errorf("the move's previous_state is %v, want queued", transitions[1].PreviousState)
+	}
+
+	after, err := store.Get(fixture.ctx, session.ID, fixture.workspace.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if after.State != domain.SessionProvisioning || after.Version != 2 {
+		t.Errorf("session is %s at version %d; the refused move changed it",
+			after.State, after.Version)
+	}
+}
+
+// TestAnIllegalTransitionIsRefusedIntegration checks the table is consulted
+// against the locked row rather than against whatever the caller believed.
+func TestAnIllegalTransitionIsRefusedIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewSessionStore(pool)
+	fixture := seedSessionFixture(t, pool, "Session Illegal Move Workspace")
+
+	session, err := fixture.createSession(t, store, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	transitionID, _ := domain.NewTransitionID()
+	_, err = store.Transition(fixture.ctx, session.ID, fixture.workspace.ID,
+		func(current domain.Session) (domain.SessionStateTransition, error) {
+			// queued cannot become completed: work that never ran cannot have
+			// finished, and the table says so.
+			if !domain.CanTransition(current.State, domain.SessionCompleted) {
+				return domain.SessionStateTransition{}, domain.ErrTransitionNotAllowed
+			}
+			return domain.SessionStateTransition{
+				ID: transitionID, SessionID: session.ID, WorkspaceID: fixture.workspace.ID,
+				NextState: domain.SessionCompleted, ObservedVersion: current.Version,
+			}, nil
+		},
+		application.Actor{UserID: fixture.owner.ID, Required: domain.PermissionSessionControl},
+		func(domain.Session) application.AuditEvent {
+			return application.AuditEvent{
+				WorkspaceID: fixture.workspace.ID, ActorUserID: fixture.owner.ID,
+				Action: application.AuditSessionTransitioned, Target: session.ID.String(),
+			}
+		})
+	if !errors.Is(err, domain.ErrTransitionNotAllowed) {
+		t.Fatalf("queued -> completed = %v, want it refused", err)
+	}
+
+	transitions, err := store.ListTransitions(fixture.ctx, session.ID, fixture.workspace.ID)
+	if err != nil {
+		t.Fatalf("ListTransitions: %v", err)
+	}
+	if len(transitions) != 1 {
+		t.Errorf("got %d transitions, want only the creation row", len(transitions))
+	}
+}
+
+// TestASessionRefusesATaskPatchedOutOfReadinessIntegration is the race two
+// reviewers found, exercised.
+//
+// The task is read in one transaction and the session written in another, so a
+// PATCH can commit in between — the same shape as the lost update M4.1 fixed
+// in TaskService.Update, reappearing here in a different disguise. The check
+// runs against the locked row, so this fails before anything is written.
+func TestASessionRefusesATaskPatchedOutOfReadinessIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewSessionStore(pool)
+	fixture := seedSessionFixture(t, pool, "Session Stale Task Workspace")
+
+	// Exactly what happens if a PATCH lands between the service's read and the
+	// store's transaction.
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE tasks SET status = 'draft', repository_id = NULL WHERE id = $1",
+		fixture.task.ID); err != nil {
+		t.Fatalf("patch task back to draft: %v", err)
+	}
+
+	// The service read a ready task, so the caller still believes it is one.
+	if _, err := fixture.createSession(t, store, nil); !errors.Is(err, domain.ErrTaskNotRunnable) {
+		t.Fatalf("Create against a task patched to draft = %v, want it refused", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM sessions WHERE workspace_id = $1", fixture.workspace.ID).Scan(&count); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("a session was created for a task that is no longer ready")
 	}
 }

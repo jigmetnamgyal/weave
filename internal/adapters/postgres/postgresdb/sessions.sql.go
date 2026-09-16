@@ -383,3 +383,83 @@ func (q *Queries) ListSessionsForWorkspace(ctx context.Context, workspaceID uuid
 	}
 	return items, nil
 }
+
+const lockSessionForUpdate = `-- name: LockSessionForUpdate :one
+SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at FROM sessions
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockSessionForUpdateParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+// Taken before a state change. The version read here is the one the change is
+// checked against, and holding the lock is what stops two transitions reading
+// the same version and both believing they are current.
+func (q *Queries) LockSessionForUpdate(ctx context.Context, arg LockSessionForUpdateParams) (Session, error) {
+	row := q.db.QueryRow(ctx, lockSessionForUpdate, arg.ID, arg.WorkspaceID)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.TaskID,
+		&i.AgentVersionID,
+		&i.State,
+		&i.Version,
+		&i.RepositoryID,
+		&i.BranchName,
+		&i.BaseBranch,
+		&i.ContinuesID,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateSessionState = `-- name: UpdateSessionState :one
+UPDATE sessions
+SET state      = $3,
+    version    = version + 1,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND version = $4
+RETURNING id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at
+`
+
+type UpdateSessionStateParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	State       string
+	Version     int32
+}
+
+// The version predicate is belt-and-braces behind LockSessionForUpdate: the
+// lock already serialises writers, and this refuses to write at all if the row
+// moved between the two — which is the thing that must never silently happen.
+func (q *Queries) UpdateSessionState(ctx context.Context, arg UpdateSessionStateParams) (Session, error) {
+	row := q.db.QueryRow(ctx, updateSessionState,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.State,
+		arg.Version,
+	)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.TaskID,
+		&i.AgentVersionID,
+		&i.State,
+		&i.Version,
+		&i.RepositoryID,
+		&i.BranchName,
+		&i.BaseBranch,
+		&i.ContinuesID,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

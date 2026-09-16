@@ -121,6 +121,10 @@ type Querier interface {
 	// edits both read the same MAX(version) and one fails on the unique index —
 	// an error the caller can do nothing useful with.
 	LockAgentForUpdate(ctx context.Context, arg LockAgentForUpdateParams) (Agent, error)
+	// Taken before a state change. The version read here is the one the change is
+	// checked against, and holding the lock is what stops two transitions reading
+	// the same version and both believing they are current.
+	LockSessionForUpdate(ctx context.Context, arg LockSessionForUpdateParams) (Session, error)
 	// Read at the start of a patch, in the transaction that writes it.
 	//
 	// What makes a patch safe is that the read happens here rather than in an
@@ -179,6 +183,10 @@ type Querier interface {
 	// what makes that possible.
 	SetInstallationSuspended(ctx context.Context, arg SetInstallationSuspendedParams) (GithubInstallation, error)
 	SlugExists(ctx context.Context, slug string) (bool, error)
+	// The version predicate is belt-and-braces behind LockSessionForUpdate: the
+	// lock already serialises writers, and this refuses to write at all if the row
+	// moved between the two — which is the thing that must never silently happen.
+	UpdateSessionState(ctx context.Context, arg UpdateSessionStateParams) (Session, error)
 	// The body is written back exactly as given. Nothing here normalises it: the
 	// stored value and the returned value must agree, or nobody can tell what is
 	// actually stored.
