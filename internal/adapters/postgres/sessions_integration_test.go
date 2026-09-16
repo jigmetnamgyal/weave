@@ -634,3 +634,45 @@ func TestASessionRefusesATaskPatchedOutOfReadinessIntegration(t *testing.T) {
 		t.Errorf("a session was created for a task that is no longer ready")
 	}
 }
+
+// TestTheApplicationRoleCannotDeleteASessionIntegration is least privilege
+// where it protects an invariant rather than merely tidying a grant.
+//
+// Deleting a session cascades to session_state_transitions, and the
+// append-only trigger *permits* that cascade — deliberately, so a tenant stays
+// deletable. That makes DELETE on sessions a route to erasing history the
+// table exists to keep, with nothing raising an error along the way. Invariant
+// 10 says terminal history is immutable and reopening creates a linked
+// continuation, so the application has no reason to hold it.
+//
+// Asserted as weave_app, because the owner is a superuser locally and would
+// pass this while holding every privilege.
+func TestTheApplicationRoleCannotDeleteASessionIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	ctx := context.Background()
+
+	store := postgres.NewSessionStore(ownerPool)
+	fixture := seedSessionFixture(t, ownerPool, "Session Grant Workspace")
+	session, err := fixture.createSession(t, store, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	tx, err := appPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	setTenant(t, ctx, tx, fixture.owner.ID.String(), fixture.workspace.ID.String())
+
+	// Its own tenant context, so this is refused by the grant rather than by a
+	// policy matching nothing — which would pass for the wrong reason.
+	_, err = tx.Exec(ctx, "DELETE FROM sessions WHERE id = $1", session.ID)
+	if err == nil {
+		t.Fatal("weave_app deleted a session, which cascades to append-only history")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("the refusal was not a privilege error, so the grant may still be held: %v", err)
+	}
+}

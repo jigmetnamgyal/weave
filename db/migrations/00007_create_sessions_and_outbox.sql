@@ -315,7 +315,21 @@ CREATE TRIGGER session_state_transitions_no_truncate
 -- delivery log's.
 -- --------------------------------------------------------------------------
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON sessions, session_participants TO weave_app;
+-- No DELETE on sessions. Deleting one cascades to
+-- session_state_transitions, and the append-only trigger *permits* that
+-- cascade by design — so the grant would be a route to erasing history the
+-- table exists to keep, with nothing raising an error. Invariant 10 makes
+-- terminal history immutable and says reopening creates a linked continuation,
+-- so the application has no reason to delete a session and should not be able
+-- to. Nothing queries for one today.
+--
+-- This narrows one path rather than closing every one: weave_app still holds
+-- DELETE on workspaces from migration 00004, and that cascade reaches the same
+-- rows. Nothing deletes a workspace either, and revoking it is a change to
+-- another unit's grant with its own tests to re-run, so it is recorded rather
+-- than done here.
+GRANT SELECT, INSERT, UPDATE ON sessions TO weave_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON session_participants TO weave_app;
 GRANT SELECT, INSERT ON session_state_transitions TO weave_app;
 GRANT SELECT, INSERT, UPDATE ON outbox_events TO weave_app;
 
@@ -335,9 +349,6 @@ CREATE POLICY sessions_tenant_insert ON sessions FOR INSERT
 CREATE POLICY sessions_tenant_update ON sessions FOR UPDATE
     USING (workspace_id = weave_current_workspace_id())
     WITH CHECK (workspace_id = weave_current_workspace_id());
-CREATE POLICY sessions_tenant_delete ON sessions FOR DELETE
-    USING (workspace_id = weave_current_workspace_id());
-
 CREATE POLICY session_participants_tenant_read ON session_participants FOR SELECT
     USING (workspace_id = weave_current_workspace_id());
 CREATE POLICY session_participants_tenant_insert ON session_participants FOR INSERT
@@ -380,7 +391,6 @@ DROP POLICY IF EXISTS session_participants_tenant_delete ON session_participants
 DROP POLICY IF EXISTS session_participants_tenant_update ON session_participants;
 DROP POLICY IF EXISTS session_participants_tenant_insert ON session_participants;
 DROP POLICY IF EXISTS session_participants_tenant_read ON session_participants;
-DROP POLICY IF EXISTS sessions_tenant_delete ON sessions;
 DROP POLICY IF EXISTS sessions_tenant_update ON sessions;
 DROP POLICY IF EXISTS sessions_tenant_insert ON sessions;
 DROP POLICY IF EXISTS sessions_tenant_read ON sessions;
