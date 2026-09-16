@@ -1,16 +1,22 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useActionState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { setTaskReadyAction } from "@/app/actions/sessions";
+import { setTaskReadyAction, type FormState } from "@/app/actions/sessions";
+
+const initialState: FormState = {};
 
 /**
  * Move a task between draft and ready.
  *
- * The action is bound, not wrapped in a closure. A wrapped action leaves
- * `revalidatePath` invalidating the server cache while the router is never
- * told, which is how a working button came to look dead during M3.1.
+ * Bound into `useActionState`, not called from a click handler. The first
+ * version of this component did the latter — `startTransition(async () => …)`
+ * around the action — under a comment claiming it was bound. It would have
+ * updated the task and left the page showing the old status, which is the
+ * M3.1 defect exactly: the sync worked and the page did not move. Next
+ * re-renders the route only when the result arrives as an action response,
+ * and a closure does not produce one.
  */
 export function TaskReadyToggle({
   workspaceId,
@@ -23,8 +29,10 @@ export function TaskReadyToggle({
   ready: boolean;
   hasRepository: boolean;
 }) {
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string>();
+  const [state, action, pending] = useActionState<FormState, FormData>(
+    setTaskReadyAction.bind(null, workspaceId, taskId, !ready),
+    initialState
+  );
 
   // A ready task must name a repository. Saying so beats letting the API
   // refuse it, which would be correct and less useful.
@@ -35,25 +43,17 @@ export function TaskReadyToggle({
   }
 
   return (
-    <div className="shrink-0 text-right">
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={pending}
-        onClick={() =>
-          startTransition(async () => {
-            const result = await setTaskReadyAction(workspaceId, taskId, !ready);
-            setError(result.error);
-          })
-        }
-      >
+    <form action={action} className="shrink-0 text-right">
+      <Button type="submit" size="sm" variant="outline" disabled={pending}>
         {pending ? "Saving…" : ready ? "Back to draft" : "Mark ready"}
       </Button>
-      {error ? (
+      {state.error ? (
+        // role="alert" because this appears after the action returns; without
+        // a live region the failure is silent for anyone using a screen reader.
         <p role="alert" className="text-destructive mt-1 text-xs">
-          {error}
+          {state.error}
         </p>
       ) : null}
-    </div>
+    </form>
   );
 }

@@ -12,7 +12,7 @@ import {
 } from "@/lib/api";
 
 /** What each form reports back. */
-export type FormState = { error?: string; created?: string };
+export type FormState = { error?: string; created?: string; note?: string };
 
 /**
  * Create a task.
@@ -52,11 +52,20 @@ export async function createTaskAction(
   return { created: result.data.id };
 }
 
-/** Mark a draft task ready, or send a ready one back to draft. */
+/**
+ * Mark a draft task ready, or send a ready one back to draft.
+ *
+ * Shaped as a form action — `(previous, formData)` after the bound arguments —
+ * so the caller can bind it into `useActionState` rather than calling it from
+ * a click handler. Next only re-renders the route when the result comes back
+ * as an action response, and a closure around the action does not produce one.
+ */
 export async function setTaskReadyAction(
   workspaceId: string,
   taskId: string,
-  ready: boolean
+  ready: boolean,
+  _previous: FormState,
+  _formData: FormData
 ): Promise<FormState> {
   // Only `status` is sent. This is a PATCH and everything omitted is left
   // alone, so the title and the body are untouched — which is the point of
@@ -95,7 +104,13 @@ export async function createAgentAction(
   if (!result.ok) return { error: result.message };
 
   revalidatePath(`/workspaces/${workspaceId}/agents`);
-  return { created: result.data.id };
+  // The version number is worth saying back: editing this profile later writes
+  // a second version rather than changing this one, and the count is the
+  // clearest way to see that happen.
+  return {
+    created: result.data.agent.id,
+    note: `${result.data.agent.name} created at version ${result.data.version.version}.`,
+  };
 }
 
 /** Start a session from a ready task and an agent version. */

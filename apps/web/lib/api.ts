@@ -353,7 +353,7 @@ export async function createTask(
   workspaceId: string,
   input: { title: string; body?: string; repository_id?: string; status?: TaskStatus }
 ): Promise<Result<Task>> {
-  return apiRequest<Task>(`/v1/workspaces/${workspaceId}/tasks`, {
+  return apiRequest<Ok<"createTask">>(`/v1/workspaces/${workspaceId}/tasks`, {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -371,7 +371,7 @@ export async function updateTask(
   taskId: string,
   patch: { title?: string; body?: string; repository_id?: string | null; status?: TaskStatus }
 ): Promise<Result<Task>> {
-  return apiRequest<Task>(`/v1/workspaces/${workspaceId}/tasks/${taskId}`, {
+  return apiRequest<Ok<"updateTask">>(`/v1/workspaces/${workspaceId}/tasks/${taskId}`, {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
@@ -383,12 +383,21 @@ export async function fetchAgents(workspaceId: string): Promise<Result<Agent[]>>
   return result.ok ? { ok: true, data: result.data.items } : result;
 }
 
-/** Create an agent profile and its first version. */
+/**
+ * Create an agent profile and its first version.
+ *
+ * Returns both, because the response carries both: creating a profile also
+ * creates the version a session would pin, and the version number is the
+ * thing worth showing back. Asserting a bare `Agent` here compiled and read
+ * `id` off an object that has no `id` — which is precisely the unchecked
+ * assertion the generated types exist to prevent, so every wrapper in this
+ * file states its operation rather than its shape.
+ */
 export async function createAgent(
   workspaceId: string,
   input: { name: string; provider: Provider; model: string; capabilities?: Capability[] }
-): Promise<Result<Agent>> {
-  return apiRequest<Agent>(`/v1/workspaces/${workspaceId}/agents`, {
+): Promise<Result<{ agent: Agent; version: AgentVersion }>> {
+  return apiRequest<Ok<"createAgent">>(`/v1/workspaces/${workspaceId}/agents`, {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -416,7 +425,7 @@ export async function fetchSession(
   workspaceId: string,
   sessionId: string
 ): Promise<Result<Session>> {
-  return apiRequest<Session>(`/v1/workspaces/${workspaceId}/sessions/${sessionId}`);
+  return apiRequest<Ok<"getSession">>(`/v1/workspaces/${workspaceId}/sessions/${sessionId}`);
 }
 
 /** A session's state history, oldest first. */
@@ -446,7 +455,7 @@ export async function createSession(
   workspaceId: string,
   input: { task_id: string; agent_version_id: string; base_branch?: string }
 ): Promise<Result<Session>> {
-  return apiRequest<Session>(`/v1/workspaces/${workspaceId}/sessions`, {
+  return apiRequest<Ok<"createSession">>(`/v1/workspaces/${workspaceId}/sessions`, {
     method: "POST",
     body: JSON.stringify(input),
   });

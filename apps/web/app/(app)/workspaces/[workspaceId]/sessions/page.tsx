@@ -1,5 +1,7 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StartSessionForm } from "@/components/start-session-form";
 import { fetchAgents, fetchSessions, fetchTasks, fetchWorkspaces } from "@/lib/api";
@@ -90,7 +92,14 @@ export default async function SessionsPage({
                       v{session.version}
                     </span>
                     <span className="text-muted-foreground text-xs">
-                      {new Date(session.created_at).toLocaleString()}
+                      {/* UTC, named. This renders on the server, so
+                          `toLocaleString()` with no arguments would use the
+                          server's locale and zone and present them as the
+                          reader's, with nothing saying which zone was meant. */}
+                      {new Date(session.created_at).toLocaleString("en-GB", {
+                        timeZone: "UTC",
+                        timeZoneName: "short",
+                      })}
                     </span>
                   </div>
                   {/* Said plainly, because the name reads like a link and is
@@ -109,6 +118,16 @@ export default async function SessionsPage({
                   ) : (
                     <p className="text-muted-foreground text-xs">terminal — nothing follows</p>
                   )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    nativeButton={false}
+                    render={
+                      <Link href={`/workspaces/${workspaceId}/sessions/${session.id}`}>
+                        Participants and history
+                      </Link>
+                    }
+                  />
                 </li>
               ))}
             </ul>
