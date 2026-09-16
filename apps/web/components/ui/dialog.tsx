@@ -1,37 +1,34 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
-import { cn } from "cn"
+import * as React from "react";
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
+import { cn } from "cn";
 
-import { Button } from "@/components/ui/button"
-import { XIcon } from "lucide-react"
+import { Button } from "@/components/ui/button";
+import { XIcon } from "lucide-react";
 
 /** Provides dialog state and interaction context to its descendants. */
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+  return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
 
 /** Renders the control that opens its associated dialog. */
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
-  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />
+  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
 }
 
 /** Mounts dialog content outside the surrounding document flow. */
 function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
 }
 
 /** Renders a control that closes its associated dialog. */
 function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
-  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
+  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
 
 /** Renders the modal backdrop behind dialog content. */
-function DialogOverlay({
-  className,
-  ...props
-}: DialogPrimitive.Backdrop.Props) {
+function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) {
   return (
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
@@ -41,7 +38,7 @@ function DialogOverlay({
       )}
       {...props}
     />
-  )
+  );
 }
 
 /** Composes the dialog portal, backdrop, content surface, and optional close button. */
@@ -51,7 +48,7 @@ function DialogContent({
   showCloseButton = true,
   ...props
 }: DialogPrimitive.Popup.Props & {
-  showCloseButton?: boolean
+  showCloseButton?: boolean;
 }) {
   return (
     <DialogPortal>
@@ -68,33 +65,22 @@ function DialogContent({
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
-            render={
-              <Button
-                variant="ghost"
-                className="absolute top-2 right-2"
-                size="icon-sm"
-              />
-            }
+            render={<Button variant="ghost" className="absolute top-2 right-2" size="icon-sm" />}
           >
-            <XIcon
-            />
+            <XIcon />
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>
     </DialogPortal>
-  )
+  );
 }
 
 /** Groups a dialog's title and description. */
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
-    <div
-      data-slot="dialog-header"
-      className={cn("flex flex-col gap-2", className)}
-      {...props}
-    />
-  )
+    <div data-slot="dialog-header" className={cn("flex flex-col gap-2", className)} {...props} />
+  );
 }
 
 /** Arranges dialog actions and can provide a standard close action. */
@@ -104,7 +90,7 @@ function DialogFooter({
   children,
   ...props
 }: React.ComponentProps<"div"> & {
-  showCloseButton?: boolean
+  showCloseButton?: boolean;
 }) {
   return (
     <div
@@ -117,12 +103,10 @@ function DialogFooter({
     >
       {children}
       {showCloseButton && (
-        <DialogPrimitive.Close render={<Button variant="outline" />}>
-          Close
-        </DialogPrimitive.Close>
+        <DialogPrimitive.Close render={<Button variant="outline" />}>Close</DialogPrimitive.Close>
       )}
     </div>
-  )
+  );
 }
 
 /** Renders the accessible title for a dialog. */
@@ -130,20 +114,14 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn(
-        "font-heading text-base leading-none font-medium",
-        className
-      )}
+      className={cn("font-heading text-base leading-none font-medium", className)}
       {...props}
     />
-  )
+  );
 }
 
 /** Renders the accessible supporting description for a dialog. */
-function DialogDescription({
-  className,
-  ...props
-}: DialogPrimitive.Description.Props) {
+function DialogDescription({ className, ...props }: DialogPrimitive.Description.Props) {
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
@@ -153,7 +131,7 @@ function DialogDescription({
       )}
       {...props}
     />
-  )
+  );
 }
 
 export {
@@ -167,4 +145,4 @@ export {
   DialogPortal,
   DialogTitle,
   DialogTrigger,
-}
+};

@@ -1,8 +1,8 @@
-"use client"
+"use client";
 
-import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
-import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "cn"
+import { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
+import { cva, type VariantProps } from "class-variance-authority";
+import { cn } from "cn";
 
 /** Provides selection state and orientation styling for a group of tabs. */
 // Deviation from the generated shadcn source: `orientation` is destructured out
@@ -10,23 +10,16 @@ import { cn } from "cn"
 // sees it — vertical tabs get the right styling but horizontal arrow-key
 // navigation and `aria-orientation`. Forwarding it fixes both. Re-apply this if
 // the component is ever regenerated.
-function Tabs({
-  className,
-  orientation = "horizontal",
-  ...props
-}: TabsPrimitive.Root.Props) {
+function Tabs({ className, orientation = "horizontal", ...props }: TabsPrimitive.Root.Props) {
   return (
     <TabsPrimitive.Root
       data-slot="tabs"
       orientation={orientation}
       data-orientation={orientation}
-      className={cn(
-        "group/tabs flex gap-2 data-horizontal:flex-col",
-        className
-      )}
+      className={cn("group/tabs flex gap-2 data-horizontal:flex-col", className)}
       {...props}
     />
-  )
+  );
 }
 
 const tabsListVariants = cva(
@@ -42,7 +35,7 @@ const tabsListVariants = cva(
       variant: "default",
     },
   }
-)
+);
 
 /** Groups tab triggers using the selected visual variant. */
 function TabsList({
@@ -57,7 +50,7 @@ function TabsList({
       className={cn(tabsListVariants({ variant }), className)}
       {...props}
     />
-  )
+  );
 }
 
 /** Renders a control that selects its associated tab panel. */
@@ -74,7 +67,7 @@ function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
       )}
       {...props}
     />
-  )
+  );
 }
 
 /** Renders the panel associated with an active tab. */
@@ -85,7 +78,7 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
       className={cn("flex-1 text-sm outline-none", className)}
       {...props}
     />
-  )
+  );
 }
 
-export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }
+export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants };

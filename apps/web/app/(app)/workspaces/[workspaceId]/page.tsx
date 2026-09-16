@@ -9,9 +9,8 @@ import { fetchWorkspaces } from "@/lib/api";
 /**
  * A single workspace.
  *
- * Placeholder for the application shell that arrives with repositories and
- * sessions. It exists now so the workspace list has somewhere to lead, and so
- * the header has a current workspace to display.
+ * The workspace's landing page: what the caller may do here, which GitHub
+ * accounts are connected, and the way in to tasks, agents and sessions.
  *
  * The workspace is resolved from the caller's own list rather than fetched by
  * identifier, which means an identifier for a workspace the caller does not
@@ -75,11 +74,32 @@ export default async function WorkspacePage({ params }: PageProps<"/workspaces/[
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Repositories and sessions</CardTitle>
+          <CardTitle className="text-base">Work</CardTitle>
           <CardDescription>
-            Connecting a repository arrives with the GitHub App, and sessions after it.
+            A task describes what needs doing, an agent describes what will attempt it, and a
+            session is one running against the other.
           </CardDescription>
         </CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            nativeButton={false}
+            render={<Link href={`/workspaces/${workspace.id}/tasks`}>Tasks</Link>}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            nativeButton={false}
+            render={<Link href={`/workspaces/${workspace.id}/agents`}>Agents</Link>}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            nativeButton={false}
+            render={<Link href={`/workspaces/${workspace.id}/sessions`}>Sessions</Link>}
+          />
+        </CardContent>
       </Card>
     </main>
   );
