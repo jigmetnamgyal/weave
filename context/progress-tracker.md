@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M3 complete; M4.1 and M4.2 merged; M4.3 complete in code, awaiting the signed-in browser walk
+- Status: M4 complete in code; M5 split into six units, M5.0 specced and next
 
 ## Current Goal
 
@@ -50,23 +50,27 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-M4.3 is written and every local gate passes; the signed-in browser walk it exists for has not been done, because it needs a GitHub sign-in only the operator can perform. That is the same gap M2.2, M2.3 and M3.0 carried, and the 2026-09-11 walk is what closed those.
+M5.0 is specced and not started. M4.3 merged to main as d99af91 after one review round and six findings; the signed-in browser walk it exists for has still not been done, because it needs a GitHub sign-in only the operator can perform. That is the same gap M2.2, M2.3 and M3.0 carried, and the 2026-09-11 walk is what closed those.
 
 ## Next Up
 
-### Unit M5 — Durable Session Workflow
+### M5, split into six units
 
-Follows M4.2, and is where the promises M4.2 writes are finally kept. `services/worker` is still a `doc.go`; the Temporal SDK is not a dependency yet.
+M5's line is "durable session workflow, runner manager, isolated runner, and fake provider adapter" — four deployment units and a security boundary. M3 was split into four units for less, and M4 into three.
 
-**It owes three things M4.2 deliberately left undone.**
+**A correction to this file's own gating, found while planning.** Three Open Questions below are marked "Required before M5": runner isolation technology, source retention, and the default egress policy. That is too coarse. **None of them blocks M5.0 through M5.3** — idempotency, the publisher, the workflow and the event pipeline touch no sandbox. They block **M5.4**, where a runner is actually provisioned. The questions are re-gated accordingly, so the milestone is not held up by decisions its first four units do not need.
 
-The **outbox publisher**: rows accumulate now with nothing draining them. The claim protocol is designed and documented in `db/migrations/00007_create_sessions_and_outbox.sql` — a lease with an expiry, claimed by one conditional `UPDATE ... RETURNING` — and it is **unexercised**. Nothing has watched a lease expire or two claimers race, so M5 owes a test for each before the publisher is trusted. `ListPendingOutboxEvents` shows what a claimer would find; it does not claim.
+**M5.0 — Idempotency keys.** Specced in `context/features-specs/13-idempotency-keys.md`. The gate M4.2's review put in front of everything else: today a lost response on `POST /sessions` duplicates a row, and the moment M5.1 exists the same retry starts two workflows and cuts two branches. The mechanism is built generally and applied to `createSession` only — most of the other nine mutations are already idempotent for reasons worth keeping rather than overriding.
 
-**The first real call to `CreateBranch`**, from the workflow rather than from a handler. M3.3 built it, M4.2 wrote the intent, and nothing has yet cut a branch in a real repository — so `CreateBranch` remains unverified against GitHub as well as unused.
+**M5.1 — The outbox publisher and the first workflow.** Temporal arrives: the SDK is not yet a dependency and `services/worker` is still a `doc.go`. The publisher claims outbox rows and starts a workflow keyed by session id. **This unit owes the two tests M4.2 could not write** — a lease that expires after a publisher dies, and two claimers racing for one row. That protocol is designed, documented in migration 00007, and has never been exercised. The workflow itself does the minimum: move the session `queued → provisioning` and back, so the loop is proven before anything external is in it. It also travels the first of the fifteen transitions M4.2 decided and never used.
 
-**The transitions.** M4.2 built the whole sixteen-state table and exercises exactly one edge: creation into `queued`. Every other edge is decided and untravelled.
+**M5.2 — Branch creation in the workflow.** The first real call to `CreateBranch`, as an activity with bounded retries. **Closes the oldest outstanding gap in the project**: M3.3 shipped in September and no branch has ever been created against a real repository. The branch name is already decided and stored by M4.2, derived from the session id precisely so a retried activity finds the branch it made rather than cutting a second.
 
-Also in M5's line: quota (architecture step 3), the runner manager, the isolated runner, and the fake provider adapter.
+**M5.3 — Event contracts and ingestion.** `contracts/events` is a placeholder that names M5 as its occupant. Schemas, NATS JetStream, and the ingestor that validates, deduplicates, sequences and persists. Needed before a runner has anywhere to send anything, and separate from the runner because at-least-once delivery and ordering are their own problem.
+
+**M5.4 — Runner manager and the isolated runner.** The security boundary, and the unit the three Open Questions actually gate. `context/architecture.md` is specific and unusually long here — one ephemeral sandbox per session, read-only base image, non-root, dropped capabilities, gVisor or microVM, deny-by-default egress, no host Docker socket. Expect this to need splitting again once it is specced properly.
+
+**M5.5 — The fake provider adapter.** Deterministic, and a first-class provider rather than a placeholder: the Session Notes require it so orchestration, events and approvals are verified before a paid provider is wired in. It is what makes the whole chain demonstrable.
 
 ## Open Questions
 
@@ -88,10 +92,10 @@ Resolve these before the milestone that depends on them:
 
 1. **Commercial name:** confirm trademark and domain viability for “Weave.” Required before public launch, not before engineering foundation.
 2. ~~**Identity provider**~~ — **Resolved 2026-09-10: Clerk**, behind the OIDC/JWT boundary, for authentication only. Clerk Organizations is explicitly not used; workspaces, membership and every permission decision stay in PostgreSQL, because two sources of truth for authorization is how tenant isolation breaks. Chosen over Auth.js because the Next.js/Go split needs a token the Go service can verify via JWKS, and hand-rolling that issuance is custom crypto across a security boundary; chosen over WorkOS because SAML and SCIM are deferred. See ADR-009. **Still outstanding:** confirm current Clerk pricing against projected workspace count — seats are billed per user while Weave bills per workspace, so model the mismatch before launch, not before M2.1.
-3. **Runner isolation:** select managed microVM provider versus Kubernetes with gVisor/Firecracker based on team operations capacity, region availability, cold-start target, and cost. Required before M5.
+3. **Runner isolation:** select managed microVM provider versus Kubernetes with gVisor/Firecracker based on team operations capacity, region availability, cold-start target, and cost. **Required before M5.4**, not before M5 — the publisher, workflow and event pipeline provision nothing.
 4. **Provider licensing and automation:** confirm current Claude Code and Codex terms, authentication flows, headless interfaces, redistribution constraints, and organization billing. Required before production adapters in M6/M8.
-5. **Source retention:** decide whether repository snapshots are retained after session completion or deleted while retaining patches/logs. Required before M5.
-6. **Default egress policy:** define minimum domains for language package registries and repository builds, including whether customers configure allowlists. Required before M5.
+5. **Source retention:** decide whether repository snapshots are retained after session completion or deleted while retaining patches/logs. **Required before M5.4**, when a checkout first exists.
+6. **Default egress policy:** define minimum domains for language package registries and repository builds, including whether customers configure allowlists. **Required before M5.4**, when there is first a sandbox to police.
 7. **Approval defaults:** confirm which commands and tools are auto-allowed for the first repository types. Required before M7.
 8. **Initial hosting region:** choose based on customer location, isolated-compute availability, provider connectivity, and data policy. Required before staging.
 9. **Pricing units:** choose included agent time, provider pass-through, or customer-supplied provider account. Required before M8/M9.
@@ -197,4 +201,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-16 — Unit M4.3 written: tasks, agents and sessions are reachable from the browser, and every local gate passes. **Outstanding: the signed-in walk the unit exists for**, which needs a GitHub sign-in only the operator can perform. Then M5: the durable session workflow, which owes the outbox publisher, idempotency, the first real call to `CreateBranch`, and the fifteen state transitions M4.2 decided but never travelled.
+2026-09-16 — M4 complete in code. M5 split into six units and M5.0 specced (`context/features-specs/13-idempotency-keys.md`). The three Open Questions marked "before M5" are re-gated to M5.4, which is the first unit that provisions anything. **Still outstanding: the M4.3 browser walk**, which needs a GitHub sign-in only the operator can perform.
