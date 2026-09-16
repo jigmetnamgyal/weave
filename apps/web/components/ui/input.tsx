@@ -1,6 +1,6 @@
-import * as React from "react"
-import { Input as InputPrimitive } from "@base-ui/react/input"
-import { cn } from "cn"
+import * as React from "react";
+import { Input as InputPrimitive } from "@base-ui/react/input";
+import { cn } from "cn";
 
 /** Renders a styled text-compatible input control. */
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
@@ -14,7 +14,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       )}
       {...props}
     />
-  )
+  );
 }
 
-export { Input }
+export { Input };

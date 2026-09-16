@@ -58,6 +58,43 @@ export type Workspace = Schemas["Workspace"];
 /** A workspace member. */
 export type Member = Schemas["Member"];
 
+/** A unit of work someone wants done. */
+export type Task = Schemas["Task"];
+
+/** Where a task sits between being written and being run. */
+export type TaskStatus = Schemas["TaskStatus"];
+
+/** An agent profile: identity and the settings currently in use. */
+export type Agent = Schemas["Agent"];
+
+/** The frozen settings an agent runs under. */
+export type AgentVersion = Schemas["AgentVersion"];
+
+/** The coding agent behind a profile. */
+export type Provider = Schemas["Provider"];
+
+/** Something a provider may or may not support. */
+export type Capability = Schemas["Capability"];
+
+/**
+ * A run of an agent against a task.
+ *
+ * `branch_name` names a branch that does not exist yet — M5's workflow
+ * creates it. `next_states` comes from the server's transition table rather
+ * than a second copy of the state machine here, for the reason `permissions`
+ * is served: two statements of one rule drift.
+ */
+export type Session = Schemas["Session"];
+
+/** Where a session sits in its lifecycle. */
+export type SessionState = Schemas["SessionState"];
+
+/** One recorded move between states. */
+export type SessionTransition = Schemas["SessionTransition"];
+
+/** Someone taking part in a session. */
+export type SessionParticipant = Schemas["SessionParticipant"];
+
 /** An invitation to join a workspace. Never carries the token. */
 export type Invitation = Schemas["Invitation"];
 
@@ -297,6 +334,122 @@ export async function fetchRepositories(workspaceId: string): Promise<Result<Rep
     `/v1/workspaces/${workspaceId}/repositories`
   );
   return result.ok ? { ok: true, data: result.data.repositories } : result;
+}
+
+/** A workspace's tasks, newest first. */
+export async function fetchTasks(workspaceId: string): Promise<Result<Task[]>> {
+  const result = await apiRequest<Ok<"listTasks">>(`/v1/workspaces/${workspaceId}/tasks`);
+  // `items` here and `sessions` below, because that is what the contract says.
+  // The envelope key is inconsistent across the API — six operations use
+  // `items` and four use a named key — which this unit is the first code to
+  // consume all of and therefore the first to notice. Recorded in the tracker
+  // rather than fixed here: aligning them touches ten operations, their
+  // handlers and their tests, which is not a change to make inside a UI unit.
+  return result.ok ? { ok: true, data: result.data.items } : result;
+}
+
+/** Create a task. */
+export async function createTask(
+  workspaceId: string,
+  input: { title: string; body?: string; repository_id?: string; status?: TaskStatus }
+): Promise<Result<Task>> {
+  return apiRequest<Task>(`/v1/workspaces/${workspaceId}/tasks`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * Change some of a task's fields.
+ *
+ * A partial update: whatever is omitted is left alone, and only
+ * `repository_id` accepts `null` — which is how a ready task returns to a
+ * draft naming nothing. Sending `{}` is a no-op rather than a way to clear it.
+ */
+export async function updateTask(
+  workspaceId: string,
+  taskId: string,
+  patch: { title?: string; body?: string; repository_id?: string | null; status?: TaskStatus }
+): Promise<Result<Task>> {
+  return apiRequest<Task>(`/v1/workspaces/${workspaceId}/tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** A workspace's agent profiles. */
+export async function fetchAgents(workspaceId: string): Promise<Result<Agent[]>> {
+  const result = await apiRequest<Ok<"listAgents">>(`/v1/workspaces/${workspaceId}/agents`);
+  return result.ok ? { ok: true, data: result.data.items } : result;
+}
+
+/** Create an agent profile and its first version. */
+export async function createAgent(
+  workspaceId: string,
+  input: { name: string; provider: Provider; model: string; capabilities?: Capability[] }
+): Promise<Result<Agent>> {
+  return apiRequest<Agent>(`/v1/workspaces/${workspaceId}/agents`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** An agent's versions, newest first. */
+export async function fetchAgentVersions(
+  workspaceId: string,
+  agentId: string
+): Promise<Result<AgentVersion[]>> {
+  const result = await apiRequest<Ok<"listAgentVersions">>(
+    `/v1/workspaces/${workspaceId}/agents/${agentId}/versions`
+  );
+  return result.ok ? { ok: true, data: result.data.items } : result;
+}
+
+/** A workspace's sessions, newest first. */
+export async function fetchSessions(workspaceId: string): Promise<Result<Session[]>> {
+  const result = await apiRequest<Ok<"listSessions">>(`/v1/workspaces/${workspaceId}/sessions`);
+  return result.ok ? { ok: true, data: result.data.sessions } : result;
+}
+
+/** One session. */
+export async function fetchSession(
+  workspaceId: string,
+  sessionId: string
+): Promise<Result<Session>> {
+  return apiRequest<Session>(`/v1/workspaces/${workspaceId}/sessions/${sessionId}`);
+}
+
+/** A session's state history, oldest first. */
+export async function fetchSessionTransitions(
+  workspaceId: string,
+  sessionId: string
+): Promise<Result<SessionTransition[]>> {
+  const result = await apiRequest<Ok<"listSessionTransitions">>(
+    `/v1/workspaces/${workspaceId}/sessions/${sessionId}/transitions`
+  );
+  return result.ok ? { ok: true, data: result.data.transitions } : result;
+}
+
+/** Who is in a session. */
+export async function fetchSessionParticipants(
+  workspaceId: string,
+  sessionId: string
+): Promise<Result<SessionParticipant[]>> {
+  const result = await apiRequest<Ok<"listSessionParticipants">>(
+    `/v1/workspaces/${workspaceId}/sessions/${sessionId}/participants`
+  );
+  return result.ok ? { ok: true, data: result.data.participants } : result;
+}
+
+/** Start a session from a ready task. */
+export async function createSession(
+  workspaceId: string,
+  input: { task_id: string; agent_version_id: string; base_branch?: string }
+): Promise<Result<Session>> {
+  return apiRequest<Session>(`/v1/workspaces/${workspaceId}/sessions`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 /** Check one installation against GitHub. */
