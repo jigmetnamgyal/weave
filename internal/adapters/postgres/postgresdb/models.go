@@ -67,6 +67,21 @@ type GithubWebhookDelivery struct {
 	CompletedAt pgtype.Timestamptz
 }
 
+// The durable promise that something happens elsewhere, written in the transaction that caused it. The claim is a lease with an expiry, not a flag.
+type OutboxEvent struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Topic       string
+	SubjectID   uuid.UUID
+	Payload     []byte
+	Attempts    int32
+	AvailableAt pgtype.Timestamptz
+	LeasedUntil pgtype.Timestamptz
+	LastError   *string
+	CompletedAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+}
+
 type Repository struct {
 	ID                 uuid.UUID
 	WorkspaceID        uuid.UUID
@@ -87,6 +102,45 @@ type RepositoryPermission struct {
 	Permission     string
 	Access         string
 	RecordedAt     pgtype.Timestamptz
+}
+
+// A run of an agent against a task. Carries the pinned agent version, which is the policy snapshot, and the branch intent M5 acts on.
+type Session struct {
+	ID             uuid.UUID
+	WorkspaceID    uuid.UUID
+	TaskID         uuid.UUID
+	AgentVersionID uuid.UUID
+	State          string
+	Version        int32
+	RepositoryID   uuid.UUID
+	BranchName     string
+	BaseBranch     string
+	ContinuesID    pgtype.UUID
+	CreatedBy      uuid.UUID
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+// Who is in a session and in what capacity. Distinct from workspace membership.
+type SessionParticipant struct {
+	SessionID   uuid.UUID
+	WorkspaceID uuid.UUID
+	UserID      uuid.UUID
+	Capacity    string
+	CreatedAt   pgtype.Timestamptz
+}
+
+// Append-only. Invariant 9: session history is append-only and ordered, so a correction is a new row.
+type SessionStateTransition struct {
+	ID              uuid.UUID
+	SessionID       uuid.UUID
+	WorkspaceID     uuid.UUID
+	PreviousState   *string
+	NextState       string
+	ObservedVersion int32
+	Reason          string
+	ActorUserID     pgtype.UUID
+	CreatedAt       pgtype.Timestamptz
 }
 
 // A unit of work someone wants done. The body is untrusted input: stored and returned as data, never interpolated.

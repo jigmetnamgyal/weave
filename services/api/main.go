@@ -172,8 +172,15 @@ func run() error {
 	// notices until it is a problem.
 	go pruneDeliveries(ctx, logger, installationService)
 
-	taskService := application.NewTaskService(postgres.NewTaskStore(appPool))
-	agentService := application.NewAgentService(postgres.NewAgentStore(appPool))
+	taskStore := postgres.NewTaskStore(appPool)
+	agentStore := postgres.NewAgentStore(appPool)
+	taskService := application.NewTaskService(taskStore)
+	agentService := application.NewAgentService(agentStore)
+	// The session service reads tasks and agent versions through narrower
+	// ports than the stores expose: it must be able to read one of each and
+	// must not be able to write either.
+	sessionService := application.NewSessionService(
+		postgres.NewSessionStore(appPool), taskStore, agentStore)
 
 	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
 	workspaceHandler.Register(protected)
@@ -181,6 +188,7 @@ func run() error {
 	workspaceHandler.RegisterGitHub(protected, installationService, cfg.GitHubWebhookSecret)
 	workspaceHandler.RegisterTasks(protected, taskService)
 	workspaceHandler.RegisterAgents(protected, agentService)
+	workspaceHandler.RegisterSessions(protected, sessionService)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())

@@ -1,11 +1,12 @@
 package domain
 
 import (
-	"crypto/rand"
 	"encoding/base32"
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Errors the branch domain raises.
@@ -37,31 +38,58 @@ const branchNameMaxLen = 200
 // or exclude ours as a group.
 const BranchPrefix = "weave/"
 
-// branchSuffixBytes is the entropy in a generated name's suffix. Enough that
-// two sessions in the same repository do not collide; short enough to read.
+// branchSuffixBytes is how much of the session id the suffix carries. Enough
+// that two sessions in the same repository do not collide; short enough to
+// read aloud.
 const branchSuffixBytes = 5
 
 // suffixEncoding is lowercase base32 without padding: valid in a ref, readable
 // aloud, and case-insensitive-safe on filesystems that fold case.
 var suffixEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
 
-// NewBranchName generates a namespaced branch name.
+// SessionBranchName derives a branch name from a session id.
 //
-// The caller supplies a slug describing the purpose; the random suffix is what
-// makes it unique. Both halves are validated, so a slug from a task title
-// cannot smuggle path traversal into a ref.
-func NewBranchName(slug string) (string, error) {
+// **A pure function of the id, deliberately.** The name is decided when the
+// session row is written and the branch is cut later by a workflow that
+// retries — so the name has to be the same on every attempt, or a retry after
+// a lost response creates a *second* branch rather than finding the first.
+// M3.3 shipped a version that generated a fresh random name per attempt and
+// had exactly that bug; the endpoint now requires a caller-supplied name
+// because it had no stable identity to derive one from. This is that identity.
+//
+// The suffix is the tail of the session id rather than `crypto/rand`, which is
+// the whole difference. A UUIDv7's low bytes are random, so five of them
+// collide no more readily than five random ones would, while staying
+// reproducible from the row.
+//
+// The slug describes the purpose and comes from a task title, so it is
+// slugified and the finished name validated: a title cannot smuggle path
+// traversal into a ref.
+func SessionBranchName(sessionID uuid.UUID, slug string) (string, error) {
+	if sessionID == uuid.Nil {
+		return "", fmt.Errorf("%w: a session id is required to derive a branch name",
+			ErrInvalidBranchName)
+	}
+
 	cleaned := slugify(slug)
 	if cleaned == "" {
-		cleaned = "task"
+		cleaned = "session"
 	}
 
-	raw := make([]byte, branchSuffixBytes)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate branch suffix: %w", err)
+	suffix := suffixEncoding.EncodeToString(sessionID[len(sessionID)-branchSuffixBytes:])
+
+	// Truncate the slug rather than the suffix if the whole name would be too
+	// long. The suffix is what makes the name unique and reproducible; the
+	// slug is only there to make it readable, so it is the half that gives.
+	room := branchNameMaxLen - len(BranchPrefix) - len(suffix) - 1
+	if len(cleaned) > room {
+		cleaned = strings.TrimRight(cleaned[:room], "-")
+	}
+	if cleaned == "" {
+		cleaned = "session"
 	}
 
-	name := BranchPrefix + cleaned + "-" + suffixEncoding.EncodeToString(raw)
+	name := BranchPrefix + cleaned + "-" + suffix
 	if err := ValidateBranchName(name); err != nil {
 		return "", err
 	}
