@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M3 complete; M4.1 and M4.2 merged; M4.3 complete in code, awaiting the signed-in browser walk
+- Status: M3 and M4 complete in code; M4.3 merged and awaiting the signed-in browser walk; M5 next
 
 ## Current Goal
 
@@ -50,7 +50,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-M4.3 is written and every local gate passes; the signed-in browser walk it exists for has not been done, because it needs a GitHub sign-in only the operator can perform. That is the same gap M2.2, M2.3 and M3.0 carried, and the 2026-09-11 walk is what closed those.
+M4.3 merged to main as d99af91 after one review round and six findings. The signed-in browser walk it exists for has still not been done, because it needs a GitHub sign-in only the operator can perform. That is the same gap M2.2, M2.3 and M3.0 carried, and the 2026-09-11 walk is what closed those.
 
 ## Next Up
 
@@ -197,4 +197,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-16 — Unit M4.3 written: tasks, agents and sessions are reachable from the browser, and every local gate passes. **Outstanding: the signed-in walk the unit exists for**, which needs a GitHub sign-in only the operator can perform. Then M5: the durable session workflow, which owes the outbox publisher, idempotency, the first real call to `CreateBranch`, and the fifteen state transitions M4.2 decided but never travelled.
+2026-09-16 — Unit M4.3 merged as d99af91 (PR #11) after one review round and six findings. Tasks, agents and sessions are reachable from the browser. **Outstanding: the signed-in walk the unit exists for**, which needs a GitHub sign-in only the operator can perform. Then M5: the durable session workflow, which owes the outbox publisher, idempotency, the first real call to `CreateBranch`, and the fifteen state transitions M4.2 decided but never travelled.
