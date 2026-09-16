@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  fetchMembers,
   fetchSession,
   fetchSessionParticipants,
   fetchSessionTransitions,
@@ -41,12 +42,25 @@ export default async function SessionPage({
   // not forbidden, which is the answer the API gives for the same reason.
   if (!session.ok && session.status === 404) notFound();
 
-  const [participants, transitions] = session.ok
+  const [participants, transitions, members] = session.ok
     ? await Promise.all([
         fetchSessionParticipants(workspaceId, sessionId),
         fetchSessionTransitions(workspaceId, sessionId),
+        // Only the API knows who a user id belongs to, and the members list is
+        // the endpoint that says. Without it both the participant list and the
+        // history attribute everything to a UUID, which is accurate and
+        // unreadable — and an append-only attribution trail nobody can read
+        // attributes nothing.
+        fetchMembers(workspaceId),
       ])
-    : [null, null];
+    : [null, null, null];
+
+  const nameOf = (userId: string): string => {
+    const member = members?.ok ? members.data.find((m) => m.user_id === userId) : undefined;
+    // Falls back to the id rather than to "unknown": a member who has since
+    // been removed still did the thing, and the id is what the record holds.
+    return member ? member.display_name || member.email : userId;
+  };
 
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 space-y-6 p-6">
@@ -117,7 +131,7 @@ export default async function SessionPage({
                           key={participant.user_id}
                           className="flex items-center justify-between py-2"
                         >
-                          <span className="font-mono text-xs">{participant.user_id}</span>
+                          <span className="text-sm">{nameOf(participant.user_id)}</span>
                           <span className="text-muted-foreground text-xs">
                             {participant.capacity}
                           </span>
@@ -170,7 +184,13 @@ export default async function SessionPage({
                             {transition.reason ? ` · ${transition.reason}` : ""}
                             {/* Absent when the system moved the session: a
                                 timeout is not attributable to a person. */}
-                            {transition.actor_user_id ? "" : " · by the system"}
+                            {/* Named when a person did it, said plainly when
+                                nothing did. Rendering neither — which this did
+                                at first — drops the attribution the column
+                                exists to carry. */}
+                            {transition.actor_user_id
+                              ? ` · by ${nameOf(transition.actor_user_id)}`
+                              : " · by the system"}
                           </p>
                         </li>
                       ))
