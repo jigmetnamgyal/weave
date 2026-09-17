@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M4 complete in code but **not yet demonstrated** — the M4.3 browser walk is outstanding; M5 split into six units, M5.0 specced and next
+- Status: M4 complete in code but **not yet demonstrated** — the M4.3 browser walk is outstanding; M5.0 in progress
 
 ## Current Goal
 
@@ -50,7 +50,21 @@ Make a session actually run: drain the outbox, start a durable workflow, cut a b
 
 ## In Progress
 
-M5.0 is specced and not started. M4.3 merged to main as d99af91 after an initial review and one re-review, with six findings; the signed-in browser walk it exists for has still not been done, because it needs a GitHub sign-in only the operator can perform. **The walk gates calling M4 done, not starting M5.0** — idempotency touches none of that surface — but it should not stay outstanding for another milestone: the last one of these found four defects no automated test had caught. That is the same gap M2.2, M2.3, M3.0 and M3.1 carried. The 2026-09-11 walk closed three of them — its own record names M2.2, M2.3 and M3.1 — and **M3.0's verification was never recorded**: its row still reads "Gap: the signed-in browser flow remains unverified". Row-level security is exercised by every signed-in request, so the walk almost certainly covered it in practice, but nothing recorded that, and an unrecorded verification is an unverified one.
+**Unit M5.0 — Idempotency keys**, per `context/features-specs/13-idempotency-keys.md`. The four decisions the spec required be made before the columns exist, recorded here first so the code follows them.
+
+**The claim commits before the work, with a lease.** The spec laid out the two options and this takes the first, because the second cannot produce the refusal the unit exists to give: a claim inside the work's transaction is invisible until commit, so a concurrent caller blocks on the unique index for the full duration of someone else's request and then finds `complete`. The lease is what recovers a claim whose holder died, exactly as `outbox_events` does. **Lease: 60 seconds** — a session create is three transactions and no network calls, so a holder still running after a minute has died or hung, and the cost of being wrong is one duplicate rather than a stuck key.
+
+This adds a fourth outcome the spec did not name: **claimed, and the work failed.** The key is released immediately so a legitimate retry is not refused for a minute. If the process dies before releasing, the lease covers it.
+
+**The response is recorded in the same transaction as the work.** Not a third transaction afterwards: if the session committed and the response write failed, the lease would expire and the retry would create a second session — the exact failure this unit prevents, reintroduced at the last step. The transport passes a closure that serialises the response, and the store calls it inside the transaction, which is the shape `apply` and `event` already have in `SessionStore`.
+
+**`X-Request-Id` echoes the retry's own id, not the original's.** The header is a correlation id for *this* HTTP exchange, and resurrecting the original would hand back an id matching no log line for the request that was actually made. The original is not lost: it is stored on the record and named in the log line written when a replay happens, so an operator can get from the retry to the call that did the work. The alternative — replaying the original id — optimises for finding the original at the cost of making every retry untraceable.
+
+**A refused concurrent caller gets 409 with `Retry-After: 1`.** 409 because the request conflicts with the state of the resource rather than being malformed, and a second is long enough that the first has usually finished.
+
+**Retention: 24 hours, then a retry creates a new session.** A retry is recovery from a lost response, which happens inside a request-timeout window rather than days later — so the seven days the webhook log uses, which is sized to GitHub's redelivery window, would be wrong here for a reason rather than merely generous. These rows also store a response body carrying a branch name and identifiers, so they are customer data and shorter is better. Post-expiry behaviour is stated rather than discovered: the key is gone, the request is new, and a second session is created.
+
+**Scope: `(workspace_id, user_id, endpoint, key)`**, with the body compared by fingerprint over a canonical form rather than raw bytes — `base_branch` omitted and sent empty are the same request, because the contract defines omission as "the repository default". M4.3 merged to main as d99af91 after an initial review and one re-review, with six findings; the signed-in browser walk it exists for has still not been done, because it needs a GitHub sign-in only the operator can perform. **The walk gates calling M4 done, not starting M5.0** — idempotency touches none of that surface — but it should not stay outstanding for another milestone: the last one of these found four defects no automated test had caught. That is the same gap M2.2, M2.3, M3.0 and M3.1 carried. The 2026-09-11 walk closed three of them — its own record names M2.2, M2.3 and M3.1 — and **M3.0's verification was never recorded**: its row still reads "Gap: the signed-in browser flow remains unverified". Row-level security is exercised by every signed-in request, so the walk almost certainly covered it in practice, but nothing recorded that, and an unrecorded verification is an unverified one.
 
 ## Next Up
 
