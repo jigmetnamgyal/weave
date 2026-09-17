@@ -34,6 +34,16 @@ CREATE TABLE idempotency_keys (
     endpoint      text        NOT NULL,
     idempotency_key text      NOT NULL,
 
+    -- The fencing token, reissued on every claim including a reclaim.
+    --
+    -- Without it a lease is unsafe rather than merely optimistic. A holder that
+    -- is slow rather than dead comes back after its lease expired and a second
+    -- caller has reclaimed the key — and completion and release, matching only
+    -- on scope and key, would let it write the second caller's record or
+    -- delete their claim while both are creating sessions. The token is what
+    -- makes a late writer's update match nothing instead.
+    claimant      uuid        NOT NULL,
+
     -- The canonical fingerprint of the request body, not the body itself.
     -- Comparing raw bytes would reject retries that are equivalent — a client
     -- that reorders JSON members or sends `base_branch` empty where it omitted
@@ -125,6 +135,50 @@ CREATE POLICY idempotency_keys_tenant_update ON idempotency_keys FOR UPDATE
 CREATE POLICY idempotency_keys_tenant_delete ON idempotency_keys FOR DELETE
     USING (workspace_id = weave_current_workspace_id());
 
+-- --------------------------------------------------------------------------
+-- Retention
+--
+-- The sweep runs from a background goroutine with no tenant context, and under
+-- FORCE row-level security every policy then matches nothing — so a plain
+-- DELETE removes no rows and reports success. Retention would silently never
+-- happen, on a table holding response bodies that carry identifiers, and
+-- nothing would say so.
+--
+-- The same shape ADR-012 settled on for the invitation lookup: a SECURITY
+-- DEFINER function owned by weave_rls_bypass, scoped so narrowly that holding
+-- it grants nothing else. It deletes by age and returns a count; it cannot
+-- read a row, name a workspace, or remove anything still within the window.
+-- --------------------------------------------------------------------------
+
+CREATE FUNCTION weave_prune_idempotency_keys(retention interval)
+RETURNS bigint
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    removed bigint;
+BEGIN
+    DELETE FROM idempotency_keys WHERE created_at < now() - retention;
+    GET DIAGNOSTICS removed = ROW_COUNT;
+    RETURN removed;
+END;
+$$;
+
+ALTER FUNCTION weave_prune_idempotency_keys(interval) OWNER TO weave_rls_bypass;
+
+-- DELETE, and SELECT on exactly the one column the WHERE clause reads: a
+-- delete has to read before it removes, so DELETE alone fails with "permission
+-- denied" — measured. Column-level rather than table-level, so the role that
+-- looks past the policies can still not read a key, a fingerprint or a stored
+-- response body.
+GRANT DELETE ON idempotency_keys TO weave_rls_bypass;
+GRANT SELECT (created_at) ON idempotency_keys TO weave_rls_bypass;
+
+-- Revoked from PUBLIC before being granted, so the function is reachable only
+-- by the role that needs it rather than by anything that can connect.
+REVOKE EXECUTE ON FUNCTION weave_prune_idempotency_keys(interval) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION weave_prune_idempotency_keys(interval) TO weave_app;
+
 COMMENT ON TABLE idempotency_keys IS 'Makes a retried mutation safe. The claim commits before the work and carries a lease, because a claim inside the work''s transaction cannot refuse a concurrent caller.';
 
 -- +goose StatementEnd
@@ -137,6 +191,7 @@ DROP POLICY IF EXISTS idempotency_keys_tenant_update ON idempotency_keys;
 DROP POLICY IF EXISTS idempotency_keys_tenant_insert ON idempotency_keys;
 DROP POLICY IF EXISTS idempotency_keys_tenant_read ON idempotency_keys;
 
+DROP FUNCTION IF EXISTS weave_prune_idempotency_keys(interval);
 DROP TABLE IF EXISTS idempotency_keys;
 
 -- +goose StatementEnd

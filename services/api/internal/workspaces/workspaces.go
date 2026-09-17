@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -502,6 +503,14 @@ func (h *Handler) writeError(ctx context.Context, w http.ResponseWriter, err err
 
 	case errors.Is(err, application.ErrAgentVersionNotFound):
 		httpx.WriteError(ctx, w, http.StatusNotFound, httpx.CodeNotFound, "Agent version not found.")
+
+	case errors.Is(err, application.ErrIdempotencyFenced):
+		// This attempt was slow rather than dead: its lease expired and
+		// another caller took the key. Nothing was written, and retrying is
+		// the right move — whichever attempt holds the key will answer.
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,
+			"This request took too long and another attempt with the same idempotency key took over. Retry shortly.")
 
 	case errors.Is(err, application.ErrVersionConflict):
 		httpx.WriteError(ctx, w, http.StatusConflict, httpx.CodeConflict,

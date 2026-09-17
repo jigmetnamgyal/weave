@@ -2,7 +2,10 @@ package application
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/jigmetnamgyal/weave/internal/domain"
 )
@@ -30,6 +33,15 @@ const (
 	IdempotencyMismatch
 )
 
+// ErrIdempotencyFenced is returned when a completion finds its claim has been
+// taken over.
+//
+// The attempt was slow rather than dead: its lease expired, another caller
+// reclaimed the key, and both were doing the work. Failing here stops this one
+// committing under a record that now belongs to the other — a caller replaying
+// it would otherwise be handed the wrong session.
+var ErrIdempotencyFenced = errors.New("this attempt's idempotency claim was taken over after its lease expired")
+
 // IdempotencyRetention is how long a record is kept.
 //
 // A retry is recovery from a lost response, which happens inside a
@@ -53,10 +65,13 @@ type IdempotencyRepository interface {
 	// concurrent caller be told the work is in flight rather than blocking on
 	// it. The returned record carries the stored response when the outcome is
 	// IdempotencyComplete.
-	Claim(ctx context.Context, record domain.IdempotencyRecord, lease time.Duration) (IdempotencyOutcome, domain.IdempotencyRecord, error)
+	// The returned claimant is the fencing token for this attempt: a holder
+	// whose lease expired while it was still running must not be able to
+	// complete or release the claim that replaced it.
+	Claim(ctx context.Context, record domain.IdempotencyRecord, lease time.Duration) (IdempotencyOutcome, domain.IdempotencyRecord, uuid.UUID, error)
 	// Release gives the key back when the work failed, so a legitimate retry
-	// is not refused for the length of the lease.
-	Release(ctx context.Context, scope domain.IdempotencyScope, key string) error
+	// is not refused for the length of the lease. Fenced on the claimant.
+	Release(ctx context.Context, scope domain.IdempotencyScope, key string, claimant uuid.UUID) error
 }
 
 // IdempotentCompletion is the instruction to record a response alongside the
@@ -70,6 +85,10 @@ type IdempotencyRepository interface {
 type IdempotentCompletion struct {
 	Scope domain.IdempotencyScope
 	Key   string
+	// Claimant fences the completion. Without it a slow holder could write its
+	// response over the record belonging to whoever reclaimed the key after
+	// its lease expired, while both were creating sessions.
+	Claimant uuid.UUID
 	// OriginRequestID is the request id of this attempt. Stored, not replayed
 	// — see IdempotentResponse.
 	OriginRequestID string

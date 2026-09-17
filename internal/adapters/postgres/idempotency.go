@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,10 +41,16 @@ func (s *IdempotencyStore) Claim(
 	ctx context.Context,
 	record domain.IdempotencyRecord,
 	lease time.Duration,
-) (application.IdempotencyOutcome, domain.IdempotencyRecord, error) {
+) (application.IdempotencyOutcome, domain.IdempotencyRecord, uuid.UUID, error) {
 	recordID, err := domain.NewIdempotencyRecordID()
 	if err != nil {
-		return 0, domain.IdempotencyRecord{}, err
+		return 0, domain.IdempotencyRecord{}, uuid.Nil, err
+	}
+	// A fresh token for this attempt, reissued even when reclaiming an expired
+	// lease — that is exactly the case it exists for.
+	claimant, err := domain.NewIdempotencyRecordID()
+	if err != nil {
+		return 0, domain.IdempotencyRecord{}, uuid.Nil, err
 	}
 
 	var outcome application.IdempotencyOutcome
@@ -56,6 +63,7 @@ func (s *IdempotencyStore) Claim(
 			UserID:             record.Scope.UserID,
 			Endpoint:           record.Scope.Endpoint,
 			IdempotencyKey:     record.Key,
+			Claimant:           claimant,
 			RequestFingerprint: record.Fingerprint,
 			Lease:              intervalOf(lease),
 		})
@@ -103,9 +111,13 @@ func (s *IdempotencyStore) Claim(
 		return nil
 	})
 	if err != nil {
-		return 0, domain.IdempotencyRecord{}, err
+		return 0, domain.IdempotencyRecord{}, uuid.Nil, err
 	}
-	return outcome, existing, nil
+	if outcome != application.IdempotencyClaimed {
+		// Only a winner holds a token.
+		return outcome, existing, uuid.Nil, nil
+	}
+	return outcome, existing, claimant, nil
 }
 
 // Release gives the key back after the work failed.
@@ -113,13 +125,19 @@ func (s *IdempotencyStore) Claim(
 // The fourth outcome, which the spec did not name: without it a caller whose
 // request failed for an unrelated reason would be refused for the length of
 // the lease, having done nothing wrong.
-func (s *IdempotencyStore) Release(ctx context.Context, scope domain.IdempotencyScope, key string) error {
+func (s *IdempotencyStore) Release(
+	ctx context.Context,
+	scope domain.IdempotencyScope,
+	key string,
+	claimant uuid.UUID,
+) error {
 	return inTenantTx(ctx, s.pool, func(q *postgresdb.Queries) error {
-		if err := q.ReleaseIdempotencyKey(ctx, postgresdb.ReleaseIdempotencyKeyParams{
+		if _, err := q.ReleaseIdempotencyKey(ctx, postgresdb.ReleaseIdempotencyKeyParams{
 			WorkspaceID:    scope.WorkspaceID,
 			UserID:         scope.UserID,
 			Endpoint:       scope.Endpoint,
 			IdempotencyKey: key,
+			Claimant:       claimant,
 		}); err != nil {
 			return fmt.Errorf("release idempotency key: %w", err)
 		}
@@ -128,6 +146,13 @@ func (s *IdempotencyStore) Release(ctx context.Context, scope domain.Idempotency
 }
 
 // Prune removes records past the retention window.
+//
+// Through a SECURITY DEFINER function rather than a direct DELETE, because the
+// sweep runs with no tenant context and FORCE row-level security then makes
+// every policy match nothing — the delete would remove no rows and report
+// success, which is retention silently not happening on a table holding
+// response bodies that carry identifiers. Measured before it was changed: the
+// sweep removed nothing.
 func (s *IdempotencyStore) Prune(ctx context.Context, retention time.Duration) (int64, error) {
 	var removed int64
 	err := inTenantTx(ctx, s.pool, func(q *postgresdb.Queries) error {
@@ -153,16 +178,25 @@ func completeIdempotency(
 	status int,
 	body []byte,
 ) error {
-	if err := q.CompleteIdempotencyKey(ctx, postgresdb.CompleteIdempotencyKeyParams{
+	rows, err := q.CompleteIdempotencyKey(ctx, postgresdb.CompleteIdempotencyKeyParams{
 		WorkspaceID:     completion.Scope.WorkspaceID,
 		UserID:          completion.Scope.UserID,
 		Endpoint:        completion.Scope.Endpoint,
 		IdempotencyKey:  completion.Key,
+		Claimant:        completion.Claimant,
 		ResponseStatus:  int32Ptr(int32(status)),
 		ResponseBody:    body,
 		OriginRequestID: stringPtr(completion.OriginRequestID),
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("record idempotent response: %w", err)
+	}
+	if rows == 0 {
+		// The fence held: this attempt's lease expired and someone else
+		// reclaimed the key. Failing the transaction is the point — the work
+		// must not commit under a record that now belongs to another attempt,
+		// because the caller replaying it would be handed the wrong session.
+		return application.ErrIdempotencyFenced
 	}
 	return nil
 }

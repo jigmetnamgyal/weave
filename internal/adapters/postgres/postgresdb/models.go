@@ -74,6 +74,7 @@ type IdempotencyKey struct {
 	UserID             uuid.UUID
 	Endpoint           string
 	IdempotencyKey     string
+	Claimant           uuid.UUID
 	RequestFingerprint []byte
 	ResponseStatus     *int32
 	ResponseBody       []byte

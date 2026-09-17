@@ -26,9 +26,14 @@ type Querier interface {
 	// holder died, and it is claimable again; anything else is either in flight or
 	// complete and must not be disturbed.
 	//
-	// The WHERE on the update is what makes that safe. When it does not match,
-	// nothing is written and nothing is returned, and the caller reads the row to
-	// find out which of the two it is.
+	// The WHERE on the update is what makes that safe. It also requires the
+	// fingerprint to match, so a reclaim with a *different* request does not
+	// quietly overwrite what the first attempt asked for — it falls through to the
+	// read below and is reported as the mismatch it is.
+	//
+	// `claimant` is reissued on every claim. It is the fencing token: a holder
+	// that was slow rather than dead must not be able to complete or release the
+	// claim that replaced it.
 	ClaimIdempotencyKey(ctx context.Context, arg ClaimIdempotencyKeyParams) (IdempotencyKey, error)
 	// Single-statement claim: the WHERE clause is what makes the token single
 	// use. Two concurrent accepts race here and exactly one matches a row, so no
@@ -38,7 +43,11 @@ type Querier interface {
 	// Written in the same transaction as the work it describes. A response
 	// recorded afterwards could fail while the work stood, and the expiring lease
 	// would then let a retry do the work a second time.
-	CompleteIdempotencyKey(ctx context.Context, arg CompleteIdempotencyKeyParams) error
+	//
+	// Fenced on `claimant`: a holder whose lease expired while it was still
+	// running must not write over the record belonging to whoever reclaimed the
+	// key. Returning the row count is what lets the caller notice that happened.
+	CompleteIdempotencyKey(ctx context.Context, arg CompleteIdempotencyKeyParams) (int64, error)
 	// Mark a delivery's effect durable. Until this runs, a retry may reclaim it.
 	CompleteWebhookDelivery(ctx context.Context, deliveryID string) error
 	// Bind an installation to a workspace.
@@ -172,10 +181,14 @@ type Querier interface {
 	// Read under the agent's row lock by the caller, so two concurrent edits
 	// cannot both compute the same next number and collide on the unique index.
 	NextAgentVersionNumber(ctx context.Context, arg NextAgentVersionNumberParams) (int32, error)
-	// Retention. A retry is recovery from a lost response, which happens inside a
-	// request-timeout window rather than days later — and these rows store a
-	// response body carrying identifiers, so they are customer data and shorter is
-	// better.
+	// Retention, through a SECURITY DEFINER function.
+	//
+	// The sweep runs from a background goroutine with no tenant context, and under
+	// FORCE row-level security every policy then matches nothing — so a direct
+	// DELETE removes no rows and reports success, which is retention silently not
+	// happening. The same problem invitations-by-token had, and the same answer
+	// ADR-012 settled on: a function owned by a role that may look past the
+	// policies, scoped so narrowly that it can do nothing else.
 	PruneIdempotencyKeys(ctx context.Context, retention pgtype.Interval) (int64, error)
 	// Deliveries are only needed while deduplication might see a retry. GitHub
 	// gives up well inside this window.
@@ -189,9 +202,10 @@ type Querier interface {
 	// without a separate read and the race that would come with it.
 	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) (GithubWebhookDelivery, error)
 	// The work failed, so the key is released at once rather than making a
-	// legitimate retry wait out the lease. Guarded on not being complete, so a
-	// late release cannot erase a finished record.
-	ReleaseIdempotencyKey(ctx context.Context, arg ReleaseIdempotencyKeyParams) error
+	// legitimate retry wait out the lease. Fenced for the same reason completion
+	// is: a late holder must not delete the claim that replaced it. Guarded on not
+	// being complete, so a late release cannot erase a finished record.
+	ReleaseIdempotencyKey(ctx context.Context, arg ReleaseIdempotencyKeyParams) (int64, error)
 	RenameAgent(ctx context.Context, arg RenameAgentParams) (Agent, error)
 	// Optimistic concurrency: the caller supplies the version it read. A stale
 	// version matches no row, which the store reports as a conflict rather than

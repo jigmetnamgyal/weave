@@ -70,7 +70,7 @@ func (i *idempotency) claim(
 		Fingerprint: domain.FingerprintRequest(fingerprintFields...),
 	}
 
-	outcome, existing, err := i.keys.Claim(ctx, record, application.IdempotencyLease)
+	outcome, existing, claimant, err := i.keys.Claim(ctx, record, application.IdempotencyLease)
 	if err != nil {
 		handler.serverError(ctx, w, "claim idempotency key", err)
 		return claimed{}, false
@@ -83,6 +83,7 @@ func (i *idempotency) claim(
 			completion: &application.IdempotentCompletion{
 				Scope:           scope,
 				Key:             key,
+				Claimant:        claimant,
 				OriginRequestID: httpx.RequestID(ctx),
 			},
 		}, true
@@ -150,7 +151,7 @@ func (i *idempotency) release(ctx context.Context, completion *application.Idemp
 	if completion == nil {
 		return
 	}
-	if err := i.keys.Release(ctx, completion.Scope, completion.Key); err != nil {
+	if err := i.keys.Release(ctx, completion.Scope, completion.Key, completion.Claimant); err != nil {
 		// Logged, not returned: the caller's request already failed for its
 		// own reason, and the lease expiring covers this.
 		slog.ErrorContext(ctx, "failed to release idempotency key",

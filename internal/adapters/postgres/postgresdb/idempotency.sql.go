@@ -15,16 +15,17 @@ import (
 const claimIdempotencyKey = `-- name: ClaimIdempotencyKey :one
 INSERT INTO idempotency_keys (
     id, workspace_id, user_id, endpoint, idempotency_key,
-    request_fingerprint, leased_until
+    claimant, request_fingerprint, leased_until
 )
-VALUES ($1, $2, $3, $4, $5, $6, now() + $7::interval)
+VALUES ($1, $2, $3, $4, $5, $7, $6, now() + $8::interval)
 ON CONFLICT (workspace_id, user_id, endpoint, idempotency_key) DO UPDATE
-SET leased_until         = now() + $7::interval,
-    request_fingerprint  = EXCLUDED.request_fingerprint,
-    created_at           = now()
+SET claimant     = EXCLUDED.claimant,
+    leased_until = now() + $8::interval,
+    created_at   = now()
 WHERE idempotency_keys.completed_at IS NULL
   AND idempotency_keys.leased_until < now()
-RETURNING id, workspace_id, user_id, endpoint, idempotency_key, request_fingerprint, response_status, response_body, origin_request_id, leased_until, created_at, completed_at
+  AND idempotency_keys.request_fingerprint = EXCLUDED.request_fingerprint
+RETURNING id, workspace_id, user_id, endpoint, idempotency_key, claimant, request_fingerprint, response_status, response_body, origin_request_id, leased_until, created_at, completed_at
 `
 
 type ClaimIdempotencyKeyParams struct {
@@ -34,6 +35,7 @@ type ClaimIdempotencyKeyParams struct {
 	Endpoint           string
 	IdempotencyKey     string
 	RequestFingerprint []byte
+	Claimant           uuid.UUID
 	Lease              pgtype.Interval
 }
 
@@ -45,9 +47,14 @@ type ClaimIdempotencyKeyParams struct {
 // holder died, and it is claimable again; anything else is either in flight or
 // complete and must not be disturbed.
 //
-// The WHERE on the update is what makes that safe. When it does not match,
-// nothing is written and nothing is returned, and the caller reads the row to
-// find out which of the two it is.
+// The WHERE on the update is what makes that safe. It also requires the
+// fingerprint to match, so a reclaim with a *different* request does not
+// quietly overwrite what the first attempt asked for — it falls through to the
+// read below and is reported as the mismatch it is.
+//
+// `claimant` is reissued on every claim. It is the fencing token: a holder
+// that was slow rather than dead must not be able to complete or release the
+// claim that replaced it.
 func (q *Queries) ClaimIdempotencyKey(ctx context.Context, arg ClaimIdempotencyKeyParams) (IdempotencyKey, error) {
 	row := q.db.QueryRow(ctx, claimIdempotencyKey,
 		arg.ID,
@@ -56,6 +63,7 @@ func (q *Queries) ClaimIdempotencyKey(ctx context.Context, arg ClaimIdempotencyK
 		arg.Endpoint,
 		arg.IdempotencyKey,
 		arg.RequestFingerprint,
+		arg.Claimant,
 		arg.Lease,
 	)
 	var i IdempotencyKey
@@ -65,6 +73,7 @@ func (q *Queries) ClaimIdempotencyKey(ctx context.Context, arg ClaimIdempotencyK
 		&i.UserID,
 		&i.Endpoint,
 		&i.IdempotencyKey,
+		&i.Claimant,
 		&i.RequestFingerprint,
 		&i.ResponseStatus,
 		&i.ResponseBody,
@@ -76,14 +85,16 @@ func (q *Queries) ClaimIdempotencyKey(ctx context.Context, arg ClaimIdempotencyK
 	return i, err
 }
 
-const completeIdempotencyKey = `-- name: CompleteIdempotencyKey :exec
+const completeIdempotencyKey = `-- name: CompleteIdempotencyKey :execrows
 UPDATE idempotency_keys
-SET response_status   = $5,
-    response_body     = $6,
-    origin_request_id = $7,
+SET response_status   = $6,
+    response_body     = $7,
+    origin_request_id = $8,
     completed_at      = now(),
     leased_until      = NULL
 WHERE workspace_id = $1 AND user_id = $2 AND endpoint = $3 AND idempotency_key = $4
+  AND claimant = $5
+  AND completed_at IS NULL
 `
 
 type CompleteIdempotencyKeyParams struct {
@@ -91,6 +102,7 @@ type CompleteIdempotencyKeyParams struct {
 	UserID          uuid.UUID
 	Endpoint        string
 	IdempotencyKey  string
+	Claimant        uuid.UUID
 	ResponseStatus  *int32
 	ResponseBody    []byte
 	OriginRequestID *string
@@ -99,21 +111,29 @@ type CompleteIdempotencyKeyParams struct {
 // Written in the same transaction as the work it describes. A response
 // recorded afterwards could fail while the work stood, and the expiring lease
 // would then let a retry do the work a second time.
-func (q *Queries) CompleteIdempotencyKey(ctx context.Context, arg CompleteIdempotencyKeyParams) error {
-	_, err := q.db.Exec(ctx, completeIdempotencyKey,
+//
+// Fenced on `claimant`: a holder whose lease expired while it was still
+// running must not write over the record belonging to whoever reclaimed the
+// key. Returning the row count is what lets the caller notice that happened.
+func (q *Queries) CompleteIdempotencyKey(ctx context.Context, arg CompleteIdempotencyKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeIdempotencyKey,
 		arg.WorkspaceID,
 		arg.UserID,
 		arg.Endpoint,
 		arg.IdempotencyKey,
+		arg.Claimant,
 		arg.ResponseStatus,
 		arg.ResponseBody,
 		arg.OriginRequestID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getIdempotencyKey = `-- name: GetIdempotencyKey :one
-SELECT id, workspace_id, user_id, endpoint, idempotency_key, request_fingerprint, response_status, response_body, origin_request_id, leased_until, created_at, completed_at FROM idempotency_keys
+SELECT id, workspace_id, user_id, endpoint, idempotency_key, claimant, request_fingerprint, response_status, response_body, origin_request_id, leased_until, created_at, completed_at FROM idempotency_keys
 WHERE workspace_id = $1 AND user_id = $2 AND endpoint = $3 AND idempotency_key = $4
 `
 
@@ -138,6 +158,7 @@ func (q *Queries) GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyPa
 		&i.UserID,
 		&i.Endpoint,
 		&i.IdempotencyKey,
+		&i.Claimant,
 		&i.RequestFingerprint,
 		&i.ResponseStatus,
 		&i.ResponseBody,
@@ -149,26 +170,29 @@ func (q *Queries) GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyPa
 	return i, err
 }
 
-const pruneIdempotencyKeys = `-- name: PruneIdempotencyKeys :execrows
-DELETE FROM idempotency_keys
-WHERE created_at < now() - $1::interval
+const pruneIdempotencyKeys = `-- name: PruneIdempotencyKeys :one
+SELECT weave_prune_idempotency_keys($1::interval)
 `
 
-// Retention. A retry is recovery from a lost response, which happens inside a
-// request-timeout window rather than days later — and these rows store a
-// response body carrying identifiers, so they are customer data and shorter is
-// better.
+// Retention, through a SECURITY DEFINER function.
+//
+// The sweep runs from a background goroutine with no tenant context, and under
+// FORCE row-level security every policy then matches nothing — so a direct
+// DELETE removes no rows and reports success, which is retention silently not
+// happening. The same problem invitations-by-token had, and the same answer
+// ADR-012 settled on: a function owned by a role that may look past the
+// policies, scoped so narrowly that it can do nothing else.
 func (q *Queries) PruneIdempotencyKeys(ctx context.Context, retention pgtype.Interval) (int64, error) {
-	result, err := q.db.Exec(ctx, pruneIdempotencyKeys, retention)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	row := q.db.QueryRow(ctx, pruneIdempotencyKeys, retention)
+	var weave_prune_idempotency_keys int64
+	err := row.Scan(&weave_prune_idempotency_keys)
+	return weave_prune_idempotency_keys, err
 }
 
-const releaseIdempotencyKey = `-- name: ReleaseIdempotencyKey :exec
+const releaseIdempotencyKey = `-- name: ReleaseIdempotencyKey :execrows
 DELETE FROM idempotency_keys
 WHERE workspace_id = $1 AND user_id = $2 AND endpoint = $3 AND idempotency_key = $4
+  AND claimant = $5
   AND completed_at IS NULL
 `
 
@@ -177,17 +201,23 @@ type ReleaseIdempotencyKeyParams struct {
 	UserID         uuid.UUID
 	Endpoint       string
 	IdempotencyKey string
+	Claimant       uuid.UUID
 }
 
 // The work failed, so the key is released at once rather than making a
-// legitimate retry wait out the lease. Guarded on not being complete, so a
-// late release cannot erase a finished record.
-func (q *Queries) ReleaseIdempotencyKey(ctx context.Context, arg ReleaseIdempotencyKeyParams) error {
-	_, err := q.db.Exec(ctx, releaseIdempotencyKey,
+// legitimate retry wait out the lease. Fenced for the same reason completion
+// is: a late holder must not delete the claim that replaced it. Guarded on not
+// being complete, so a late release cannot erase a finished record.
+func (q *Queries) ReleaseIdempotencyKey(ctx context.Context, arg ReleaseIdempotencyKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseIdempotencyKey,
 		arg.WorkspaceID,
 		arg.UserID,
 		arg.Endpoint,
 		arg.IdempotencyKey,
+		arg.Claimant,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -239,7 +239,7 @@ func (f *fakeKeys) Claim(
 	_ context.Context,
 	record domain.IdempotencyRecord,
 	_ time.Duration,
-) (application.IdempotencyOutcome, domain.IdempotencyRecord, error) {
+) (application.IdempotencyOutcome, domain.IdempotencyRecord, uuid.UUID, error) {
 	if f.records == nil {
 		f.records = map[string]*domain.IdempotencyRecord{}
 	}
@@ -248,18 +248,18 @@ func (f *fakeKeys) Claim(
 	if !found {
 		stored := record
 		f.records[id] = &stored
-		return application.IdempotencyClaimed, domain.IdempotencyRecord{}, nil
+		return application.IdempotencyClaimed, domain.IdempotencyRecord{}, uuid.New(), nil
 	}
 	if !bytes.Equal(existing.Fingerprint, record.Fingerprint) {
-		return application.IdempotencyMismatch, *existing, nil
+		return application.IdempotencyMismatch, *existing, uuid.Nil, nil
 	}
 	if existing.Response != nil {
-		return application.IdempotencyComplete, *existing, nil
+		return application.IdempotencyComplete, *existing, uuid.Nil, nil
 	}
-	return application.IdempotencyInFlight, *existing, nil
+	return application.IdempotencyInFlight, *existing, uuid.Nil, nil
 }
 
-func (f *fakeKeys) Release(_ context.Context, scope domain.IdempotencyScope, key string) error {
+func (f *fakeKeys) Release(_ context.Context, scope domain.IdempotencyScope, key string, _ uuid.UUID) error {
 	delete(f.records, f.key(scope, key))
 	return nil
 }
@@ -476,22 +476,37 @@ func TestEquivalentBodiesShareAFingerprint(t *testing.T) {
 	mux := newSessionMux(t, domain.RoleDeveloper, keys)
 	headers := map[string]string{"Idempotency-Key": "abc-123"}
 
+	// The first attempt omits base_branch entirely.
 	first, _ := serveSessionWith(t, mux, http.MethodPost, sessionsPath(), sessionBody(""), headers)
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first status = %d, want 201", first.Code)
 	}
 
-	// Same request, sent with base_branch explicitly empty rather than omitted.
-	second, _ := serveSessionWith(t, mux, http.MethodPost, sessionsPath(), sessionBody(""), headers)
-	if second.Code == http.StatusUnprocessableEntity {
-		t.Fatal("an equivalent retry was refused as a different request")
+	// Each retry sends the *same* request written differently. A 422 means the
+	// fingerprint decided they were different requests, which would refuse a
+	// client whose only crime is serialising its JSON another way.
+	equivalents := map[string]string{
+		"sent empty rather than omitted": `{"task_id":"` + readyTask.String() +
+			`","agent_version_id":"` + someVersion.String() + `","base_branch":""}`,
+		"sent as whitespace": `{"task_id":"` + readyTask.String() +
+			`","agent_version_id":"` + someVersion.String() + `","base_branch":"  "}`,
+		"members reordered": `{"agent_version_id":"` + someVersion.String() +
+			`","task_id":"` + readyTask.String() + `"}`,
+		"whitespace added": `{ "task_id" : "` + readyTask.String() +
+			`" ,  "agent_version_id" : "` + someVersion.String() + `" }`,
 	}
-
-	explicitEmpty := `{"task_id":"` + readyTask.String() + `","agent_version_id":"` +
-		someVersion.String() + `","base_branch":"  "}`
-	third, _ := serveSessionWith(t, mux, http.MethodPost, sessionsPath(), explicitEmpty, headers)
-	if third.Code == http.StatusUnprocessableEntity {
-		t.Error("base_branch sent as whitespace was treated as a different request from omitting it")
+	for name, body := range equivalents {
+		t.Run(name, func(t *testing.T) {
+			rec, _ := serveSessionWith(t, mux, http.MethodPost, sessionsPath(), body, headers)
+			// Exactly 409, not merely "not 422". The first attempt left the
+			// key claimed and incomplete, so an equivalent retry is in flight
+			// — and asserting the absence of one status would pass just as
+			// happily if the fingerprint logic broke in the other direction.
+			if rec.Code != http.StatusConflict {
+				t.Errorf("an equivalent retry (%s) returned %d, want 409 in-flight: %s",
+					name, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
