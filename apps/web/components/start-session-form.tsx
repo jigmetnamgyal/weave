@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useRef } from "react";
 import { useFormStatus } from "react-dom";
 
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,36 @@ export function StartSessionForm({
     initialState
   );
 
+  // One key per *submission*, not per attempt.
+  //
+  // That distinction is the whole point. Regenerated on every render or every
+  // click, a retry after a lost response would carry a new key and create a
+  // second session — protection that looks real and is not, which is the
+  // mistake M3.3 made with branch names.
+  //
+  // **Written to the input after mount rather than rendered.** This component
+  // is rendered from a Server Component, so anything generated during render
+  // runs once on the server and again in the browser and the two differ — a
+  // hydration mismatch React 19 recovers from by re-rendering the tree. It is
+  // also why `crypto.randomUUID()` cannot be called during the server render
+  // at all: it needs a secure context, which that is not.
+  //
+  // So both sides render the field empty, and the effect fills it in — which
+  // is what an effect is for, updating an external system rather than looping
+  // through React state. A submission in the sub-second window before
+  // hydration carries no key, which the action reads as "no idempotency key":
+  // the behaviour every caller had before this existed, unprotected rather
+  // than broken.
+  const keyInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    // Keyed on state.created, so a *successful* submission gets a fresh key
+    // and the next session someone starts is deliberately a new one — while a
+    // failed attempt keeps its key, which is what makes the retry a retry.
+    if (keyInput.current) {
+      keyInput.current.value = crypto.randomUUID();
+    }
+  }, [state.created]);
+
   const runnable = agents.filter((agent) => agent.current_version_id);
 
   if (readyTasks.length === 0 || runnable.length === 0) {
@@ -46,6 +76,9 @@ export function StartSessionForm({
 
   return (
     <form action={formAction} className="space-y-3">
+      {/* Submitted with the form so the same value reaches the server on a
+          retry of this submission. */}
+      <input ref={keyInput} type="hidden" name="idempotency_key" defaultValue="" />
       <div className="space-y-1.5">
         <label htmlFor="session-task" className="text-sm font-medium">
           Task

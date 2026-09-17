@@ -181,6 +181,12 @@ func run() error {
 	// must not be able to write either.
 	sessionService := application.NewSessionService(
 		postgres.NewSessionStore(appPool), taskStore, agentStore)
+	idempotencyStore := postgres.NewIdempotencyStore(appPool)
+
+	// Idempotency records expire too, and for a sharper reason than the
+	// delivery log: they hold a stored response body carrying identifiers, so
+	// they are customer data rather than only clutter.
+	go pruneIdempotencyKeys(ctx, logger, idempotencyStore)
 
 	workspaceHandler := workspaces.NewHandler(workspaceService, logger)
 	workspaceHandler.Register(protected)
@@ -188,7 +194,7 @@ func run() error {
 	workspaceHandler.RegisterGitHub(protected, installationService, cfg.GitHubWebhookSecret)
 	workspaceHandler.RegisterTasks(protected, taskService)
 	workspaceHandler.RegisterAgents(protected, agentService)
-	workspaceHandler.RegisterSessions(protected, sessionService)
+	workspaceHandler.RegisterSessions(protected, sessionService, idempotencyStore)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())
@@ -324,6 +330,35 @@ const pruneInterval = 6 * time.Hour
 // Failures are logged and never fatal: this is housekeeping, and a database
 // hiccup during a sweep is not a reason to disturb a healthy process. The
 // first sweep is delayed so it does not compete with startup.
+// pruneIdempotencyKeys removes records past the retention window.
+//
+// A retry is recovery from a lost response, which happens inside a
+// request-timeout window rather than days later, so these are kept far less
+// long than webhook deliveries — and past the window a retry is simply a new
+// request, which is stated in the spec rather than left to be discovered.
+func pruneIdempotencyKeys(ctx context.Context, logger *slog.Logger, store *postgres.IdempotencyStore) {
+	ticker := time.NewTicker(pruneInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			removed, err := store.Prune(ctx, application.IdempotencyRetention)
+			if err != nil {
+				logger.WarnContext(ctx, "pruning idempotency keys failed",
+					slog.String("error", err.Error()))
+				continue
+			}
+			if removed > 0 {
+				logger.InfoContext(ctx, "pruned idempotency keys",
+					slog.Int64("removed", removed))
+			}
+		}
+	}
+}
+
 func pruneDeliveries(ctx context.Context, logger *slog.Logger, service *application.InstallationService) {
 	ticker := time.NewTicker(pruneInterval)
 	defer ticker.Stop()

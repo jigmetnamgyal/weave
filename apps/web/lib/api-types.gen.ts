@@ -586,6 +586,13 @@ export interface paths {
          *     Nothing runs yet, and no branch is created. `branch_name` on the
          *     response is the branch the workflow **will** create; it does not exist
          *     when this returns.
+         *
+         *     **Send an `Idempotency-Key`.** Without one a lost response cannot be
+         *     distinguished from a request that never arrived, and retrying creates a
+         *     second session — which becomes a second workflow and a second branch
+         *     once the session workflow exists. The key must be stable across retries
+         *     of the same submission: one regenerated per attempt is worse than none,
+         *     because it looks like protection.
          */
         post: operations["createSession"];
         delete?: never;
@@ -1221,6 +1228,13 @@ export interface components {
     parameters: {
         TaskId: string;
         AgentId: string;
+        /**
+         * @description A caller-chosen string making this request safe to retry. Scoped by
+         *     workspace, user and operation, so two callers may pick the same string
+         *     without colliding. Retrying with the same key returns the first
+         *     response; reusing it for a different request is refused.
+         */
+        IdempotencyKey: string;
         SessionId: string;
         InstallationId: string;
         WorkspaceId: string;
@@ -2236,7 +2250,15 @@ export interface operations {
     createSession: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description A caller-chosen string making this request safe to retry. Scoped by
+                 *     workspace, user and operation, so two callers may pick the same string
+                 *     without colliding. Retrying with the same key returns the first
+                 *     response; reusing it for a different request is refused.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 workspaceId: components["parameters"]["WorkspaceId"];
             };
@@ -2270,11 +2292,29 @@ export interface operations {
                 };
             };
             /**
-             * @description The task is not ready. Nothing about the request is malformed — the
-             *     task is in a state a session cannot be created from, and it is the
-             *     task that changes rather than the request.
+             * @description Either the task is not ready — nothing about the request is
+             *     malformed, the task is in a state a session cannot be created from
+             *     — or an earlier request with the same `Idempotency-Key` is still
+             *     running, in which case `Retry-After` says how long to wait. The
+             *     second is refused rather than answered with the first result,
+             *     because that result does not exist yet and may never.
              */
             409: {
+                headers: {
+                    /** @description Seconds to wait before retrying an in-flight request. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description The `Idempotency-Key` was already used for a different request.
+             *     Answering with the first result would hand back a session for work
+             *     that was not asked for, so this is refused and needs a new key.
+             */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
