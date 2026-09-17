@@ -65,13 +65,51 @@ columns are:
 - **in flight** — an attempt holds the key and has not finished. The
   right answer is a refusal the caller can retry, not a fabricated
   success.
-- **complete** — the response is stored and replayed verbatim.
+- **complete** — the stored response is replayed. "Verbatim" is not
+  precise enough to implement, so: the original **status code**, the
+  original **body bytes** (not a re-encoding, which would let a field
+  order or a formatting change slip in between the two answers), and the
+  headers that describe the body — `Content-Type` and `Cache-Control`.
 
-The claim and the work must be in one transaction, for the same reason
-the outbox row is: a key claimed by a process that then dies must not
-leave the key held forever. Decide whether that is a lease with an
-expiry, as `outbox_events` uses, or a claim released by the transaction
-itself — and say which, and why, in the tracker.
+  **`X-Request-Id` is the one that needs deciding rather than
+  defaulting.** `httpx.WithRequestID` sets it on every request before the
+  handler runs, so a replay either echoes the *retry's* id or resurrects
+  the *original's*, and those are different products: the first lets an
+  operator find this call in the logs, the second points at the call that
+  did the work. Pick one, say why, and test it — a retry sent with a
+  different request id should assert status, exact body bytes, content
+  type, cache policy, and whichever request-id behaviour was chosen.
+
+### The claim cannot be in the same transaction as the work
+
+An earlier draft of this spec said it must be, "for the same reason the
+outbox row is". That is wrong, and the contradiction is worth stating
+because it is the whole difficulty of the unit.
+
+A claim written inside the work's transaction is invisible until that
+transaction commits. A second request then does not see it — it **blocks**
+on the unique index until the first commits or rolls back, and wakes to
+find `complete`. It never observes `in flight`, so the second of the
+three states above is unreachable and a caller waits out the full
+duration of someone else's request instead of being told to retry.
+
+Making the second state reachable means the claim commits **before** the
+work — which reintroduces exactly what the single transaction was
+avoiding: a claim held by a process that then dies. That is the M3.1
+shape again, and the answer it eventually reached was a lease with an
+expiry, which `outbox_events` now uses.
+
+So the unit must choose between:
+
+- **claim in its own transaction with a lease** — the second state works,
+  and a dead holder is recovered when the lease expires; or
+- **claim inside the work's transaction** — simpler and self-releasing on
+  rollback, at the cost of concurrent callers blocking rather than being
+  refused.
+
+Decide, record which and why in the tracker, and say what a refused
+caller is told: the status code and whether anything indicates when to
+retry. Do not restate the contradiction as resolved without saying how.
 
 ## Scope means scope
 
@@ -80,18 +118,50 @@ or against two different endpoints, must not collide — and a key replayed
 against a *different request body* is a caller bug that must be refused
 rather than silently answered with the first result.
 
-The scope has to be documented, because the standard says so and because
-a scope nobody wrote down is one every future endpoint invents again.
-State it explicitly: what the key is scoped by, and what happens when the
-same key arrives with a different body.
+**The scope is `(workspace_id, user_id, endpoint, key)`.** Stated here
+rather than left to the implementation, because the standard requires a
+documented scope and a scope nobody wrote down is one every future
+endpoint invents again. Workspace and user are in it because a key is a
+caller's string and two callers may pick the same one; the endpoint is in
+it because the same string against `createSession` and against some later
+mutation are unrelated requests.
+
+**Body comparison is over a canonical fingerprint, and the canonical
+rules are the part that goes wrong.** A raw byte comparison rejects
+retries that are equivalent — a client that reorders JSON members, or
+adds whitespace, or sends `base_branch` as `""` where it omitted it
+before, has not changed its request. `createSession` takes `task_id`,
+`agent_version_id` and an optional `base_branch` where omitted means the
+repository default, so "omitted" and "empty" are the same request and
+must fingerprint the same. Define the normalisation explicitly, and test
+the equivalences rather than only the differences.
 
 ## Transport
 
-`Idempotency-Key`, a request header, optional. Absent means the mutation
-behaves exactly as it does today — this unit must not make an existing
-caller's request fail for want of a header it has never sent.
+`Idempotency-Key`, a request header, optional **at the API** and
+**required of our own client**. Those are different things and the unit
+needs both.
 
-The contract describes it, so the generated client can send it.
+Optional at the API because `context/architecture.md` says so — "an
+authenticated request with a request ID and optional idempotency key" —
+and because a request without one must keep behaving exactly as it does
+today. This unit must not fail an existing caller for want of a header it
+has never sent.
+
+But a mechanism no caller uses protects nothing, and today no caller
+would: `apps/web/lib/api.ts` sends only a JSON body, and the contract
+describes no such header. **A duplicate branch does not care that the
+protection was available.** So the unit also:
+
+- adds the header to the contract, so the generated types carry it;
+- accepts an optional key in the `createSession` wrapper and forwards it
+  when present, leaving calls without one unchanged;
+- makes the session form send a **stable** key — stable across a retry of
+  the same submission and different across a deliberate second one. A key
+  regenerated per attempt is worse than none, because it looks like
+  protection: that is the mistake M3.3 made with branch names, where
+  every attempt produced a different name and a retry created a second
+  branch.
 
 ## Data
 
@@ -104,9 +174,30 @@ response, and enough to expire rows that will never be replayed. Let the
 three outcomes above decide the columns rather than copying a shape from
 elsewhere.
 
+**A unique constraint on the canonical scoped key is required, not
+optional.** Without it the implementation is a check followed by an
+insert, and two concurrent requests both check, both find nothing, and
+both create a session — which is the entire failure this unit exists to
+prevent, reintroduced by the storage layer. The constraint is what makes
+exactly one claim win; it does **not** by itself produce the in-flight
+refusal, which is the separate decision above. Define what the losing
+insert does and cover it with the concurrent test.
+
+**Retention has to be decided here, and it has not been elsewhere.** The
+seven days in `services/api/main.go` is the webhook delivery log's and
+its reasoning is about GitHub's redelivery window, not about how long a
+caller might retry. The audit-retention policy in
+`context/architecture.md` does not name this table. So either set a
+period with a reason, or name the audit-retention policy as a dependency
+and state the interim contract — and in both cases say what a retry
+after expiry does. It creates a new session: that is defensible, it is
+what deleting the record means, and it must be written down rather than
+discovered by someone whose retry produced a second branch a fortnight
+later.
+
 **Stored responses are customer data.** A replayed `createSession`
-response carries a branch name and identifiers; the retention decision
-belongs with `audit_events` and the delivery log, not invented here.
+response carries a branch name and identifiers, which is a second reason
+the retention answer cannot be "keep them forever".
 
 ## Tests
 
@@ -121,6 +212,13 @@ belongs with `audit_events` and the delivery log, not invented here.
 - The same key from another workspace is a different key.
 - A request with no header behaves exactly as it does now.
 - A key held by a transaction that rolled back does not block the retry.
+- A retry sent with a *different* request id returns the stored status,
+  the same body bytes, the same content type and cache policy, and
+  whichever `X-Request-Id` behaviour was chosen.
+- Equivalent bodies fingerprint the same: reordered JSON members, added
+  whitespace, and `base_branch` omitted versus sent empty.
+- The web form sends the same key when a submission is retried and a
+  different one for a fresh submission.
 
 ## Carried forward, and worth reading before starting
 
@@ -148,7 +246,9 @@ When writing why something is correct, check that it is the reason.
   first session and creates nothing.
 - Concurrent duplicates produce one session, proven against real
   PostgreSQL and watched failing first.
-- The scope is documented in the tracker, along with the claim mechanism
-  and why it was chosen.
-- No existing caller is broken by the header being absent.
+- The scope is documented in the tracker, along with the claim mechanism,
+  the refusal a concurrent caller receives, the `X-Request-Id` decision,
+  and the retention period — each with why it was chosen.
+- No existing caller is broken by the header being absent, **and our own
+  client sends one**, so the protection is real rather than available.
 - `make ci` and `make test-integration` pass.

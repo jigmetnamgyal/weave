@@ -5,11 +5,11 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M4 complete in code; M5 split into six units, M5.0 specced and next
+- Status: M4 complete in code but **not yet demonstrated** — the M4.3 browser walk is outstanding; M5 split into six units, M5.0 specced and next
 
 ## Current Goal
 
-Implement authentication, workspaces, and tenant isolation on top of the verified repository foundation.
+Make a session actually run: drain the outbox, start a durable workflow, cut a branch, and provision an isolated runner for a deterministic provider. M4 left every session sitting in `queued` with a promise nothing reads.
 
 ## Product Milestones
 
@@ -50,7 +50,7 @@ Implement authentication, workspaces, and tenant isolation on top of the verifie
 
 ## In Progress
 
-M5.0 is specced and not started. M4.3 merged to main as d99af91 after one review round and six findings; the signed-in browser walk it exists for has still not been done, because it needs a GitHub sign-in only the operator can perform. That is the same gap M2.2, M2.3 and M3.0 carried, and the 2026-09-11 walk is what closed those.
+M5.0 is specced and not started. M4.3 merged to main as d99af91 after one review round and six findings; the signed-in browser walk it exists for has still not been done, because it needs a GitHub sign-in only the operator can perform. **The walk gates calling M4 done, not starting M5.0** — idempotency touches none of that surface — but it should not stay outstanding for another milestone: the last one of these found four defects no automated test had caught. That is the same gap M2.2, M2.3 and M3.0 carried, and the 2026-09-11 walk is what closed those.
 
 ## Next Up
 
@@ -62,7 +62,7 @@ M5's line is "durable session workflow, runner manager, isolated runner, and fak
 
 **M5.0 — Idempotency keys.** Specced in `context/features-specs/13-idempotency-keys.md`. The gate M4.2's review put in front of everything else: today a lost response on `POST /sessions` duplicates a row, and the moment M5.1 exists the same retry starts two workflows and cuts two branches. The mechanism is built generally and applied to `createSession` only — most of the other nine mutations are already idempotent for reasons worth keeping rather than overriding.
 
-**M5.1 — The outbox publisher and the first workflow.** Temporal arrives: the SDK is not yet a dependency and `services/worker` is still a `doc.go`. The publisher claims outbox rows and starts a workflow keyed by session id. **This unit owes the two tests M4.2 could not write** — a lease that expires after a publisher dies, and two claimers racing for one row. That protocol is designed, documented in migration 00007, and has never been exercised. The workflow itself does the minimum: move the session `queued → provisioning` and back, so the loop is proven before anything external is in it. It also travels the first of the fifteen transitions M4.2 decided and never used.
+**M5.1 — The outbox publisher and the first workflow.** Temporal arrives: the SDK is not yet a dependency and `services/worker` is still a `doc.go`. The publisher claims outbox rows and starts a workflow keyed by session id. **This unit owes the two tests M4.2 could not write** — a lease that expires after a publisher dies, and two claimers racing for one row. That protocol is designed, documented in migration 00007, and has never been exercised. The workflow itself does the minimum, and what "the minimum" can be is decided by the state machine rather than by convenience: `queued → provisioning` and then `→ failed`, carrying a reason that names the missing runner. An earlier draft of this entry said "and back", which the table forbids — `provisioning` may become `running`, `cancelling`, `failed` or `expired`, and **not** `queued`. Probed rather than argued: `CanTransition(provisioning, queued)` is `false`. Adding that edge to make a first workflow tidy would be changing the state machine to suit a demo, so the workflow ends somewhere legal instead. It travels the first three of the fifteen transitions M4.2 decided and never used.
 
 **M5.2 — Branch creation in the workflow.** The first real call to `CreateBranch`, as an activity with bounded retries. **Closes the oldest outstanding gap in the project**: M3.3 shipped in September and no branch has ever been created against a real repository. The branch name is already decided and stored by M4.2, derived from the session id precisely so a retried activity finds the branch it made rather than cutting a second.
 
