@@ -158,6 +158,27 @@ AS $$
 DECLARE
     removed bigint;
 BEGIN
+    -- The floor is what makes this function narrow enough to be safe to hold.
+    --
+    -- It deletes across every workspace and runs as a role that looks past the
+    -- policies, so an arbitrary interval is an arbitrary amount of deletion: a
+    -- zero or negative one would remove every key in every tenant, and the
+    -- next retry of anything would then create a duplicate. Being callable
+    -- only by weave_app is not sufficient protection, because a compromised
+    -- credential or an injection path is exactly the case a privileged
+    -- function has to survive.
+    --
+    -- Raised rather than clamped. Silently widening the caller's interval
+    -- would hide a bug in whoever asked for it, and the application constant
+    -- is 24 hours — so anything shorter arriving here is a defect, not a
+    -- preference. Lowering the floor should be a migration someone writes on
+    -- purpose.
+    IF retention IS NULL OR retention < interval '24 hours' THEN
+        RAISE EXCEPTION
+            'idempotency retention must be at least 24 hours, got %', retention
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
     DELETE FROM idempotency_keys WHERE created_at < now() - retention;
     GET DIAGNOSTICS removed = ROW_COUNT;
     RETURN removed;

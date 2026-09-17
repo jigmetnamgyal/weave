@@ -392,3 +392,48 @@ func TestAReclaimWithADifferentRequestIsRefusedIntegration(t *testing.T) {
 			"lease let a different body overwrite the fingerprint", outcome)
 	}
 }
+
+// TestTheSweepRefusesToDeleteUnexpiredRecordsIntegration guards the privilege
+// the prune function holds.
+//
+// It deletes across every workspace and runs as a role that looks past the
+// policies, so an arbitrary interval is an arbitrary amount of deletion: a
+// zero or negative one would empty the table for every tenant, and the next
+// retry of anything would then create a duplicate. Being callable only by
+// weave_app is not the protection — a compromised credential or an injection
+// path is exactly what a privileged function has to survive.
+func TestTheSweepRefusesToDeleteUnexpiredRecordsIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	store := postgres.NewIdempotencyStore(appPool)
+	fixture := seedSessionFixture(t, ownerPool, "Idempotency Floor Workspace")
+
+	if _, _, _, err := postgres.NewIdempotencyStore(ownerPool).Claim(fixture.ctx,
+		recordFor(fixture, "fresh-key", "task", "version", ""), application.IdempotencyLease); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	for name, retention := range map[string]time.Duration{
+		"zero":     0,
+		"negative": -24 * time.Hour,
+		"an hour":  time.Hour,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := store.Prune(context.Background(), retention); err == nil {
+				t.Errorf("a %s retention was accepted; it would delete unexpired records "+
+					"across every workspace", name)
+			}
+		})
+	}
+
+	// The record is still there, which is the thing that matters.
+	var remaining int
+	if err := ownerPool.QueryRow(context.Background(),
+		"SELECT count(*) FROM idempotency_keys WHERE workspace_id = $1",
+		fixture.workspace.ID).Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 1 {
+		t.Errorf("%d records remain, want 1 — a refused sweep deleted something", remaining)
+	}
+}
