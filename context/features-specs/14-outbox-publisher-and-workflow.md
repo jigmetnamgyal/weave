@@ -31,9 +31,14 @@ and completes or releases **B's claim** — clearing B's lease, or marking
 done work that B is still doing.
 
 So the schema gains a claim token, reissued on every claim including a
-reclaim, and completion and retry updates must match it. Reject a stale
-operation rather than letting it write. Test that A cannot mutate B's
-claim.
+reclaim, and **every** state update must match it — not completion and
+retry, which is how the first correction of this section put it, but
+anything that writes to a claimed row, the terminal outcome below
+included. Enumerating two is how the third is missed, and the third here
+is the one that quarantines somebody else's work.
+
+Reject a stale operation rather than letting it write, and test that A
+cannot mutate B's claim — including that A cannot terminate it.
 
 ## Decided here: the publisher runs in the worker
 
@@ -79,12 +84,28 @@ policy that starts a second workflow for a session that already ran.
 So the unit must state, and test:
 
 - the **reuse policy**, which should reject a duplicate id rather than
-  allow one — and the retention window over which that guarantee holds,
-  because Temporal forgets closed executions eventually and the guarantee
-  expires with them;
+  allow one;
 - how an "already started" response is recognised and treated as
   **success**, not failure. An at-least-once publisher that reports a
   duplicate as an error retries forever.
+
+**And the guarantee has to be bounded by something we control.** Temporal
+forgets closed executions eventually, so a reuse policy is a promise with
+an expiry date — while the outbox row, if it can stay retryable
+indefinitely, has no expiry at all. Those two together do not give "a
+second publish never starts a second workflow"; they give it *until the
+retention window passes*, after which the duplicate this section exists to
+prevent becomes possible again, on the row least likely to be looked at.
+
+Close it one of two ways, and say which:
+
+- give the outbox row a **maximum age or attempt ceiling shorter than
+  Temporal's retention**, so a row cannot outlive the memory that protects
+  it — the simpler answer, and checkable;
+- or add a durable **application-side** guard that does not depend on
+  Temporal remembering anything.
+
+Either way the boundary is a tested case, not an assumption.
 
 This composes with M5.0 rather than duplicating it: the idempotency key
 stops a retried *request* creating a second session; the workflow id stops
@@ -201,8 +222,8 @@ configuration.
   **Watch this fail** against a boolean-flag implementation.
 - Two claimers race for one row; exactly one wins. **Watch this fail**
   against a read-then-write, with the pool warmed so they truly overlap.
-- A publisher whose lease expired **cannot** complete or release the row
-  that replaced it.
+- A publisher whose lease expired **cannot** complete, release or
+  terminate the row that replaced it.
 - A claimed row that fails goes back with `attempts` incremented and
   `available_at` pushed out; a terminal failure stops being claimed and
   keeps its metadata.
@@ -210,6 +231,9 @@ configuration.
   while the first is running **and after it has closed**, against a real
   Temporal rather than a mock, because the reuse policy is the mechanism
   and a mock would assert our belief about it.
+- A row cannot outlive the protection: whichever bound was chosen above is
+  exercised at its edge, so the guarantee is known to hold rather than
+  assumed to.
 - The workflow moves a session `queued → provisioning → failed`, with each
   transition recording the version it observed.
 - A redelivered activity whose transition already committed reports
@@ -244,7 +268,8 @@ a lesson is not applying it.
 - A session created through the API reaches `failed` on its own, with its
   transitions recorded and no human action.
 - Its outbox row is completed, and a second publish produces no second
-  workflow — including after the first has closed.
+  workflow — including after the first has closed, and including at the
+  edge of whichever bound keeps that true.
 - A publisher killed mid-claim leaves a row another publisher picks up
   once the lease expires, and cannot disturb it when it returns.
 - The publisher placement, the readiness decision, the system-actor
