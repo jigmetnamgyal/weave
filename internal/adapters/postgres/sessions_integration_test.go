@@ -140,7 +140,7 @@ func (f sessionFixture) createSession(
 			NextState: domain.SessionQueued, ObservedVersion: 1,
 			Reason: "session created", ActorUserID: &f.owner.ID,
 		},
-		event, verifyTaskIsReady, f.actor, audit)
+		event, verifyTaskIsReady, nil, f.actor, audit)
 }
 
 // verifyTaskIsReady is the check the service passes into Create, kept here so
@@ -454,7 +454,7 @@ func TestASessionCannotPinAnotherWorkspacesRowsIntegration(t *testing.T) {
 					ID: eventID, WorkspaceID: mine.workspace.ID,
 					Topic: application.TopicSessionCreated, SubjectID: sessionID,
 				},
-				verifyTaskIsReady, mine.actor,
+				verifyTaskIsReady, nil, mine.actor,
 				application.AuditEvent{
 					WorkspaceID: mine.workspace.ID, ActorUserID: mine.owner.ID,
 					Action: application.AuditSessionCreated, Target: sessionID.String(),

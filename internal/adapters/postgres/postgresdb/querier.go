@@ -18,11 +18,27 @@ type Querier interface {
 	// Append-only, enforced by trigger as well as by there being no other
 	// statement that touches this table.
 	AppendSessionTransition(ctx context.Context, arg AppendSessionTransitionParams) (SessionStateTransition, error)
+	// The claim, as one statement rather than a check followed by an insert.
+	//
+	// ON CONFLICT DO UPDATE rather than DO NOTHING, because the conflict has two
+	// meanings and only the update can tell them apart while taking the lease: a
+	// row whose lease has expired and which never completed is a claim whose
+	// holder died, and it is claimable again; anything else is either in flight or
+	// complete and must not be disturbed.
+	//
+	// The WHERE on the update is what makes that safe. When it does not match,
+	// nothing is written and nothing is returned, and the caller reads the row to
+	// find out which of the two it is.
+	ClaimIdempotencyKey(ctx context.Context, arg ClaimIdempotencyKeyParams) (IdempotencyKey, error)
 	// Single-statement claim: the WHERE clause is what makes the token single
 	// use. Two concurrent accepts race here and exactly one matches a row, so no
 	// lock is needed and no second membership can be created.
 	ClaimInvitation(ctx context.Context, arg ClaimInvitationParams) (WorkspaceInvitation, error)
 	ClearInstallationPermissions(ctx context.Context, arg ClearInstallationPermissionsParams) error
+	// Written in the same transaction as the work it describes. A response
+	// recorded afterwards could fail while the work stood, and the expiring lease
+	// would then let a retry do the work a second time.
+	CompleteIdempotencyKey(ctx context.Context, arg CompleteIdempotencyKeyParams) error
 	// Mark a delivery's effect durable. Until this runs, a retry may reclaim it.
 	CompleteWebhookDelivery(ctx context.Context, deliveryID string) error
 	// Bind an installation to a workspace.
@@ -53,6 +69,7 @@ type Querier interface {
 	EnqueueOutboxEvent(ctx context.Context, arg EnqueueOutboxEventParams) (OutboxEvent, error)
 	GetAgentForWorkspace(ctx context.Context, arg GetAgentForWorkspaceParams) (Agent, error)
 	GetAgentVersionForWorkspace(ctx context.Context, arg GetAgentVersionForWorkspaceParams) (AgentVersion, error)
+	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetInstallationByGitHubIDForWorkspace(ctx context.Context, arg GetInstallationByGitHubIDForWorkspaceParams) (GithubInstallation, error)
 	// Scoped by workspace, so an installation id from one tenant cannot be read
 	// through another even before the policies are consulted.
@@ -155,6 +172,11 @@ type Querier interface {
 	// Read under the agent's row lock by the caller, so two concurrent edits
 	// cannot both compute the same next number and collide on the unique index.
 	NextAgentVersionNumber(ctx context.Context, arg NextAgentVersionNumberParams) (int32, error)
+	// Retention. A retry is recovery from a lost response, which happens inside a
+	// request-timeout window rather than days later — and these rows store a
+	// response body carrying identifiers, so they are customer data and shorter is
+	// better.
+	PruneIdempotencyKeys(ctx context.Context, retention pgtype.Interval) (int64, error)
 	// Deliveries are only needed while deduplication might see a retry. GitHub
 	// gives up well inside this window.
 	PruneWebhookDeliveries(ctx context.Context, retention pgtype.Interval) error
@@ -166,6 +188,10 @@ type Querier interface {
 	// delivery has been seen, which is how the caller distinguishes the two
 	// without a separate read and the race that would come with it.
 	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) (GithubWebhookDelivery, error)
+	// The work failed, so the key is released at once rather than making a
+	// legitimate retry wait out the lease. Guarded on not being complete, so a
+	// late release cannot erase a finished record.
+	ReleaseIdempotencyKey(ctx context.Context, arg ReleaseIdempotencyKeyParams) error
 	RenameAgent(ctx context.Context, arg RenameAgentParams) (Agent, error)
 	// Optimistic concurrency: the caller supplies the version it read. A stale
 	// version matches no row, which the store reports as a conflict rather than

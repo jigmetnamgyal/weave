@@ -67,6 +67,22 @@ type GithubWebhookDelivery struct {
 	CompletedAt pgtype.Timestamptz
 }
 
+// Makes a retried mutation safe. The claim commits before the work and carries a lease, because a claim inside the work's transaction cannot refuse a concurrent caller.
+type IdempotencyKey struct {
+	ID                 uuid.UUID
+	WorkspaceID        uuid.UUID
+	UserID             uuid.UUID
+	Endpoint           string
+	IdempotencyKey     string
+	RequestFingerprint []byte
+	ResponseStatus     *int32
+	ResponseBody       []byte
+	OriginRequestID    *string
+	LeasedUntil        pgtype.Timestamptz
+	CreatedAt          pgtype.Timestamptz
+	CompletedAt        pgtype.Timestamptz
+}
+
 // The durable promise that something happens elsewhere, written in the transaction that caused it. The claim is a lease with an expiry, not a flag.
 type OutboxEvent struct {
 	ID          uuid.UUID

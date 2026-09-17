@@ -126,11 +126,21 @@ export async function createSessionAction(
   if (taskId === "") return { error: "Choose a task." };
   if (agentVersionId === "") return { error: "Choose an agent." };
 
-  const result = await createSession(workspaceId, {
-    task_id: taskId,
-    agent_version_id: agentVersionId,
-    ...(baseBranch ? { base_branch: baseBranch } : {}),
-  });
+  // Carried in the form rather than generated here. Generated here it would be
+  // new on every attempt, which is exactly the failure it is meant to prevent:
+  // a retry after a lost response would create a second session while looking
+  // protected.
+  const idempotencyKey = String(formData.get("idempotency_key") ?? "") || undefined;
+
+  const result = await createSession(
+    workspaceId,
+    {
+      task_id: taskId,
+      agent_version_id: agentVersionId,
+      ...(baseBranch ? { base_branch: baseBranch } : {}),
+    },
+    idempotencyKey
+  );
   if (!result.ok) return { error: result.message };
 
   revalidatePath(`/workspaces/${workspaceId}/sessions`);

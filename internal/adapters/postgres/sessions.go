@@ -49,6 +49,7 @@ func (s *SessionStore) Create(
 	transition domain.SessionStateTransition,
 	event application.OutboxEvent,
 	verifyTask func(domain.Task) error,
+	completion *application.IdempotentCompletion,
 	actor application.Actor,
 	audit application.AuditEvent,
 ) (domain.Session, error) {
@@ -131,6 +132,22 @@ func (s *SessionStore) Create(
 		}
 
 		created = sessionToDomain(row)
+
+		// The idempotent response, written here rather than after the
+		// transaction. Render is the transport's, because only the transport
+		// knows what the response looks like; it runs inside the transaction
+		// so the session and the answer describing it commit together or not
+		// at all.
+		if completion != nil {
+			status, body, err := completion.Render(created)
+			if err != nil {
+				return fmt.Errorf("render idempotent response: %w", err)
+			}
+			if err := completeIdempotency(ctx, q, *completion, status, body); err != nil {
+				return err
+			}
+		}
+
 		return appendAudit(ctx, q, audit)
 	})
 	if err != nil {

@@ -71,6 +71,11 @@ type SessionRepository interface {
 		transition domain.SessionStateTransition,
 		event OutboxEvent,
 		verifyTask func(domain.Task) error,
+		// completion, when present, records the idempotent response in this
+		// same transaction. It cannot be written afterwards: a session
+		// committed with its response write failed would let the lease expire
+		// and the retry create a second session.
+		completion *IdempotentCompletion,
 		actor Actor,
 		audit AuditEvent,
 	) (domain.Session, error)
@@ -133,6 +138,10 @@ const sessionPermission = domain.PermissionSessionCreate
 type CreateSessionCommand struct {
 	TaskID         uuid.UUID
 	AgentVersionID uuid.UUID
+	// Completion, when present, is the idempotency record to finish in the
+	// same transaction as the session. Absent means the caller sent no
+	// idempotency key, which stays a supported way to call this.
+	Completion *IdempotentCompletion
 	// BaseBranch is optional. Empty means the repository's default, resolved
 	// by the workflow against GitHub rather than here: the default can change
 	// between this row and the branch being cut, and the workflow is the thing
@@ -281,6 +290,7 @@ func (s *SessionService) Create(
 	// body: an audit trail is read by operators and machinery that was not
 	// written expecting arbitrary untrusted text.
 	return s.sessions.Create(ctx, session, participant, transition, event, verifyTask,
+		command.Completion,
 		Actor{UserID: membership.UserID, Required: sessionPermission},
 		AuditEvent{
 			WorkspaceID: membership.WorkspaceID,

@@ -450,14 +450,25 @@ export async function fetchSessionParticipants(
   return result.ok ? { ok: true, data: result.data.participants } : result;
 }
 
-/** Start a session from a ready task. */
+/**
+ * Start a session from a ready task.
+ *
+ * `idempotencyKey` should be sent, and should be **stable across retries of
+ * the same submission**. Without one a lost response cannot be distinguished
+ * from a request that never arrived, and retrying creates a second session —
+ * which becomes a second workflow and a second branch once the session
+ * workflow exists. A key regenerated per attempt is worse than none, because
+ * it looks like protection: that is the mistake M3.3 made with branch names.
+ */
 export async function createSession(
   workspaceId: string,
-  input: { task_id: string; agent_version_id: string; base_branch?: string }
+  input: { task_id: string; agent_version_id: string; base_branch?: string },
+  idempotencyKey?: string
 ): Promise<Result<Session>> {
   return apiRequest<Ok<"createSession">>(`/v1/workspaces/${workspaceId}/sessions`, {
     method: "POST",
     body: JSON.stringify(input),
+    ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
   });
 }
 

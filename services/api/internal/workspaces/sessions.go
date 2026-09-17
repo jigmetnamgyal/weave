@@ -3,6 +3,7 @@ package workspaces
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,8 +14,17 @@ import (
 )
 
 // RegisterSessions mounts the session routes.
-func (h *Handler) RegisterSessions(mux *http.ServeMux, sessions *application.SessionService) {
-	routes := &sessionRoutes{handler: h, service: sessions}
+//
+// keys makes POST retryable. It is a separate collaborator rather than part of
+// the service because idempotency is a property of the HTTP exchange — the
+// status replayed, the body bytes, the header — and the service knows none of
+// those.
+func (h *Handler) RegisterSessions(
+	mux *http.ServeMux,
+	sessions *application.SessionService,
+	keys application.IdempotencyRepository,
+) {
+	routes := &sessionRoutes{handler: h, service: sessions, keys: &idempotency{keys: keys}}
 
 	mux.Handle("POST /v1/workspaces/{workspaceID}/sessions",
 		h.requireMembership(http.HandlerFunc(routes.create)))
@@ -31,6 +41,7 @@ func (h *Handler) RegisterSessions(mux *http.ServeMux, sessions *application.Ses
 type sessionRoutes struct {
 	handler *Handler
 	service *application.SessionService
+	keys    *idempotency
 }
 
 type sessionRequest struct {
@@ -111,12 +122,42 @@ func (s *sessionRoutes) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Claimed after the identifiers are parsed, so a malformed request does
+	// not burn a key, and after the body is decoded, because the fingerprint
+	// is over what was asked for rather than the bytes it arrived in.
+	//
+	// base_branch is normalised before it is fingerprinted: the contract says
+	// omitting it means the repository default, so a client that sends it
+	// empty has not changed its request and its retry must not be refused.
+	claim, ok := s.keys.claim(ctx, w, r, s.handler,
+		domain.IdempotencyScope{
+			WorkspaceID: membership.WorkspaceID,
+			UserID:      membership.UserID,
+			Endpoint:    "createSession",
+		},
+		[]string{taskID.String(), agentVersionID.String(), strings.TrimSpace(body.BaseBranch)})
+	if !ok {
+		return
+	}
+
+	if claim.completion != nil {
+		// Render runs inside the store's transaction, so the stored answer and
+		// the session it describes commit together.
+		claim.completion.Render = func(created domain.Session) (int, []byte, error) {
+			return renderJSON(http.StatusCreated, toSessionResponse(created))
+		}
+	}
+
 	session, err := s.service.Create(ctx, membership, application.CreateSessionCommand{
 		TaskID:         taskID,
 		AgentVersionID: agentVersionID,
 		BaseBranch:     body.BaseBranch,
+		Completion:     claim.completion,
 	})
 	if err != nil {
+		// The work failed, so the key goes back at once rather than refusing a
+		// legitimate retry for the length of the lease.
+		s.keys.release(ctx, claim.completion)
 		s.handler.writeError(ctx, w, err, "create session")
 		return
 	}

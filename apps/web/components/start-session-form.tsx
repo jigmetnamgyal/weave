@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,25 @@ export function StartSessionForm({
     initialState
   );
 
+  // One key per *submission*, not per attempt.
+  //
+  // That distinction is the whole point. Regenerated on every render or every
+  // click, a retry after a lost response would carry a new key and create a
+  // second session — protection that looks real and is not, which is the
+  // mistake M3.3 made with branch names. So it is generated once, kept for as
+  // long as this submission is being attempted, and replaced only once one has
+  // succeeded, so the next session someone starts is deliberately a new one.
+  //
+  // Adjusted during render rather than in an effect. React documents this for
+  // exactly this shape — state that needs to change when a prop or a previous
+  // result changes — and an effect calling setState here would render twice
+  // and trip the cascading-render rule.
+  const [key, setKey] = useState(() => ({ value: crypto.randomUUID(), forCreated: state.created }));
+  if (key.forCreated !== state.created) {
+    setKey({ value: crypto.randomUUID(), forCreated: state.created });
+  }
+  const idempotencyKey = key.value;
+
   const runnable = agents.filter((agent) => agent.current_version_id);
 
   if (readyTasks.length === 0 || runnable.length === 0) {
@@ -46,6 +65,9 @@ export function StartSessionForm({
 
   return (
     <form action={formAction} className="space-y-3">
+      {/* Submitted with the form so the same value reaches the server on a
+          retry of this submission. */}
+      <input type="hidden" name="idempotency_key" value={idempotencyKey} />
       <div className="space-y-1.5">
         <label htmlFor="session-task" className="text-sm font-medium">
           Task
