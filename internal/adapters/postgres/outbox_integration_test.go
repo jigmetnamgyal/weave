@@ -48,21 +48,29 @@ func claimFor(
 		// attempt spent is worse, because attempts are finite and a row that
 		// exhausts them is terminated. Measured: before this, one test run
 		// took an unrelated row from 0 attempts to 1 and left it leased.
-		releaseForeign(t, pool, event.ID)
+		releaseForeign(t, pool, event.ID, event.Claimant)
 	}
 	return mine, found
 }
 
 // releaseForeign undoes a claim this test had no business making.
 //
-// Through the owner pool and by id, restoring the row exactly: no lease, no
-// claimant, and the attempt given back.
-func releaseForeign(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
+// Through the owner pool, restoring the row exactly: no lease, no claimant,
+// and the attempt given back.
+//
+// **Fenced on the claimant, like every other write to a claimed row.** Without
+// it this filters on id alone, and a publisher that reclaimed the row between
+// the claim and this cleanup would have its lease cleared and its attempt
+// decremented by a test tidying up after itself. That is the same fencing hole
+// this PR fixed in the outbox and the settling updates — and it was sitting in
+// the helper written to stop tests damaging other tenants' rows, which would
+// have made the protection the thing doing the damage.
+func releaseForeign(t *testing.T, pool *pgxpool.Pool, id, claimant uuid.UUID) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
 		`UPDATE outbox_events
 		 SET leased_until = NULL, claimant = NULL, attempts = GREATEST(attempts - 1, 0)
-		 WHERE id = $1`, id); err != nil {
+		 WHERE id = $1 AND claimant = $2`, id, claimant); err != nil {
 		t.Fatalf("release a row this test should not have claimed: %v", err)
 	}
 }
@@ -170,7 +178,7 @@ func TestTwoPublishersCannotClaimTheSameRowIntegration(t *testing.T) {
 				mine++
 				continue
 			}
-			releaseForeign(t, pool, event.ID)
+			releaseForeign(t, pool, event.ID, event.Claimant)
 		}
 	}
 	if mine != 1 {
