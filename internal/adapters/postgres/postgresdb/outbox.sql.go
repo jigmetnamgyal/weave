@@ -122,6 +122,40 @@ func (q *Queries) GetOutboxEvent(ctx context.Context, arg GetOutboxEventParams) 
 	return i, err
 }
 
+const releaseUnstartedOutboxEvent = `-- name: ReleaseUnstartedOutboxEvent :execrows
+UPDATE outbox_events
+SET leased_until = NULL,
+    claimant     = NULL,
+    attempts     = GREATEST(attempts - 1, 0)
+WHERE id = $1 AND claimant = $2
+  AND completed_at IS NULL AND terminated_at IS NULL
+`
+
+type ReleaseUnstartedOutboxEventParams struct {
+	ID       uuid.UUID
+	Claimant pgtype.UUID
+}
+
+// Give a row back that was claimed and never attempted.
+//
+// The claim increments `attempts` for the whole batch, which is deliberate: a
+// publisher that dies mid-delivery must still burn one, or the ceiling that
+// bounds the duplicate guarantee never applies to the case it exists for. But
+// a row the publisher never got to — because the batch ran out of lease — has
+// not been attempted at all, and spending an attempt on it would march it
+// toward termination for no reason but our own slowness.
+//
+// So the attempt is given back, and `available_at` is left alone so the row is
+// claimable immediately rather than pushed out like a failure. Fenced like
+// every other settling update.
+func (q *Queries) ReleaseUnstartedOutboxEvent(ctx context.Context, arg ReleaseUnstartedOutboxEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseUnstartedOutboxEvent, arg.ID, arg.Claimant)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const retryOutboxEvent = `-- name: RetryOutboxEvent :execrows
 UPDATE outbox_events
 SET leased_until = NULL,

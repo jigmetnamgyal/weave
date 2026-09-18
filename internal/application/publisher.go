@@ -114,8 +114,17 @@ func (p *Publisher) drainOnce(ctx context.Context) (int, error) {
 		if time.Now().After(deadline) {
 			p.logger.WarnContext(ctx, "stopping the batch before its lease expires",
 				slog.Int("delivered", index),
-				slog.Int("claimed", len(claimed)),
+				slog.Int("returned", len(claimed)-index),
 			)
+			// Give the untouched rows back rather than leaving them leased.
+			//
+			// Letting them expire would work, but the claim already spent an
+			// attempt on each — so a run of slow batches would walk rows
+			// toward their ceiling and terminate them without ever having
+			// called StartSessionWorkflow once. That is this deadline check
+			// trading one failure mode for another, which is the shape M3.1
+			// got wrong three times, so it is undone explicitly.
+			p.releaseUnstarted(ctx, claimed[index:])
 			// Reported as a short batch so the caller does not immediately ask
 			// for another: the queue is not drained, but this publisher is out
 			// of time to drain it.
@@ -124,6 +133,19 @@ func (p *Publisher) drainOnce(ctx context.Context) (int, error) {
 		p.deliver(ctx, event)
 	}
 	return len(claimed), nil
+}
+
+// releaseUnstarted hands back rows this publisher claimed and never attempted.
+func (p *Publisher) releaseUnstarted(ctx context.Context, events []ClaimedOutboxEvent) {
+	for _, event := range events {
+		if err := p.outbox.ReleaseUnstarted(ctx, event); err != nil {
+			// Logged rather than retried: the row keeps its lease and becomes
+			// claimable when it expires, which costs an attempt but loses
+			// nothing. Failing the loop over it would be worse.
+			p.logSettleFailure(ctx, p.logger.With(
+				slog.String("outbox_id", event.ID.String())), "release", err)
+		}
+	}
 }
 
 // deliver settles one claimed row.

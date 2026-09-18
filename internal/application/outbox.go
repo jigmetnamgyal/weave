@@ -95,6 +95,9 @@ type OutboxRepository interface {
 	// the workspace on the claimed row.
 	Claim(ctx context.Context, batchSize int, lease time.Duration, maxAttempts int) ([]ClaimedOutboxEvent, error)
 	Complete(ctx context.Context, event ClaimedOutboxEvent) error
+	// ReleaseUnstarted returns a claimed row that was never attempted, giving
+	// back the attempt the claim spent on it.
+	ReleaseUnstarted(ctx context.Context, event ClaimedOutboxEvent) error
 	Retry(ctx context.Context, event ClaimedOutboxEvent, backoff time.Duration, reason string) error
 	Terminate(ctx context.Context, event ClaimedOutboxEvent, reason string) error
 }

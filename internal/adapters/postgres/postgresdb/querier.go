@@ -223,6 +223,19 @@ type Querier interface {
 	// is: a late holder must not delete the claim that replaced it. Guarded on not
 	// being complete, so a late release cannot erase a finished record.
 	ReleaseIdempotencyKey(ctx context.Context, arg ReleaseIdempotencyKeyParams) (int64, error)
+	// Give a row back that was claimed and never attempted.
+	//
+	// The claim increments `attempts` for the whole batch, which is deliberate: a
+	// publisher that dies mid-delivery must still burn one, or the ceiling that
+	// bounds the duplicate guarantee never applies to the case it exists for. But
+	// a row the publisher never got to — because the batch ran out of lease — has
+	// not been attempted at all, and spending an attempt on it would march it
+	// toward termination for no reason but our own slowness.
+	//
+	// So the attempt is given back, and `available_at` is left alone so the row is
+	// claimable immediately rather than pushed out like a failure. Fenced like
+	// every other settling update.
+	ReleaseUnstartedOutboxEvent(ctx context.Context, arg ReleaseUnstartedOutboxEventParams) (int64, error)
 	RenameAgent(ctx context.Context, arg RenameAgentParams) (Agent, error)
 	// Optimistic concurrency: the caller supplies the version it read. A stale
 	// version matches no row, which the store reports as a conflict rather than

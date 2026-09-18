@@ -25,6 +25,7 @@ type fakeOutbox struct {
 	pending     []application.ClaimedOutboxEvent
 	completed   []uuid.UUID
 	retried     []uuid.UUID
+	released    []uuid.UUID
 	terminated  map[uuid.UUID]string
 	outstanding int
 	// settled closes once every seeded row has been dealt with, so the test
@@ -65,6 +66,14 @@ func (f *fakeOutbox) Complete(_ context.Context, event application.ClaimedOutbox
 	return nil
 }
 
+func (f *fakeOutbox) ReleaseUnstarted(_ context.Context, event application.ClaimedOutboxEvent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, event.ID)
+	f.settledOne()
+	return nil
+}
+
 func (f *fakeOutbox) Retry(_ context.Context, event application.ClaimedOutboxEvent, _ time.Duration, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -88,13 +97,14 @@ func (f *fakeOutbox) Terminate(_ context.Context, event application.ClaimedOutbo
 type outcome struct {
 	completed  []uuid.UUID
 	retried    []uuid.UUID
+	released   []uuid.UUID
 	terminated map[uuid.UUID]string
 }
 
 func (f *fakeOutbox) outcome() outcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return outcome{completed: f.completed, retried: f.retried, terminated: f.terminated}
+	return outcome{completed: f.completed, retried: f.retried, released: f.released, terminated: f.terminated}
 }
 
 // fakeStarter returns whatever the test wants StartSessionWorkflow to say.

@@ -108,12 +108,24 @@ BEGIN
     --
     -- Terminated rather than skipped, so an exhausted row leaves the queue
     -- with its reason instead of being walked past on every poll.
+    -- `left(..., 2000)` is load-bearing, not tidiness.
+    --
+    -- `last_error` is capped at 2000 characters, and a retry can leave it
+    -- exactly there. Appending the termination reason then violates the CHECK
+    -- — which aborts this whole function, so **one poison row stops every
+    -- other row in every workspace from being claimed at all**. Measured: a
+    -- row with a 2000-character error made the claim raise rather than return
+    -- a batch.
+    --
+    -- The reason goes first because it is the part worth keeping: what is
+    -- truncated is the older failure, which is already in the logs.
     UPDATE outbox_events
     SET terminated_at = now(),
         leased_until  = NULL,
-        last_error    = COALESCE(last_error, '') ||
-            CASE WHEN last_error IS NULL THEN '' ELSE ' | ' END ||
-            'gave up after ' || attempts || ' attempts without reaching settlement'
+        last_error    = left(
+            'gave up after ' || attempts || ' attempts without reaching settlement' ||
+            CASE WHEN last_error IS NULL THEN '' ELSE ' | ' || last_error END,
+            2000)
     WHERE completed_at IS NULL
       AND terminated_at IS NULL
       AND attempts >= max_attempts

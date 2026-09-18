@@ -101,6 +101,22 @@ func (s *OutboxStore) Retry(
 	})
 }
 
+// ReleaseUnstarted gives back a row that was claimed and never attempted.
+//
+// The claim spends an attempt on every row in the batch, which is deliberate:
+// a publisher that dies mid-delivery must still burn one, or the ceiling never
+// applies to the case it exists for. A row the publisher never reached — the
+// batch ran out of lease — has not been attempted, and letting the attempt
+// stand would march it toward termination for no reason but our own slowness.
+func (s *OutboxStore) ReleaseUnstarted(ctx context.Context, event application.ClaimedOutboxEvent) error {
+	return s.settle(ctx, event, "release", func(q *postgresdb.Queries) (int64, error) {
+		return q.ReleaseUnstartedOutboxEvent(ctx, postgresdb.ReleaseUnstartedOutboxEventParams{
+			ID:       event.ID,
+			Claimant: nullableUUID(&event.Claimant),
+		})
+	})
+}
+
 // Terminate stops a row being tried again, keeping why.
 func (s *OutboxStore) Terminate(ctx context.Context, event application.ClaimedOutboxEvent, reason string) error {
 	return s.settle(ctx, event, "terminate", func(q *postgresdb.Queries) (int64, error) {

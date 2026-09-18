@@ -388,3 +388,88 @@ func TestATerminatedRowIsNotReportedAsPendingIntegration(t *testing.T) {
 			"never be delivered reads as waiting", len(after))
 	}
 }
+
+// TestReleasingAnUnstartedRowGivesBackItsAttemptIntegration is the other half
+// of the lease deadline.
+//
+// The claim spends an attempt on every row in the batch — deliberately, so a
+// publisher that dies mid-delivery still burns one and the ceiling applies to
+// the case it exists for. But a row the publisher never reached has not been
+// attempted, and letting that attempt stand would march it toward termination
+// for no reason but our own slowness. A run of slow batches would then
+// terminate work that was never once tried.
+func TestReleasingAnUnstartedRowGivesBackItsAttemptIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewOutboxStore(pool)
+	fixture := seedSessionFixture(t, pool, "Outbox Release Unstarted Workspace")
+	if _, err := fixture.createSession(t, postgres.NewSessionStore(pool), nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	claimed := mustClaimFor(t, pool, store, fixture.workspace.ID)
+	if claimed.Attempts != 1 {
+		t.Fatalf("attempts = %d after one claim, want 1", claimed.Attempts)
+	}
+
+	if err := store.ReleaseUnstarted(context.Background(), claimed); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	// Claimable at once rather than pushed out: nothing failed, so there is
+	// nothing to back off from.
+	again, found := claimFor(t, pool, store, fixture.workspace.ID)
+	if !found {
+		t.Fatal("a released row was not immediately claimable")
+	}
+	if again.Attempts != 1 {
+		t.Errorf("attempts = %d after release and reclaim, want 1 — the unattempted "+
+			"row spent an attempt it never used", again.Attempts)
+	}
+}
+
+// TestTerminatingAMaxedOutErrorDoesNotJamTheQueueIntegration is why the
+// termination reason is truncated.
+//
+// `last_error` is capped at 2000 characters and a retry can leave it exactly
+// there. Appending to it then violates the CHECK — which aborts the claim
+// function, so **one poison row stops every other row in every workspace from
+// being claimed**. A queue that stops draining because one row failed loudly
+// enough is the worst shape this can take.
+func TestTerminatingAMaxedOutErrorDoesNotJamTheQueueIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewOutboxStore(pool)
+	fixture := seedSessionFixture(t, pool, "Outbox Jam Workspace")
+	if _, err := fixture.createSession(t, postgres.NewSessionStore(pool), nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Exhausted, with an error already at the column's limit.
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE outbox_events SET attempts = $1, last_error = repeat('x', 2000),
+		        leased_until = NULL, claimant = NULL
+		 WHERE workspace_id = $2`, application.OutboxMaxAttempts, fixture.workspace.ID); err != nil {
+		t.Fatalf("exhaust the row: %v", err)
+	}
+
+	// The claim must succeed. Before the fix it raised, and every workspace's
+	// queue stopped with it.
+	if _, err := store.Claim(context.Background(),
+		application.OutboxBatchSize, application.OutboxLease, application.OutboxMaxAttempts); err != nil {
+		t.Fatalf("the claim failed on a row whose error was at the column limit, "+
+			"which stops every other row too: %v", err)
+	}
+
+	var length int
+	var terminated bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT length(last_error), terminated_at IS NOT NULL FROM outbox_events WHERE workspace_id = $1",
+		fixture.workspace.ID).Scan(&length, &terminated); err != nil {
+		t.Fatalf("read the row: %v", err)
+	}
+	if !terminated {
+		t.Error("the exhausted row was not terminated")
+	}
+	if length > 2000 {
+		t.Errorf("last_error is %d characters, above the column's limit", length)
+	}
+}
