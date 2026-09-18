@@ -146,7 +146,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 const enqueueOutboxEvent = `-- name: EnqueueOutboxEvent :one
 INSERT INTO outbox_events (id, workspace_id, topic, subject_id, payload)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, workspace_id, topic, subject_id, payload, attempts, available_at, leased_until, last_error, completed_at, created_at
+RETURNING id, workspace_id, topic, subject_id, payload, attempts, available_at, leased_until, last_error, completed_at, created_at, claimant, terminated_at
 `
 
 type EnqueueOutboxEventParams struct {
@@ -182,6 +182,8 @@ func (q *Queries) EnqueueOutboxEvent(ctx context.Context, arg EnqueueOutboxEvent
 		&i.LastError,
 		&i.CompletedAt,
 		&i.CreatedAt,
+		&i.Claimant,
+		&i.TerminatedAt,
 	)
 	return i, err
 }
@@ -220,7 +222,7 @@ func (q *Queries) GetSessionForWorkspace(ctx context.Context, arg GetSessionForW
 }
 
 const listPendingOutboxEvents = `-- name: ListPendingOutboxEvents :many
-SELECT id, workspace_id, topic, subject_id, payload, attempts, available_at, leased_until, last_error, completed_at, created_at FROM outbox_events
+SELECT id, workspace_id, topic, subject_id, payload, attempts, available_at, leased_until, last_error, completed_at, created_at, claimant, terminated_at FROM outbox_events
 WHERE workspace_id = $1
   AND completed_at IS NULL
   AND available_at <= now()
@@ -255,6 +257,8 @@ func (q *Queries) ListPendingOutboxEvents(ctx context.Context, workspaceID uuid.
 			&i.LastError,
 			&i.CompletedAt,
 			&i.CreatedAt,
+			&i.Claimant,
+			&i.TerminatedAt,
 		); err != nil {
 			return nil, err
 		}

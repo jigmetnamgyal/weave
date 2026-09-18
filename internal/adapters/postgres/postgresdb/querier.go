@@ -39,6 +39,16 @@ type Querier interface {
 	// use. Two concurrent accepts race here and exactly one matches a row, so no
 	// lock is needed and no second membership can be created.
 	ClaimInvitation(ctx context.Context, arg ClaimInvitationParams) (WorkspaceInvitation, error)
+	// Take a batch of due rows, across every workspace, through the privileged
+	// function.
+	//
+	// Privileged because the publisher is the one caller that cannot have a
+	// workspace context — it polls every tenant's queue — and under FORCE
+	// row-level security an absent context matches no row, so a direct poll reads
+	// nothing and reports success. The function bounds its own arguments and
+	// returns rows carrying their `workspace_id`, which is what every write after
+	// the claim is scoped by: taken from the row, never from the caller.
+	ClaimOutboxBatch(ctx context.Context, arg ClaimOutboxBatchParams) ([]OutboxEvent, error)
 	ClearInstallationPermissions(ctx context.Context, arg ClearInstallationPermissionsParams) error
 	// Written in the same transaction as the work it describes. A response
 	// recorded afterwards could fail while the work stood, and the expiring lease
@@ -48,6 +58,9 @@ type Querier interface {
 	// running must not write over the record belonging to whoever reclaimed the
 	// key. Returning the row count is what lets the caller notice that happened.
 	CompleteIdempotencyKey(ctx context.Context, arg CompleteIdempotencyKeyParams) (int64, error)
+	// Fenced. A stale publisher marking someone else's claim done would hide work
+	// that is still owed.
+	CompleteOutboxEvent(ctx context.Context, arg CompleteOutboxEventParams) (int64, error)
 	// Mark a delivery's effect durable. Until this runs, a retry may reclaim it.
 	CompleteWebhookDelivery(ctx context.Context, deliveryID string) error
 	// Bind an installation to a workspace.
@@ -95,6 +108,10 @@ type Querier interface {
 	// Scoped by workspace so an invitation id from one tenant cannot be revoked
 	// through another.
 	GetInvitationForWorkspace(ctx context.Context, arg GetInvitationForWorkspaceParams) (WorkspaceInvitation, error)
+	// Used by tests and by an operator looking at one row. Workspace-scoped like
+	// everything else, so a row id from one tenant is not readable through
+	// another.
+	GetOutboxEvent(ctx context.Context, arg GetOutboxEventParams) (OutboxEvent, error)
 	// The row occupying the one-outstanding slot, if any. May be expired: the
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
@@ -211,6 +228,12 @@ type Querier interface {
 	// version matches no row, which the store reports as a conflict rather than
 	// silently overwriting a concurrent edit.
 	RenameWorkspace(ctx context.Context, arg RenameWorkspaceParams) (Workspace, error)
+	// The delivery failed for a reason that might not recur: release the lease,
+	// record why, and push the row out by the caller's backoff.
+	//
+	// Fenced for the same reason completion is — a stale publisher pushing out
+	// someone else's row would delay work that is currently being done.
+	RetryOutboxEvent(ctx context.Context, arg RetryOutboxEventParams) (int64, error)
 	// Only an outstanding invitation can be revoked; revoking an accepted or
 	// already-revoked one matches no row.
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
@@ -223,6 +246,13 @@ type Querier interface {
 	// what makes that possible.
 	SetInstallationSuspended(ctx context.Context, arg SetInstallationSuspendedParams) (GithubInstallation, error)
 	SlugExists(ctx context.Context, slug string) (bool, error)
+	// The delivery will never succeed, or has failed too many times to keep
+	// trying. The row stops being claimed and keeps its reason.
+	//
+	// Fenced like the other two. The first version of the M5.1 spec fenced
+	// "completion and retry" and left this one out, which would have let a stale
+	// publisher quarantine the row that replaced it.
+	TerminateOutboxEvent(ctx context.Context, arg TerminateOutboxEventParams) (int64, error)
 	// The version predicate is belt-and-braces behind LockSessionForUpdate: the
 	// lock already serialises writers, and this refuses to write at all if the row
 	// moved between the two — which is the thing that must never silently happen.
