@@ -3,8 +3,8 @@
 # One-command local development.
 #
 # Verifies prerequisites, creates .env on first run, starts the dependency
-# stack and waits for it to report healthy, then runs the Go API and the
-# Next.js web shell in the foreground until interrupted.
+# stack and waits for it to report healthy, then runs the Go API, the session
+# worker and the Next.js web shell in the foreground until interrupted.
 
 set -euo pipefail
 
@@ -95,7 +95,7 @@ set -m
 # shutdown stops child application processes while leaving dependencies running.
 shutdown() {
   echo
-  echo "Stopping web and API (dependencies stay up — use 'make down' to stop them)"
+  echo "Stopping web, worker and API (dependencies stay up — use 'make down' to stop them)"
   for pid in "${pids[@]:-}"; do
     [ -n "${pid}" ] || continue
     # Negative PID targets the process group. Fall back to the single process
@@ -122,7 +122,7 @@ shutdown() {
 trap shutdown INT TERM EXIT
 
 echo
-echo "Starting API on ${API_HTTP_ADDR:-:8080} and web on http://localhost:3000"
+echo "Starting API on ${API_HTTP_ADDR:-:8080}, the worker, and web on http://localhost:3000"
 echo "Press Ctrl-C to stop."
 echo
 
@@ -133,12 +133,20 @@ echo
 # server running, reparented to init, still holding the port — which then
 # blocks the next `make dev` with a bind error that looks unrelated. Running
 # the built binary makes the tracked PID the actual process.
-echo "Building the API..."
+echo "Building the API and the worker..."
 go build -o "${REPO_ROOT}/bin/api" ./services/api
+go build -o "${REPO_ROOT}/bin/worker" ./services/worker
 
 "${REPO_ROOT}/bin/api" &
 api_pid=$!
 pids+=("${api_pid}")
+
+# The worker is what drains the outbox and runs session workflows. Without it
+# a session created in the browser stays `queued` for ever and looks broken —
+# which it did, for exactly as long as `make dev` started only these other two.
+"${REPO_ROOT}/bin/worker" &
+worker_pid=$!
+pids+=("${worker_pid}")
 
 npm run dev --workspace @weave/web &
 web_pid=$!
@@ -152,6 +160,11 @@ while true; do
   if ! kill -0 "${api_pid}" 2>/dev/null; then
     echo
     echo "API process exited." >&2
+    exit 1
+  fi
+  if ! kill -0 "${worker_pid}" 2>/dev/null; then
+    echo
+    echo "Worker process exited." >&2
     exit 1
   fi
   if ! kill -0 "${web_pid}" 2>/dev/null; then

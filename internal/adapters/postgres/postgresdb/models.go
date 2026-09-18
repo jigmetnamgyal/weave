@@ -97,6 +97,10 @@ type OutboxEvent struct {
 	LastError   *string
 	CompletedAt pgtype.Timestamptz
 	CreatedAt   pgtype.Timestamptz
+	// Fencing token, reissued on every claim. A publisher whose lease expired must not be able to complete, retry or terminate the claim that replaced it.
+	Claimant pgtype.UUID
+	// Set when a row will never succeed. Distinct from completed_at, which would claim work that never happened.
+	TerminatedAt pgtype.Timestamptz
 }
 
 type Repository struct {

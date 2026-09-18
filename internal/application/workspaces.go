@@ -46,6 +46,29 @@ type Actor struct {
 	// membership alone suffices — the self-removal case, where any member may
 	// remove themselves regardless of role.
 	Required domain.Permission
+	// System marks a change the product made rather than a person.
+	//
+	// A workflow that provisions a session, or a timeout that expires one, is
+	// not attributable to anyone, and `authorizeActor` refuses a nil user — so
+	// without this a workflow could not write at all, and the shortcut would
+	// be to borrow the member who created the session. That shortcut is
+	// refused: `session_state_transitions.actor_user_id` is nullable precisely
+	// because *"a timeout that expires a session is not attributable to
+	// anyone"*, and naming a person for something they did not do is a false
+	// statement in a trail that cannot be corrected by editing.
+	//
+	// Construct it with SystemActor, never as a literal — TestNoHandlerActsAsTheSystem
+	// scans the API's source to keep that true.
+	System bool
+}
+
+// SystemActor is the identity for a change the product made itself.
+//
+// It carries no user id, because there is no user: the authorization re-check
+// treats being the system as the authority, and the audit and transition rows
+// it produces record no actor rather than an invented one.
+func SystemActor() Actor {
+	return Actor{System: true}
 }
 
 // AuditEvent is a security-relevant change worth keeping a record of.

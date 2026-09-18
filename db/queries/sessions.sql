@@ -61,6 +61,10 @@ RETURNING *;
 SELECT * FROM outbox_events
 WHERE workspace_id = $1
   AND completed_at IS NULL
+  -- Terminated too. This query predates the column, so without it a row that
+  -- will never be delivered reads as still waiting — which is the opposite of
+  -- what terminating one means.
+  AND terminated_at IS NULL
   AND available_at <= now()
   AND (leased_until IS NULL OR leased_until < now())
 ORDER BY available_at, id;
