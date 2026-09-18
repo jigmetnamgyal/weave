@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.0 merged; M5.1 specced and next; M4.3's browser walk still outstanding
+- Status: M5.1 in progress; M4.3's browser walk still outstanding
 
 ## Current Goal
 
@@ -51,7 +51,19 @@ Make a session actually run: drain the outbox, start a durable workflow, cut a b
 
 ## In Progress
 
-Nothing in progress. M5.0 merged to main as 97d5cb2 after two review rounds and eight findings; the four decisions it was required to record are in the Verification Record below. M4.3's signed-in browser walk is still outstanding and still needs a GitHub sign-in only the operator can perform — and M3.0's verification has never been recorded either, which the same session would close.
+**Unit M5.1 — The outbox publisher and the first workflow**, per `context/features-specs/14-outbox-publisher-and-workflow.md`. The five decisions the spec required be recorded before any code, made first so the code follows them.
+
+**The publisher runs in the worker**, decided in the spec and repeated here because it is the one with consequences outside this unit. The API already runs two sweeps as goroutines and a third would have been easiest; refused because architecture gives workflow workers their own deployment unit, because every API replica would poll one table, and because it would make Temporal a serving dependency of the API. **Readiness, settled after being carried since M1.1:** the API probe is left alone — Temporal does not become a serving dependency of it — and the worker gets its own readiness that covers PostgreSQL and Temporal.
+
+**A system actor is a distinct identity, not a borrowed one.** `authorizeActor` refuses a nil user, so a workflow could not transition a session at all; the shortcut would be to reuse the member who created it. Refused: `session_state_transitions.actor_user_id` is nullable precisely because *"a timeout that expires a session is not attributable to anyone"*, and attributing an automated move to a person is a false statement in a trail that cannot be corrected by editing. The system actor carries no user id, is authorized by being the system rather than by a permission, and writes a transition with a null actor. It is accepted **only** on paths a workflow uses, so a request handler cannot reach it.
+
+**The outbox fence is a claim token on every state update**, not an enumerated few — completion, retry and the terminal outcome alike. Enumerating is how the third is missed, which the review of this spec demonstrated by missing exactly that one.
+
+**Terminal is its own column, not a value of `completed_at`.** The claim predicate is `completed_at IS NULL`, so marking a dead row complete would lie to anyone counting deliveries and leaving it pending would retry forever. A `terminated_at` with `last_error` retained excludes it from claims, keeps the metadata `context/code-standards.md` requires, and makes an operator replay a deliberate `UPDATE` rather than a guess.
+
+**The duplicate guarantee is bounded by an attempt ceiling, not by Temporal's memory.** A reuse policy expires when Temporal forgets a closed execution; an outbox row that retries forever outlives it. The ceiling is the simpler of the two options the spec allows and needs no second source of truth: a row that exhausts it becomes terminal, so it cannot still be retrying when the protection lapses.
+
+Nothing else in progress. M5.0 merged to main as 97d5cb2 after two review rounds and eight findings; the four decisions it was required to record are in the Verification Record below. M4.3's signed-in browser walk is still outstanding and still needs a GitHub sign-in only the operator can perform — and M3.0's verification has never been recorded either, which the same session would close.
 
 ## Next Up
 
