@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -106,13 +107,28 @@ func run() error {
 	// running and unable to do anything, and a startup check alone makes the
 	// process look healthy forever from the moment it starts.
 	health := &http.Server{
-		Addr:              cfg.HealthAddr,
 		Handler:           healthHandler(appPool, temporalClient, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	// Bound before anything else starts, so an address already in use fails
+	// startup rather than leaving a worker that runs without the endpoint it
+	// was given one for. `ListenAndServe` in a goroutine cannot do that: it
+	// binds after the caller has moved on, and the failure arrives as a log
+	// line nobody is reading.
+	listener, err := net.Listen("tcp", cfg.HealthAddr)
+	if err != nil {
+		return fmt.Errorf("bind worker health server on %s: %w", cfg.HealthAddr, err)
+	}
+
+	// A later failure is fatal too, for the same reason it was worth binding
+	// early: a worker with no health endpoint is one a deployment system
+	// cannot tell from a working one, and a stalled worker that looks healthy
+	// is exactly what this exists to prevent.
+	healthFailed := make(chan error, 1)
 	go func() {
-		if err := health.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("the worker health server stopped", slog.String("error", err.Error()))
+		if err := health.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			healthFailed <- err
 		}
 	}()
 	defer func() {
@@ -137,7 +153,16 @@ func run() error {
 		publisher.Run(ctx)
 	}()
 
-	<-ctx.Done()
+	// Either a signal, or the health server failing — which is not something
+	// to carry on without.
+	var healthErr error
+	select {
+	case <-ctx.Done():
+	case healthErr = <-healthFailed:
+		logger.Error("the worker health server stopped; shutting down",
+			slog.String("error", healthErr.Error()))
+		stop()
+	}
 	logger.Info("worker shutting down")
 
 	select {
@@ -149,6 +174,9 @@ func run() error {
 		logger.Warn("the publisher did not stop in time; its leases will expire")
 	}
 
+	if healthErr != nil {
+		return fmt.Errorf("worker health server: %w", healthErr)
+	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return nil
 	}
