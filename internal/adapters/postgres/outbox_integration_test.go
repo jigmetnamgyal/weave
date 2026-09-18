@@ -67,11 +67,23 @@ func claimFor(
 // have made the protection the thing doing the damage.
 func releaseForeign(t *testing.T, pool *pgxpool.Pool, id, claimant uuid.UUID) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
+	tag, err := pool.Exec(context.Background(),
 		`UPDATE outbox_events
 		 SET leased_until = NULL, claimant = NULL, attempts = GREATEST(attempts - 1, 0)
-		 WHERE id = $1 AND claimant = $2`, id, claimant); err != nil {
+		 WHERE id = $1 AND claimant = $2`, id, claimant)
+	if err != nil {
 		t.Fatalf("release a row this test should not have claimed: %v", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Somebody else owns the row now: this claim's lease expired and a
+		// real publisher took it between the claim and this cleanup.
+		//
+		// Leaving it alone is the only correct move — decrementing a count
+		// that now belongs to another claim is the corruption this helper
+		// exists to avoid. The honest cost is that the attempt this test spent
+		// stays spent, which is rare and preferable to the alternative. Not a
+		// failure, which is why it is recorded here rather than raised.
+		t.Logf("outbox row %s was reclaimed before cleanup; its attempt stays spent", id)
 	}
 }
 
