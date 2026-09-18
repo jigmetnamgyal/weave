@@ -391,6 +391,110 @@ func (s *SessionService) Transition(
 		})
 }
 
+// TransitionAsSystem moves a session because the product did, not a person.
+//
+// Used by the session workflow. Three things make it different from
+// Transition, and each is a decision rather than a convenience:
+//
+//  1. **The actor is the system.** A workflow provisioning a session is not
+//     attributable to anyone, and borrowing the member who created it would
+//     put a person's name on something they did not do — in a trail that
+//     cannot be corrected by editing.
+//
+//  2. **It reads the version itself** rather than taking one from a caller.
+//     A workflow has no earlier read to be stale against; what it wants is
+//     "make this session provisioning", and the version exists to stop two
+//     writers colliding, which the read-then-transition here still does.
+//
+//  3. **It is idempotent against redelivery.** A Temporal activity that
+//     commits and then loses its acknowledgement is retried, and replaying
+//     the transition would take a version conflict for a failure when the
+//     work in fact succeeded. A session already in the target state is
+//     success, and writes no second transition — the history would otherwise
+//     record a move that never happened.
+//
+// The third is the one an implementation passes every other test without
+// getting right, because a lost acknowledgement is not an error anybody
+// writes a test for unless told to.
+func (s *SessionService) TransitionAsSystem(
+	ctx context.Context,
+	workspaceID, sessionID uuid.UUID,
+	to domain.SessionState,
+	reason string,
+) (domain.Session, error) {
+	validReason, err := domain.ValidateTransitionReason(reason)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if !to.Valid() {
+		return domain.Session{}, fmt.Errorf("%w: unknown state %q", domain.ErrInvalidSession, to)
+	}
+
+	current, err := s.sessions.Get(ctx, sessionID, workspaceID)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	// Already there: this is a redelivery of an activity that succeeded, or
+	// something else reached the same state first. Either way the intent
+	// holds, and recording it twice would be a lie about what happened.
+	if current.State == to {
+		return current, nil
+	}
+
+	transitionID, err := domain.NewTransitionID()
+	if err != nil {
+		return domain.Session{}, err
+	}
+
+	decide := func(locked domain.Session) (domain.SessionStateTransition, error) {
+		// Checked again under the lock, because the read above was its own
+		// transaction and a redelivery can arrive while one is in flight.
+		if locked.State == to {
+			return domain.SessionStateTransition{}, errAlreadyInTargetState
+		}
+		if !domain.CanTransition(locked.State, to) {
+			return domain.SessionStateTransition{}, fmt.Errorf(
+				"%w: %s cannot become %s", domain.ErrTransitionNotAllowed, locked.State, to)
+		}
+		return domain.SessionStateTransition{
+			ID:              transitionID,
+			SessionID:       sessionID,
+			WorkspaceID:     workspaceID,
+			NextState:       to,
+			ObservedVersion: locked.Version,
+			Reason:          validReason,
+			// No actor: this is the system, and the column is nullable for
+			// exactly this case.
+		}, nil
+	}
+
+	moved, err := s.sessions.Transition(ctx, sessionID, workspaceID, decide,
+		SystemActor(),
+		func(after domain.Session) AuditEvent {
+			return AuditEvent{
+				WorkspaceID: workspaceID,
+				Action:      AuditSessionTransitioned,
+				Target:      sessionID.String(),
+				Detail: map[string]any{
+					"to":      string(after.State),
+					"version": after.Version,
+					"by":      "system",
+				},
+			}
+		})
+	if errors.Is(err, errAlreadyInTargetState) {
+		// Raced with another delivery of the same activity between the read
+		// and the lock. The state is what was wanted, so this is success.
+		return s.sessions.Get(ctx, sessionID, workspaceID)
+	}
+	return moved, err
+}
+
+// errAlreadyInTargetState unwinds the store's transaction without writing,
+// when a concurrent delivery got there first. Not exported: it never reaches a
+// caller, who is told the move succeeded because it did.
+var errAlreadyInTargetState = errors.New("session is already in the target state")
+
 // Get returns one session.
 //
 // Reads are governed by readPermission, for the reasoning recorded beside it

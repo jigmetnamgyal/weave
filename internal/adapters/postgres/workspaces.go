@@ -375,6 +375,20 @@ func authorizeActor(ctx context.Context, q *postgresdb.Queries, workspaceID uuid
 // grant, when non-empty, is the role being assigned; the actor must be
 // entitled to grant it, re-checked here for the same reason.
 func authorizeActorLocked(ctx context.Context, q *postgresdb.Queries, workspaceID uuid.UUID, actor application.Actor, grant domain.Role) error {
+	// The system is authorized by being the system.
+	//
+	// There is no membership to re-read and no permission to hold: a workflow
+	// provisioning a session is the product acting on its own, and the
+	// alternative — borrowing the member who created it — would attribute an
+	// automated change to a person. The workspace lock above still applies, so
+	// a system write is serialised with everything else.
+	//
+	// Nothing reachable from a request handler constructs one; see
+	// application.SystemActor.
+	if actor.System {
+		return nil
+	}
+
 	if actor.UserID == uuid.Nil {
 		return application.ErrPermissionDenied
 	}

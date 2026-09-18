@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	"github.com/jigmetnamgyal/weave/internal/application"
@@ -20,24 +21,61 @@ import (
 // without depending on which other tests are running. Every assertion here is
 // about this workspace's row, which is also how the publisher behaves: it
 // claims whatever is due and settles each row under its own tenant.
-func claimFor(t *testing.T, store *postgres.OutboxStore, workspaceID uuid.UUID) (application.ClaimedOutboxEvent, bool) {
+func claimFor(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	store *postgres.OutboxStore,
+	workspaceID uuid.UUID,
+) (application.ClaimedOutboxEvent, bool) {
 	t.Helper()
 	claimed, err := store.Claim(context.Background(), application.OutboxBatchSize, application.OutboxLease)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
+
+	var mine application.ClaimedOutboxEvent
+	found := false
 	for _, event := range claimed {
 		if event.WorkspaceID == workspaceID {
-			return event, true
+			mine, found = event, true
+			continue
 		}
+		// Put back what was not ours, completely.
+		//
+		// The claim is global — the publisher polls every tenant — so a test
+		// running against a shared database takes rows belonging to real work
+		// and to other tests. Leaving them leased delays them; leaving the
+		// attempt spent is worse, because attempts are finite and a row that
+		// exhausts them is terminated. Measured: before this, one test run
+		// took an unrelated row from 0 attempts to 1 and left it leased.
+		releaseForeign(t, pool, event.ID)
 	}
-	return application.ClaimedOutboxEvent{}, false
+	return mine, found
+}
+
+// releaseForeign undoes a claim this test had no business making.
+//
+// Through the owner pool and by id, restoring the row exactly: no lease, no
+// claimant, and the attempt given back.
+func releaseForeign(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE outbox_events
+		 SET leased_until = NULL, claimant = NULL, attempts = GREATEST(attempts - 1, 0)
+		 WHERE id = $1`, id); err != nil {
+		t.Fatalf("release a row this test should not have claimed: %v", err)
+	}
 }
 
 // mustClaimFor fails when this workspace's row is not claimable.
-func mustClaimFor(t *testing.T, store *postgres.OutboxStore, workspaceID uuid.UUID) application.ClaimedOutboxEvent {
+func mustClaimFor(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	store *postgres.OutboxStore,
+	workspaceID uuid.UUID,
+) application.ClaimedOutboxEvent {
 	t.Helper()
-	event, found := claimFor(t, store, workspaceID)
+	event, found := claimFor(t, pool, store, workspaceID)
 	if !found {
 		t.Fatal("this workspace's outbox row was not claimable")
 	}
@@ -61,10 +99,10 @@ func TestAnExpiredOutboxLeaseIsClaimableAgainIntegration(t *testing.T) {
 	}
 
 	// Stands in for a publisher that claimed and never came back.
-	claimed := mustClaimFor(t, store, fixture.workspace.ID)
+	claimed := mustClaimFor(t, pool, store, fixture.workspace.ID)
 
 	// While the lease is live the row is invisible to the next publisher.
-	if _, found := claimFor(t, store, fixture.workspace.ID); found {
+	if _, found := claimFor(t, pool, store, fixture.workspace.ID); found {
 		t.Fatal("the row was claimed twice while its lease was live")
 	}
 
@@ -75,7 +113,7 @@ func TestAnExpiredOutboxLeaseIsClaimableAgainIntegration(t *testing.T) {
 		t.Fatalf("expire the lease: %v", err)
 	}
 
-	recovered, found := claimFor(t, store, fixture.workspace.ID)
+	recovered, found := claimFor(t, pool, store, fixture.workspace.ID)
 	if !found {
 		t.Fatal("the row was not claimable after its lease expired — a dead publisher stranded it")
 	}
@@ -114,7 +152,7 @@ func TestTwoPublishersCannotClaimTheSameRowIntegration(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			events, err := store.Claim(context.Background(), 10, application.OutboxLease)
+			events, err := store.Claim(context.Background(), application.OutboxBatchSize, application.OutboxLease)
 			results <- result{events: events, err: err}
 		}()
 	}
@@ -130,7 +168,9 @@ func TestTwoPublishersCannotClaimTheSameRowIntegration(t *testing.T) {
 		for _, event := range r.events {
 			if event.WorkspaceID == fixture.workspace.ID {
 				mine++
+				continue
 			}
+			releaseForeign(t, pool, event.ID)
 		}
 	}
 	if mine != 1 {
@@ -150,13 +190,13 @@ func TestAStalePublisherCannotSettleTheRowThatReplacedItIntegration(t *testing.T
 		t.Fatalf("create session: %v", err)
 	}
 
-	stale := mustClaimFor(t, store, fixture.workspace.ID)
+	stale := mustClaimFor(t, pool, store, fixture.workspace.ID)
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE outbox_events SET leased_until = now() - interval '1 second' WHERE id = $1",
 		stale.ID); err != nil {
 		t.Fatalf("expire the lease: %v", err)
 	}
-	current := mustClaimFor(t, store, fixture.workspace.ID)
+	current := mustClaimFor(t, pool, store, fixture.workspace.ID)
 	if current.Claimant == stale.Claimant {
 		t.Fatal("the reclaim reused the token, so there is no fence to test")
 	}
@@ -204,12 +244,12 @@ func TestSettlingAnOutboxRowIsFencedAndScopedIntegration(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	claimed := mustClaimFor(t, store, fixture.workspace.ID)
+	claimed := mustClaimFor(t, pool, store, fixture.workspace.ID)
 	if err := store.Retry(context.Background(), claimed, time.Millisecond, "a transient failure"); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 
-	again := mustClaimFor(t, store, fixture.workspace.ID)
+	again := mustClaimFor(t, pool, store, fixture.workspace.ID)
 	if again.Attempts != 2 {
 		t.Errorf("attempts = %d after one retry, want 2", again.Attempts)
 	}
@@ -218,7 +258,7 @@ func TestSettlingAnOutboxRowIsFencedAndScopedIntegration(t *testing.T) {
 	}
 
 	// A completed row is never claimed again.
-	if _, found := claimFor(t, store, fixture.workspace.ID); found {
+	if _, found := claimFor(t, pool, store, fixture.workspace.ID); found {
 		t.Error("a completed row was claimed again")
 	}
 }
@@ -237,12 +277,12 @@ func TestATerminatedRowIsNeverClaimedAgainIntegration(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	claimed := mustClaimFor(t, store, fixture.workspace.ID)
+	claimed := mustClaimFor(t, pool, store, fixture.workspace.ID)
 	if err := store.Terminate(context.Background(), claimed, "the task was archived"); err != nil {
 		t.Fatalf("terminate: %v", err)
 	}
 
-	if _, found := claimFor(t, store, fixture.workspace.ID); found {
+	if _, found := claimFor(t, pool, store, fixture.workspace.ID); found {
 		t.Error("a terminated row was claimed again")
 	}
 
