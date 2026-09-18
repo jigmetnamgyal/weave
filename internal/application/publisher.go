@@ -96,11 +96,31 @@ func (p *Publisher) drain(ctx context.Context) {
 
 // drainOnce claims a batch and settles each row, returning how many it took.
 func (p *Publisher) drainOnce(ctx context.Context) (int, error) {
-	claimed, err := p.outbox.Claim(ctx, OutboxBatchSize, OutboxLease)
+	claimed, err := p.outbox.Claim(ctx, OutboxBatchSize, OutboxLease, OutboxMaxAttempts)
 	if err != nil {
 		return 0, err
 	}
-	for _, event := range claimed {
+
+	// The lease covers the whole batch, not each row in turn.
+	//
+	// Delivering serially means a slow start early in the batch eats the lease
+	// the later rows are relying on — after which another publisher reclaims
+	// them, spends another attempt each, and the row moves toward its ceiling
+	// for no reason but our own slowness. So the batch stops when the lease is
+	// close to expiring, and the rows left behind are picked up on the next
+	// poll with a fresh lease rather than delivered under one that has run out.
+	deadline := time.Now().Add(OutboxLease - OutboxLeaseSafetyMargin)
+	for index, event := range claimed {
+		if time.Now().After(deadline) {
+			p.logger.WarnContext(ctx, "stopping the batch before its lease expires",
+				slog.Int("delivered", index),
+				slog.Int("claimed", len(claimed)),
+			)
+			// Reported as a short batch so the caller does not immediately ask
+			// for another: the queue is not drained, but this publisher is out
+			// of time to drain it.
+			return index, nil
+		}
 		p.deliver(ctx, event)
 	}
 	return len(claimed), nil

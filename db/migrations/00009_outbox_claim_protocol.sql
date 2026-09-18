@@ -73,7 +73,7 @@ CREATE INDEX outbox_events_claimable_idx
 -- when only one caller exists today.
 -- --------------------------------------------------------------------------
 
-CREATE FUNCTION weave_claim_outbox_batch(batch_size integer, lease interval)
+CREATE FUNCTION weave_claim_outbox_batch(batch_size integer, lease interval, max_attempts integer)
 RETURNS SETOF outbox_events
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER
 SET search_path = public, pg_temp
@@ -90,6 +90,35 @@ BEGIN
         RAISE EXCEPTION 'outbox lease must be between 10 seconds and 10 minutes, got %', lease
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
+    -- Bounded like the others. A ceiling of zero would terminate every row on
+    -- the next poll; an enormous one would let a poison row outlive the
+    -- workflow deduplication it is meant to stay inside.
+    IF max_attempts IS NULL OR max_attempts < 1 OR max_attempts > 100 THEN
+        RAISE EXCEPTION 'outbox max attempts must be between 1 and 100, got %', max_attempts
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    -- The ceiling, enforced here rather than only by the publisher.
+    --
+    -- `Publisher.settleRetry` gives up after enough attempts, but it only runs
+    -- when a publisher reaches settlement. A publisher that dies mid-delivery
+    -- never does: its lease expires, the row is claimable again, and that can
+    -- repeat forever — so the ceiling that bounds the duplicate guarantee
+    -- would never apply on the one path most likely to need it.
+    --
+    -- Terminated rather than skipped, so an exhausted row leaves the queue
+    -- with its reason instead of being walked past on every poll.
+    UPDATE outbox_events
+    SET terminated_at = now(),
+        leased_until  = NULL,
+        last_error    = COALESCE(last_error, '') ||
+            CASE WHEN last_error IS NULL THEN '' ELSE ' | ' END ||
+            'gave up after ' || attempts || ' attempts without reaching settlement'
+    WHERE completed_at IS NULL
+      AND terminated_at IS NULL
+      AND attempts >= max_attempts
+      AND available_at <= now()
+      AND (leased_until IS NULL OR leased_until < now());
 
     RETURN QUERY
     WITH due AS (
@@ -112,11 +141,11 @@ BEGIN
 END;
 $$;
 
-ALTER FUNCTION weave_claim_outbox_batch(integer, interval) OWNER TO weave_rls_bypass;
+ALTER FUNCTION weave_claim_outbox_batch(integer, interval, integer) OWNER TO weave_rls_bypass;
 GRANT SELECT, UPDATE ON outbox_events TO weave_rls_bypass;
 
-REVOKE EXECUTE ON FUNCTION weave_claim_outbox_batch(integer, interval) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION weave_claim_outbox_batch(integer, interval) TO weave_app;
+REVOKE EXECUTE ON FUNCTION weave_claim_outbox_batch(integer, interval, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION weave_claim_outbox_batch(integer, interval, integer) TO weave_app;
 
 COMMENT ON COLUMN outbox_events.claimant IS 'Fencing token, reissued on every claim. A publisher whose lease expired must not be able to complete, retry or terminate the claim that replaced it.';
 COMMENT ON COLUMN outbox_events.terminated_at IS 'Set when a row will never succeed. Distinct from completed_at, which would claim work that never happened.';
@@ -131,7 +160,7 @@ CREATE INDEX outbox_events_claimable_idx
     ON outbox_events (available_at)
     WHERE completed_at IS NULL;
 
-DROP FUNCTION IF EXISTS weave_claim_outbox_batch(integer, interval);
+DROP FUNCTION IF EXISTS weave_claim_outbox_batch(integer, interval, integer);
 
 ALTER TABLE outbox_events DROP CONSTRAINT IF EXISTS outbox_events_not_both_outcomes;
 ALTER TABLE outbox_events DROP COLUMN IF EXISTS terminated_at;

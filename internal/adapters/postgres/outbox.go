@@ -34,16 +34,23 @@ func NewOutboxStore(pool *pgxpool.Pool) *OutboxStore {
 // workspace, and each is settled in a tenant transaction scoped by that value
 // — taken from the row rather than from a caller, so there is no identifier a
 // caller could supply to reach another tenant's queue.
+//
+// It also terminates rows past `maxAttempts` before claiming. The publisher's
+// own ceiling only applies when it reaches settlement, and a publisher that
+// dies mid-delivery never does — its lease expires and the row is claimable
+// again, forever. Enforcing it here covers the path most likely to need it.
 func (s *OutboxStore) Claim(
 	ctx context.Context,
 	batchSize int,
 	lease time.Duration,
+	maxAttempts int,
 ) ([]application.ClaimedOutboxEvent, error) {
 	// No tenant context is set deliberately: the function is SECURITY DEFINER
 	// and the poll is cross-workspace by nature.
 	rows, err := postgresdb.New(s.pool).ClaimOutboxBatch(ctx, postgresdb.ClaimOutboxBatchParams{
-		BatchSize: int32(batchSize),
-		Lease:     intervalOf(lease),
+		BatchSize:   int32(batchSize),
+		Lease:       intervalOf(lease),
+		MaxAttempts: int32(maxAttempts),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim outbox batch: %w", err)

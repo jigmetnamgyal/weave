@@ -8,7 +8,7 @@
 -- nothing and reports success. The function bounds its own arguments and
 -- returns rows carrying their `workspace_id`, which is what every write after
 -- the claim is scoped by: taken from the row, never from the caller.
-SELECT * FROM weave_claim_outbox_batch(@batch_size::int, @lease::interval);
+SELECT * FROM weave_claim_outbox_batch(@batch_size::int, @lease::interval, @max_attempts::int);
 
 -- name: CompleteOutboxEvent :execrows
 -- Fenced. A stale publisher marking someone else's claim done would hide work

@@ -13,12 +13,13 @@ import (
 )
 
 const claimOutboxBatch = `-- name: ClaimOutboxBatch :many
-SELECT id, workspace_id, topic, subject_id, payload, attempts, available_at, leased_until, last_error, completed_at, created_at, claimant, terminated_at FROM weave_claim_outbox_batch($1::int, $2::interval)
+SELECT id, workspace_id, topic, subject_id, payload, attempts, available_at, leased_until, last_error, completed_at, created_at, claimant, terminated_at FROM weave_claim_outbox_batch($1::int, $2::interval, $3::int)
 `
 
 type ClaimOutboxBatchParams struct {
-	BatchSize int32
-	Lease     pgtype.Interval
+	BatchSize   int32
+	Lease       pgtype.Interval
+	MaxAttempts int32
 }
 
 // Take a batch of due rows, across every workspace, through the privileged
@@ -31,7 +32,7 @@ type ClaimOutboxBatchParams struct {
 // returns rows carrying their `workspace_id`, which is what every write after
 // the claim is scoped by: taken from the row, never from the caller.
 func (q *Queries) ClaimOutboxBatch(ctx context.Context, arg ClaimOutboxBatchParams) ([]OutboxEvent, error) {
-	rows, err := q.db.Query(ctx, claimOutboxBatch, arg.BatchSize, arg.Lease)
+	rows, err := q.db.Query(ctx, claimOutboxBatch, arg.BatchSize, arg.Lease, arg.MaxAttempts)
 	if err != nil {
 		return nil, err
 	}

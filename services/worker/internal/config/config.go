@@ -24,6 +24,9 @@ type Config struct {
 	// TemporalHostPort is the Temporal frontend. Unlike the API, this process
 	// cannot do its job without it.
 	TemporalHostPort string
+	// HealthAddr is where liveness and readiness are served. The worker
+	// handles no product traffic, so this is for the deployment system.
+	HealthAddr string
 	// AppEnv names the environment in logs.
 	AppEnv string
 }
@@ -33,6 +36,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		AppDatabaseURL:   strings.TrimSpace(os.Getenv("APP_DATABASE_URL")),
 		TemporalHostPort: strings.TrimSpace(os.Getenv("TEMPORAL_HOST_PORT")),
+		HealthAddr:       strings.TrimSpace(os.Getenv("WORKER_HEALTH_ADDR")),
 		AppEnv:           strings.TrimSpace(os.Getenv("APP_ENV")),
 	}
 
@@ -50,6 +54,12 @@ func Load() (Config, error) {
 
 	if cfg.AppEnv == "" {
 		cfg.AppEnv = "development"
+	}
+	// Defaulted rather than required: a worker with no health address would
+	// still work, and failing to start over it would be worse than serving it
+	// somewhere predictable.
+	if cfg.HealthAddr == "" {
+		cfg.HealthAddr = ":8090"
 	}
 	return cfg, nil
 }

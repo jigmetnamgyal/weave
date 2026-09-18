@@ -40,7 +40,7 @@ func newFakeOutbox(events ...application.ClaimedOutboxEvent) *fakeOutbox {
 	}
 }
 
-func (f *fakeOutbox) Claim(context.Context, int, time.Duration) ([]application.ClaimedOutboxEvent, error) {
+func (f *fakeOutbox) Claim(context.Context, int, time.Duration, int) ([]application.ClaimedOutboxEvent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	claimed := f.pending

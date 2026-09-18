@@ -136,6 +136,7 @@ test: ## Run unit tests (CI gate)
 test-integration: .env ## Run integration tests against the local database
 	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is empty. Check .env against .env.example." && exit 1)
 	@test -n "$(APP_DATABASE_URL)" || (echo "APP_DATABASE_URL is empty, so the row-level-security tests would skip. Add it to .env — see .env.example." && exit 1)
+	@test -n "$(TEMPORAL_HOST_PORT)" || (echo "TEMPORAL_HOST_PORT is empty, so the session-workflow tests would skip. Add it to .env — see .env.example." && exit 1)
 	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
 		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" \
 		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)

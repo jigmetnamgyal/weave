@@ -28,7 +28,7 @@ func claimFor(
 	workspaceID uuid.UUID,
 ) (application.ClaimedOutboxEvent, bool) {
 	t.Helper()
-	claimed, err := store.Claim(context.Background(), application.OutboxBatchSize, application.OutboxLease)
+	claimed, err := store.Claim(context.Background(), application.OutboxBatchSize, application.OutboxLease, application.OutboxMaxAttempts)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestTwoPublishersCannotClaimTheSameRowIntegration(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			events, err := store.Claim(context.Background(), application.OutboxBatchSize, application.OutboxLease)
+			events, err := store.Claim(context.Background(), application.OutboxBatchSize, application.OutboxLease, application.OutboxMaxAttempts)
 			results <- result{events: events, err: err}
 		}()
 	}
@@ -298,5 +298,93 @@ func TestATerminatedRowIsNeverClaimedAgainIntegration(t *testing.T) {
 	}
 	if lastError == nil || *lastError != "the task was archived" {
 		t.Errorf("last_error = %v, want the reason kept", lastError)
+	}
+}
+
+// TestAnExhaustedRowIsTerminatedByTheClaimIntegration covers the path the
+// publisher's own ceiling cannot reach.
+//
+// `Publisher.settleRetry` gives up after enough attempts, but it only runs
+// when a publisher reaches settlement. A publisher that dies mid-delivery
+// never does: its lease expires, the row is claimable again, and that repeats
+// forever — so the ceiling that bounds the duplicate guarantee would never
+// apply on the one path most likely to need it, which is the publisher dying.
+//
+// Enforcing it inside the claim is what closes that, and it is terminated
+// rather than skipped so the row leaves the queue with its reason instead of
+// being walked past on every poll.
+func TestAnExhaustedRowIsTerminatedByTheClaimIntegration(t *testing.T) {
+	pool := newPool(t)
+	store := postgres.NewOutboxStore(pool)
+	fixture := seedSessionFixture(t, pool, "Outbox Exhausted Workspace")
+	if _, err := fixture.createSession(t, postgres.NewSessionStore(pool), nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// A publisher that claimed and died, over and over, until the attempts ran
+	// out — set directly, because reproducing it honestly means killing a
+	// process ten times.
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE outbox_events SET attempts = $1, leased_until = NULL, claimant = NULL
+		 WHERE workspace_id = $2`, application.OutboxMaxAttempts, fixture.workspace.ID); err != nil {
+		t.Fatalf("exhaust the row: %v", err)
+	}
+
+	if _, found := claimFor(t, pool, store, fixture.workspace.ID); found {
+		t.Error("a row past its attempt ceiling was claimed again, so it can outlive " +
+			"the workflow deduplication that protects it")
+	}
+
+	var terminated bool
+	var lastError *string
+	if err := pool.QueryRow(context.Background(),
+		"SELECT terminated_at IS NOT NULL, last_error FROM outbox_events WHERE workspace_id = $1",
+		fixture.workspace.ID).Scan(&terminated, &lastError); err != nil {
+		t.Fatalf("read the row: %v", err)
+	}
+	if !terminated {
+		t.Error("the exhausted row was left pending, so every poll will walk past it forever")
+	}
+	if lastError == nil || *lastError == "" {
+		t.Error("the exhausted row kept no reason, so nobody can tell why it stopped")
+	}
+}
+
+// TestATerminatedRowIsNotReportedAsPendingIntegration covers a query that
+// predates the terminal column.
+//
+// `ListPendingOutboxEvents` was written in M4.2, when the only outcome was
+// completion. Left alone it reports a row that will never be delivered as
+// still waiting — which is the opposite of what terminating one means, and
+// would tell an operator the queue is backed up when it is not.
+func TestATerminatedRowIsNotReportedAsPendingIntegration(t *testing.T) {
+	pool := newPool(t)
+	sessions := postgres.NewSessionStore(pool)
+	store := postgres.NewOutboxStore(pool)
+	fixture := seedSessionFixture(t, pool, "Outbox Pending Report Workspace")
+	if _, err := fixture.createSession(t, sessions, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	pending, err := sessions.ListPendingOutbox(fixture.ctx, fixture.workspace.ID)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("got %d pending rows before terminating, want 1", len(pending))
+	}
+
+	claimed := mustClaimFor(t, pool, store, fixture.workspace.ID)
+	if err := store.Terminate(context.Background(), claimed, "the task was archived"); err != nil {
+		t.Fatalf("terminate: %v", err)
+	}
+
+	after, err := sessions.ListPendingOutbox(fixture.ctx, fixture.workspace.ID)
+	if err != nil {
+		t.Fatalf("list pending after terminating: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("%d rows still reported as pending after termination — work that will "+
+			"never be delivered reads as waiting", len(after))
 	}
 }

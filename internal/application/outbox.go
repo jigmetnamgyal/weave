@@ -23,8 +23,18 @@ var ErrOutboxClaimLost = errors.New("this publisher's outbox claim expired and w
 // refuses anything outside ten seconds to ten minutes, so a mistake here is a
 // loud error rather than a stranded queue.
 const (
-	OutboxLease     = 60 * time.Second
-	OutboxBatchSize = 20
+	OutboxLease = 60 * time.Second
+	// OutboxLeaseSafetyMargin is how much lease a publisher keeps in hand.
+	//
+	// A delivery started with seconds left finishes after the lease has gone,
+	// and another publisher is already holding the row — so the work is done
+	// twice and the fence rejects the settle. Stopping early wastes a poll
+	// interval; not stopping wastes an attempt on every remaining row.
+	OutboxLeaseSafetyMargin = 15 * time.Second
+	// OutboxBatchSize is small enough that one lease comfortably covers a
+	// serial pass at the activity timeout, and large enough that a backlog
+	// drains in a few polls rather than a few hundred.
+	OutboxBatchSize = 10
 	// OutboxPollInterval is how often an idle publisher looks again. Short
 	// enough that a session starts promptly; long enough that an idle
 	// deployment is not a busy loop against the database.
@@ -83,7 +93,7 @@ type OutboxRepository interface {
 	// Claim takes a batch of due rows across every workspace. It is the only
 	// privileged read in the publisher's path; everything after is scoped by
 	// the workspace on the claimed row.
-	Claim(ctx context.Context, batchSize int, lease time.Duration) ([]ClaimedOutboxEvent, error)
+	Claim(ctx context.Context, batchSize int, lease time.Duration, maxAttempts int) ([]ClaimedOutboxEvent, error)
 	Complete(ctx context.Context, event ClaimedOutboxEvent) error
 	Retry(ctx context.Context, event ClaimedOutboxEvent, backoff time.Duration, reason string) error
 	Terminate(ctx context.Context, event ClaimedOutboxEvent, reason string) error

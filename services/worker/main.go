@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -100,9 +101,32 @@ func run() error {
 		logger,
 	)
 
+	// Health is served even though the worker serves no product traffic: a
+	// deployment system needs to tell a working worker from one that is
+	// running and unable to do anything, and a startup check alone makes the
+	// process look healthy forever from the moment it starts.
+	health := &http.Server{
+		Addr:              cfg.HealthAddr,
+		Handler:           healthHandler(appPool, temporalClient, logger),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := health.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("the worker health server stopped", slog.String("error", err.Error()))
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := health.Shutdown(shutdownCtx); err != nil {
+			logger.Error("health server shutdown failed", slog.String("error", err.Error()))
+		}
+	}()
+
 	logger.InfoContext(ctx, "worker started",
 		slog.String("task_queue", weavetemporal.TaskQueue),
 		slog.String("temporal", cfg.TemporalHostPort),
+		slog.String("health", cfg.HealthAddr),
 	)
 
 	// The publisher owns this goroutine until shutdown; Run returns when the

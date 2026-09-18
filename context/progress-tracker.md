@@ -20,7 +20,7 @@ Make a session actually run: drain the outbox, start a durable workflow, cut a b
 | M2 | Authentication, workspaces, membership, authorization matrix, and tenant isolation | Complete |
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Complete, pending the M4.3 browser walk |
-| M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Not started |
+| M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | In progress |
 | M6 | Claude Code adapter, normalized events, live session room, and reconnect | Not started |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
 | M8 | Codex adapter, commit/pull-request delivery, usage ledger, and quotas | Not started |
