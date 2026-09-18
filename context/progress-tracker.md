@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.1 complete, awaiting review; M4.3's browser walk still outstanding
+- Status: M5.1 merged; M5.2 next; M4.3's browser walk still outstanding
 
 ## Current Goal
 
@@ -52,7 +52,7 @@ Make a session actually run: drain the outbox, start a durable workflow, cut a b
 
 ## In Progress
 
-Nothing in progress. M5.1 is complete and awaiting review; the five decisions it was required to record are in the Verification Record below. M4.3's signed-in browser walk is still outstanding and still needs a GitHub sign-in only the operator can perform — and M3.0's verification has never been recorded either, which the same session would close.
+Nothing in progress. M5.1 merged as aa59c70 (PR #16); the five decisions it was required to record are in the Verification Record below. M4.3's signed-in browser walk is still outstanding and still needs a GitHub sign-in only the operator can perform — and M3.0's verification has never been recorded either, which the same session would close.
 
 ## Next Up
 
@@ -208,4 +208,4 @@ Resolve these before the milestone that depends on them:
 
 ## Last Updated
 
-2026-09-18 — Unit M5.1 complete and awaiting review: a session created through the API now reaches a terminal state on its own, and the outbox claim protocol M4.2 designed is finally exercised. Next: M5.2, branch creation in the workflow, which closes the oldest gap in the project — no branch has ever been created against a real repository. Previously, 2026-09-17 — Unit M5.0 merged as 97d5cb2 (PR #14) after two review rounds and eight findings: `POST /sessions` is safe to retry, which was the gate in front of the rest of M5. Next: M5.1, the outbox publisher and the first workflow, specced in `context/features-specs/14-outbox-publisher-and-workflow.md`, which owes the two claim tests M4.2 could not write and answers the Temporal readiness question carried since M1.1. **Still outstanding: the M4.3 browser walk and M3.0's unrecorded verification**, both of which one signed-in session would close.
+2026-09-18 — Unit M5.1 merged as aa59c70 (PR #16) after two review rounds: a session created through the API now reaches a terminal state on its own, and the outbox claim protocol M4.2 designed is finally exercised. The review's own theme was one finding repeated three times — a write to a claimed row that was not fenced by the claimant — the third of them in the test helper written to protect other tenants' claimed rows. Next: M5.2, branch creation in the workflow, which closes the oldest gap in the project — no branch has ever been created against a real repository. Previously, 2026-09-17 — Unit M5.0 merged as 97d5cb2 (PR #14) after two review rounds and eight findings: `POST /sessions` is safe to retry, which was the gate in front of the rest of M5. Next: M5.1, the outbox publisher and the first workflow, specced in `context/features-specs/14-outbox-publisher-and-workflow.md`, which owes the two claim tests M4.2 could not write and answers the Temporal readiness question carried since M1.1. **Still outstanding: the M4.3 browser walk and M3.0's unrecorded verification**, both of which one signed-in session would close.
