@@ -122,7 +122,7 @@ shutdown() {
 trap shutdown INT TERM EXIT
 
 echo
-echo "Starting API on ${API_HTTP_ADDR:-:8080}, the worker, and web on http://localhost:3000"
+echo "Starting API on ${API_HTTP_ADDR:-:8080}, the worker, the ingestor, and web on http://localhost:3000"
 echo "Press Ctrl-C to stop."
 echo
 
@@ -136,6 +136,7 @@ echo
 echo "Building the API and the worker..."
 go build -o "${REPO_ROOT}/bin/api" ./services/api
 go build -o "${REPO_ROOT}/bin/worker" ./services/worker
+go build -o "${REPO_ROOT}/bin/ingestor" ./services/ingestor
 
 "${REPO_ROOT}/bin/api" &
 api_pid=$!
@@ -147,6 +148,12 @@ pids+=("${api_pid}")
 "${REPO_ROOT}/bin/worker" &
 worker_pid=$!
 pids+=("${worker_pid}")
+
+# The ingestor stores what runners send. Nothing publishes events until M5.4,
+# but a runner that started before it would have nowhere for them to land.
+"${REPO_ROOT}/bin/ingestor" &
+ingestor_pid=$!
+pids+=("${ingestor_pid}")
 
 npm run dev --workspace @weave/web &
 web_pid=$!
@@ -160,6 +167,11 @@ while true; do
   if ! kill -0 "${api_pid}" 2>/dev/null; then
     echo
     echo "API process exited." >&2
+    exit 1
+  fi
+  if ! kill -0 "${ingestor_pid}" 2>/dev/null; then
+    echo
+    echo "Ingestor process exited." >&2
     exit 1
   fi
   if ! kill -0 "${worker_pid}" 2>/dev/null; then

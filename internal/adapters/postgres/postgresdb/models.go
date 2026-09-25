@@ -144,6 +144,42 @@ type Session struct {
 	BranchSha *string
 }
 
+// Append-only session history from the execution plane. Ordered by a gapless per-session sequence assigned at ingestion; deduplicated by (session_id, runner_id, event_id).
+type SessionEvent struct {
+	SessionID     uuid.UUID
+	Sequence      int64
+	WorkspaceID   uuid.UUID
+	RunnerID      uuid.UUID
+	EventID       uuid.UUID
+	Type          string
+	SchemaVersion string
+	CorrelationID uuid.UUID
+	OccurredAt    pgtype.Timestamptz
+	ReceivedAt    pgtype.Timestamptz
+	Payload       []byte
+}
+
+// Events the ingestor refused. No payload, by rule; operator-only, since many rows resolve to no workspace.
+type SessionEventQuarantine struct {
+	ID            uuid.UUID
+	ReceivedAt    pgtype.Timestamptz
+	Subject       string
+	Reason        string
+	EventID       pgtype.UUID
+	SessionID     pgtype.UUID
+	WorkspaceID   pgtype.UUID
+	SchemaVersion *string
+	SizeBytes     int32
+	DeliveryCount int32
+	PayloadSha256 string
+}
+
+type SessionEventSequence struct {
+	SessionID    uuid.UUID
+	WorkspaceID  uuid.UUID
+	LastSequence int64
+}
+
 // Who is in a session and in what capacity. Distinct from workspace membership.
 type SessionParticipant struct {
 	SessionID   uuid.UUID

@@ -15,6 +15,9 @@ type Querier interface {
 	AddSessionParticipant(ctx context.Context, arg AddSessionParticipantParams) (SessionParticipant, error)
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	AppendAuditEvent(ctx context.Context, arg AppendAuditEventParams) (AuditEvent, error)
+	// DO NOTHING on the deduplication key, so a duplicate returns no row rather
+	// than an error — the caller distinguishes it without parsing a message.
+	AppendSessionEvent(ctx context.Context, arg AppendSessionEventParams) (int64, error)
 	// Append-only, enforced by trigger as well as by there being no other
 	// statement that touches this table.
 	AppendSessionTransition(ctx context.Context, arg AppendSessionTransitionParams) (SessionStateTransition, error)
@@ -154,6 +157,9 @@ type Querier interface {
 	// as current state — and they would match no connected account in the
 	// interface, which reads as a build mismatch.
 	ListRepositoriesForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Repository, error)
+	// For tests and, later, the session room. Scoped by workspace as well as the
+	// policy, and ordered by the sequence — never by occurred_at, which is a claim.
+	ListSessionEvents(ctx context.Context, arg ListSessionEventsParams) ([]SessionEvent, error)
 	ListSessionParticipants(ctx context.Context, arg ListSessionParticipantsParams) ([]SessionParticipant, error)
 	ListSessionTransitions(ctx context.Context, arg ListSessionTransitionsParams) ([]SessionStateTransition, error)
 	ListSessionsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Session, error)
@@ -164,6 +170,14 @@ type Querier interface {
 	// edits both read the same MAX(version) and one fails on the unique index —
 	// an error the caller can do nothing useful with.
 	LockAgentForUpdate(ctx context.Context, arg LockAgentForUpdateParams) (Agent, error)
+	// The session's state, read under a share lock inside the append transaction.
+	//
+	// A transition takes FOR UPDATE on this row, so the two serialise: an event
+	// cannot be appended between a session's terminal transition and its commit,
+	// and a terminal transition cannot slip in between this read and the
+	// event's insert. Reading the state earlier, outside this transaction, is
+	// the race that let a terminal session gain an event.
+	LockSessionForEvent(ctx context.Context, arg LockSessionForEventParams) (string, error)
 	// Taken before a state change. The version read here is the one the change is
 	// checked against, and holding the lock is what stops two transitions reading
 	// the same version and both believing they are current.
@@ -198,6 +212,12 @@ type Querier interface {
 	// Read under the agent's row lock by the caller, so two concurrent edits
 	// cannot both compute the same next number and collide on the unique index.
 	NextAgentVersionNumber(ctx context.Context, arg NextAgentVersionNumberParams) (int32, error)
+	// Takes the next number for a session, creating its counter on first use.
+	//
+	// The upsert locks the counter row until the transaction ends, which is what
+	// serialises two ingestor replicas on one session. If the insert that follows
+	// is a duplicate, the caller rolls back, and the number goes with it.
+	NextSessionEventSequence(ctx context.Context, arg NextSessionEventSequenceParams) (int64, error)
 	// Retention, through a SECURITY DEFINER function.
 	//
 	// The sweep runs from a background goroutine with no tenant context, and under
@@ -210,6 +230,7 @@ type Querier interface {
 	// Deliveries are only needed while deduplication might see a retry. GitHub
 	// gives up well inside this window.
 	PruneWebhookDeliveries(ctx context.Context, retention pgtype.Interval) error
+	QuarantineSessionEvent(ctx context.Context, arg QuarantineSessionEventParams) error
 	RecordInstallationPermission(ctx context.Context, arg RecordInstallationPermissionParams) error
 	// Sets the branch commit once. `branch_sha IS NULL` is the application's half
 	// of write-once; the trigger in 00010 is the database's.
@@ -258,6 +279,9 @@ type Querier interface {
 	// Only an outstanding invitation can be revoked; revoking an accepted or
 	// already-revoked one matches no row.
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
+	// Whether an event is already stored, for a terminal session: a redelivery of
+	// an event stored before the session ended is a duplicate, not a refusal.
+	SessionEventExists(ctx context.Context, arg SessionEventExistsParams) (bool, error)
 	// The pointer is the only mutable thing about a profile. Moving it changes
 	// what the next session will use and nothing about what past sessions did.
 	SetAgentCurrentVersion(ctx context.Context, arg SetAgentCurrentVersionParams) (Agent, error)

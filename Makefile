@@ -29,6 +29,8 @@ APP_DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$APP_DATABASE_URL)
 # The session-workflow tests start a real Temporal worker; without this they
 # skip, the way the database tests do without TEST_DATABASE_URL.
 TEMPORAL_HOST_PORT := $(shell . ./.env 2>/dev/null && echo $$TEMPORAL_HOST_PORT)
+# The event-ingestion tests run against a real JetStream; without this they skip.
+NATS_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_URL)
 
 .DEFAULT_GOAL := help
 
@@ -137,8 +139,9 @@ test-integration: .env ## Run integration tests against the local database
 	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is empty. Check .env against .env.example." && exit 1)
 	@test -n "$(APP_DATABASE_URL)" || (echo "APP_DATABASE_URL is empty, so the row-level-security tests would skip. Add it to .env — see .env.example." && exit 1)
 	@test -n "$(TEMPORAL_HOST_PORT)" || (echo "TEMPORAL_HOST_PORT is empty, so the session-workflow tests would skip. Add it to .env — see .env.example." && exit 1)
+	@test -n "$(NATS_URL)" || (echo "NATS_URL is empty, so the event-ingestion tests would skip. Add it to .env — see .env.example." && exit 1)
 	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
-		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" \
+		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" TEST_NATS_URL="$(NATS_URL)" \
 		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
 
 build: ## Build the API binary and the web application (CI gate)

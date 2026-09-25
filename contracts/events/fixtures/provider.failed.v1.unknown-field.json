@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.1",
+  "type": "provider.failed",
+  "event_id": "01a0d900-0000-7000-8000-000000000001",
+  "occurred_at": "2026-09-25T12:00:00Z",
+  "producer": "01a0d900-0000-7000-8000-0000000000aa",
+  "workspace_id": "01a0d900-0000-7000-8000-0000000000bb",
+  "session_id": "01a0d900-0000-7000-8000-0000000000cc",
+  "correlation_id": "01a0d900-0000-7000-8000-0000000000dd",
+  "payload": {
+    "code": "auth_expired",
+    "retryable": false,
+    "message": "Credentials expired.",
+    "provider_detail": { "status": 401 }
+  }
+}
