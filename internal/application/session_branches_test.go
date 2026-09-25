@@ -47,22 +47,28 @@ func newSessionBranchWorld(t *testing.T) *sessionBranchWorld {
 	}
 }
 
+// ensure runs the two steps the workflow runs: cut, then record.
 func (w *sessionBranchWorld) ensure(t *testing.T) (domain.Session, error) {
 	t.Helper()
-	return w.service.EnsureBranch(context.Background(), w.session.WorkspaceID, w.session.ID)
+	ctx := context.Background()
+	branch, err := w.service.CutBranch(ctx, w.session.WorkspaceID, w.session.ID)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	return w.service.RecordBranch(ctx, w.session.WorkspaceID, w.session.ID, branch)
 }
 
-// TestEnsureBranchCutsAndRecordsAsTheSystem is the ordinary path.
+// TestBranchStepsCutsAndRecordsAsTheSystem is the ordinary path.
 //
 // The branch is made at the base's commit, the SHA lands on the session, and
 // the audit row that goes with it names nobody: the system cut this branch,
 // not the member who filed the task hours before.
-func TestEnsureBranchCutsAndRecordsAsTheSystem(t *testing.T) {
+func TestBranchStepsCutsAndRecordsAsTheSystem(t *testing.T) {
 	world := newSessionBranchWorld(t)
 
 	session, err := world.ensure(t)
 	if err != nil {
-		t.Fatalf("EnsureBranch: %v", err)
+		t.Fatalf("branch steps: %v", err)
 	}
 	if session.BranchSHA != "basesha" {
 		t.Errorf("recorded SHA = %q, want the base's commit", session.BranchSHA)
@@ -92,24 +98,24 @@ func TestEnsureBranchCutsAndRecordsAsTheSystem(t *testing.T) {
 	}
 }
 
-// TestEnsureBranchIsSafeToRedeliver composes the three idempotency layers.
+// TestBranchStepsIsSafeToRedeliver composes the three idempotency layers.
 //
 // Each is tested on its own elsewhere; what matters here is that together they
 // leave one branch, one SHA and one audit when the activity runs twice — and
 // that the second run does not even ask GitHub, because the answer is already
 // durable.
-func TestEnsureBranchIsSafeToRedeliver(t *testing.T) {
+func TestBranchStepsIsSafeToRedeliver(t *testing.T) {
 	world := newSessionBranchWorld(t)
 
 	first, err := world.ensure(t)
 	if err != nil {
-		t.Fatalf("first EnsureBranch: %v", err)
+		t.Fatalf("first run: %v", err)
 	}
 	callsAfterFirst := world.api.calls
 
 	second, err := world.ensure(t)
 	if err != nil {
-		t.Fatalf("redelivered EnsureBranch: %v", err)
+		t.Fatalf("redelivery: %v", err)
 	}
 
 	if second.BranchSHA != first.BranchSHA {
@@ -127,19 +133,19 @@ func TestEnsureBranchIsSafeToRedeliver(t *testing.T) {
 	}
 }
 
-// TestEnsureBranchRecordsAFoundBranchAsFound is the seam M3.3 shipped three
+// TestBranchStepsRecordsAFoundBranchAsFound is the seam M3.3 shipped three
 // regressions in: the external write succeeded and the local record did not.
 //
 // The retry finds the branch it made at the requested base. It records it —
 // the SHA is not lost — but as *found*, because nothing proves this attempt
 // created it, and M3.3's rule is that a false audit is worse than a missing
 // one.
-func TestEnsureBranchRecordsAFoundBranchAsFound(t *testing.T) {
+func TestBranchStepsRecordsAFoundBranchAsFound(t *testing.T) {
 	world := newSessionBranchWorld(t)
 	world.sessions.recordErr = errors.New("the connection dropped before commit")
 
 	if _, err := world.ensure(t); err == nil {
-		t.Fatal("EnsureBranch reported success with the record unwritten")
+		t.Fatal("the branch steps reported success with the record unwritten")
 	}
 	if world.api.created != 1 {
 		t.Fatalf("setup: the branch was not made on GitHub (created = %d)", world.api.created)
@@ -169,33 +175,33 @@ func TestEnsureBranchRecordsAFoundBranchAsFound(t *testing.T) {
 	}
 }
 
-// TestEnsureBranchLeavesASessionThatMovedOnAlone covers a member cancelling
+// TestBranchStepsLeavesASessionThatMovedOnAlone covers a member cancelling
 // between the two activities. A branch for a session that will not run is a
 // ref nobody asked for.
-func TestEnsureBranchLeavesASessionThatMovedOnAlone(t *testing.T) {
+func TestBranchStepsLeavesASessionThatMovedOnAlone(t *testing.T) {
 	world := newSessionBranchWorld(t)
 	world.sessions.session.State = domain.SessionCancelling
 
 	_, err := world.ensure(t)
 	if !errors.Is(err, application.ErrSessionNotProvisioning) {
-		t.Errorf("EnsureBranch = %v, want ErrSessionNotProvisioning", err)
+		t.Errorf("the branch steps = %v, want ErrSessionNotProvisioning", err)
 	}
 	if world.api.calls != 0 {
 		t.Errorf("made %d GitHub calls for a session that is not provisioning", world.api.calls)
 	}
 }
 
-// TestEnsureBranchReadsEverythingFromTheSessionRow is the ownership rule.
+// TestBranchStepsReadsEverythingFromTheSessionRow is the ownership rule.
 //
 // A session id paired with the wrong workspace is not found, and nothing is
 // asked of GitHub — so the workflow input cannot be used to reach a repository
 // through a session that is not the workspace's.
-func TestEnsureBranchReadsEverythingFromTheSessionRow(t *testing.T) {
+func TestBranchStepsReadsEverythingFromTheSessionRow(t *testing.T) {
 	world := newSessionBranchWorld(t)
 
-	_, err := world.service.EnsureBranch(context.Background(), uuid.New(), world.session.ID)
+	_, err := world.service.CutBranch(context.Background(), uuid.New(), world.session.ID)
 	if !errors.Is(err, application.ErrSessionNotFound) {
-		t.Errorf("EnsureBranch with another workspace = %v, want ErrSessionNotFound", err)
+		t.Errorf("CutBranch with another workspace = %v, want ErrSessionNotFound", err)
 	}
 	if world.api.calls != 0 {
 		t.Errorf("made %d GitHub calls for a mismatched pair", world.api.calls)
@@ -265,6 +271,17 @@ func TestBranchRefusalsAreTerminalAndNamed(t *testing.T) {
 			want:    application.BranchFailureConflict,
 			mention: "other work",
 		},
+		{
+			// A 403 the permission precheck could not see: GitHub was
+			// reached and said no, which is not an outage.
+			name: "GitHub refuses the write itself",
+			arrange: func(w *sessionBranchWorld) {
+				w.api.createErr = fmt.Errorf("%w: POST /repos/acme/app/git/refs returned 403",
+					application.ErrRemoteRefused)
+			},
+			want:    application.BranchFailureRefused,
+			mention: "GitHub refused",
+		},
 	}
 
 	for _, tc := range cases {
@@ -274,7 +291,7 @@ func TestBranchRefusalsAreTerminalAndNamed(t *testing.T) {
 
 			_, err := world.ensure(t)
 			if err == nil {
-				t.Fatal("EnsureBranch succeeded")
+				t.Fatal("the branch steps succeeded")
 			}
 			got, terminal := application.ClassifyBranchFailure(err)
 			if !terminal {
@@ -314,6 +331,8 @@ func TestBranchFailureReasonsFitTheTransitionTrail(t *testing.T) {
 		application.BranchFailureConflict,
 		application.BranchFailureInvalidName,
 		application.BranchFailureUnreachable,
+		application.BranchFailureRefused,
+		application.BranchFailureUnrecorded,
 		application.BranchFailure("something unrecognised"),
 	} {
 		if _, err := domain.ValidateTransitionReason(failure.Reason()); err != nil {

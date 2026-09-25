@@ -75,6 +75,8 @@ func startHarness(t *testing.T) harness {
 		activity.RegisterOptions{Name: weavetemporal.ActivityFailUnprovisionable})
 	w.RegisterActivityWithOptions(activities.CreateBranch,
 		activity.RegisterOptions{Name: weavetemporal.ActivityCreateBranch})
+	w.RegisterActivityWithOptions(activities.RecordBranch,
+		activity.RegisterOptions{Name: weavetemporal.ActivityRecordBranch})
 	w.RegisterActivityWithOptions(activities.FailSession,
 		activity.RegisterOptions{Name: weavetemporal.ActivityFailSession})
 	if err := w.Start(); err != nil {

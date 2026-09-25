@@ -152,9 +152,17 @@ func TestTheBranchActivityIsSafeToRedeliverIntegration(t *testing.T) {
 		SessionID:   session.ID.String(),
 	}
 
+	// Both activities, each delivered twice, the way a lost acknowledgement
+	// makes Temporal run them.
 	for attempt := 1; attempt <= 2; attempt++ {
-		if err := activities.CreateBranch(context.Background(), input); err != nil {
-			t.Fatalf("delivery %d: %v", attempt, err)
+		branch, err := activities.CreateBranch(context.Background(), input)
+		if err != nil {
+			t.Fatalf("cut, delivery %d: %v", attempt, err)
+		}
+		if err := activities.RecordBranch(context.Background(), weavetemporal.RecordBranchInput{
+			WorkspaceID: input.WorkspaceID, SessionID: input.SessionID, Branch: branch,
+		}); err != nil {
+			t.Fatalf("record, delivery %d: %v", attempt, err)
 		}
 	}
 
@@ -210,7 +218,7 @@ func TestTheBranchActivityRefusesAMismatchedWorkspaceIntegration(t *testing.T) {
 	attacker := seedSessionFixture(t, ownerPool, "Other Workspace")
 
 	activities := branchActivities(t, appPool, github)
-	err := activities.CreateBranch(context.Background(), weavetemporal.SessionWorkflowInput{
+	_, err := activities.CreateBranch(context.Background(), weavetemporal.SessionWorkflowInput{
 		WorkspaceID: attacker.workspace.ID.String(),
 		SessionID:   session.ID.String(),
 	})

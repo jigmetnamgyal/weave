@@ -51,6 +51,16 @@ var (
 	// ErrUnauthorized is returned when GitHub rejects our credentials, which
 	// almost always means a wrong App id or a key that is not the App's.
 	ErrUnauthorized = errors.New("github: credentials rejected")
+	// ErrForbidden is a 403 that is not a suspension: GitHub was reached and
+	// refused the request — a permission the installation lacks, or a rule
+	// over the resource. Distinct from a generic failure because retrying it
+	// changes nothing, and a caller that retries it will eventually report
+	// "GitHub unreachable", which is false.
+	ErrForbidden = errors.New("github: request refused")
+	// ErrUnprocessable is a 422: GitHub understood the request and will not
+	// perform it. Retrying the same request cannot help. The message is kept,
+	// because GitHub's text is the only thing that separates its causes.
+	ErrUnprocessable = errors.New("github: request unprocessable")
 )
 
 // appJWTLifetime is how long a minted App JWT is valid.
@@ -225,6 +235,12 @@ func (c *Client) do(ctx context.Context, method, path, auth string, body io.Read
 		return nil, ErrNotFound
 	case resp.StatusCode == http.StatusForbidden && bytes.Contains(payload, []byte("suspended")):
 		return nil, ErrSuspended
+	case resp.StatusCode == http.StatusForbidden:
+		return nil, fmt.Errorf("%w: %s %s returned %d: %s",
+			ErrForbidden, method, path, resp.StatusCode, truncate(string(payload), 512))
+	case resp.StatusCode == http.StatusUnprocessableEntity:
+		return nil, fmt.Errorf("%w: %s %s returned %d: %s",
+			ErrUnprocessable, method, path, resp.StatusCode, truncate(string(payload), 512))
 	default:
 		// The body is included because GitHub's messages are specific and
 		// usually name the exact permission or resource at fault. It is

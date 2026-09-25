@@ -151,6 +151,12 @@ var ErrRemoteNotFound = errors.New("not found on github")
 // is not a failure — see CreateBranch.
 var ErrRemoteRefExists = errors.New("reference already exists on github")
 
+// ErrRemoteRefused is the port's "GitHub was reached and said no" — a 403 that
+// is not a suspension, or a 422 that is not a duplicate ref. Terminal: the
+// same request will be refused again, so retrying only delays a failure and
+// then misreports it as an outage.
+var ErrRemoteRefused = errors.New("refused by github")
+
 // InstallStateRepository stores the single-use value that carries intent
 // across the installation round trip.
 type InstallStateRepository interface {

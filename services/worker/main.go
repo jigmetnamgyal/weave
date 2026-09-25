@@ -131,6 +131,8 @@ func run() error {
 		activityOptions(weavetemporal.ActivityFailUnprovisionable))
 	w.RegisterActivityWithOptions(activities.CreateBranch,
 		activityOptions(weavetemporal.ActivityCreateBranch))
+	w.RegisterActivityWithOptions(activities.RecordBranch,
+		activityOptions(weavetemporal.ActivityRecordBranch))
 	w.RegisterActivityWithOptions(activities.FailSession,
 		activityOptions(weavetemporal.ActivityFailSession))
 

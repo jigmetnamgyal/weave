@@ -18,6 +18,7 @@ const (
 	ActivityMarkProvisioning    = "MarkSessionProvisioning"
 	ActivityFailUnprovisionable = "FailSessionUnprovisionable"
 	ActivityCreateBranch        = "CreateSessionBranch"
+	ActivityRecordBranch        = "RecordSessionBranch"
 	ActivityFailSession         = "FailSession"
 )
 
@@ -50,26 +51,76 @@ type FailSessionInput struct {
 	Cause       string `json:"cause"`
 }
 
-// CreateBranch cuts the session's branch and records its SHA.
+// BranchResult is what CreateBranch hands the workflow: the branch GitHub now
+// has. Carried through workflow history, which is what makes it durable before
+// anything is written to the database. Identifiers and a commit id only.
+type BranchResult struct {
+	Name    string `json:"name"`
+	SHA     string `json:"sha"`
+	Base    string `json:"base"`
+	Created bool   `json:"created"`
+}
+
+// RecordBranchInput is the branch to record against a session.
+type RecordBranchInput struct {
+	WorkspaceID string       `json:"workspace_id"`
+	SessionID   string       `json:"session_id"`
+	Branch      BranchResult `json:"branch"`
+}
+
+// CreateBranch cuts the session's branch on GitHub and returns it, recording
+// nothing.
 //
-// Safe to redeliver: see application.SessionBranchService.EnsureBranch for the
-// three layers that make a repeat find its own work rather than make more.
+// Safe to redeliver: see application.SessionBranchService.CutBranch for the
+// layers that make a repeat find its own work rather than make more.
 //
 // A refusal retrying cannot fix is raised as ErrorTypeBranchRefused with the
 // cause as its detail, and the workflow turns that into a failed session with
 // a reason naming it. Everything else is returned as-is and retried within the
 // activity's bounded policy.
-func (a *SessionActivities) CreateBranch(ctx context.Context, input SessionWorkflowInput) error {
+func (a *SessionActivities) CreateBranch(ctx context.Context, input SessionWorkflowInput) (BranchResult, error) {
 	workspaceID, sessionID, err := parseIdentifiers(input)
+	if err != nil {
+		return BranchResult{}, err
+	}
+
+	branch, err := a.branches.CutBranch(postgresTenant(ctx, workspaceID), workspaceID, sessionID)
+	if err != nil {
+		return BranchResult{}, classifyBranchError(err)
+	}
+	return BranchResult{Name: branch.Name, SHA: branch.SHA, Base: branch.Base, Created: branch.Created}, nil
+}
+
+// RecordBranch writes a cut branch's SHA and audit to the session.
+//
+// Database only, and idempotent: a SHA already recorded is success, a
+// different one is a conflict. That is what lets the workflow retry it far
+// longer than the GitHub step — a database outage here is waited out rather
+// than turned into a failure that forgets a real ref.
+func (a *SessionActivities) RecordBranch(ctx context.Context, input RecordBranchInput) error {
+	workspaceID, sessionID, err := parseIdentifiers(SessionWorkflowInput{
+		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
+	})
 	if err != nil {
 		return err
 	}
 
-	_, err = a.branches.EnsureBranch(postgresTenant(ctx, workspaceID), workspaceID, sessionID)
+	_, err = a.branches.RecordBranch(postgresTenant(ctx, workspaceID), workspaceID, sessionID, domain.Branch{
+		Name: input.Branch.Name, SHA: input.Branch.SHA, Base: input.Branch.Base, Created: input.Branch.Created,
+	})
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, domain.ErrInvalidSession) {
+		return temporal.NewNonRetryableApplicationError(
+			"the branch commit is not a valid commit id", ErrorTypeBranchRefused, err,
+			string(application.BranchFailureUnrecorded))
+	}
+	return classifyBranchError(err)
+}
 
+// classifyBranchError turns an application error into what Temporal acts on.
+func classifyBranchError(err error) error {
 	switch {
 	case errors.Is(err, application.ErrSessionNotFound):
 		return temporal.NewNonRetryableApplicationError(

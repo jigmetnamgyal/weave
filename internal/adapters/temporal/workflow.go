@@ -57,6 +57,32 @@ func activityOptions() workflow.ActivityOptions {
 	}
 }
 
+// recordActivityOptions govern recording a branch GitHub has already made.
+//
+// Far more patient than activityOptions, and on purpose. By the time this
+// runs the ref exists and its SHA is in workflow history; the only thing that
+// can fail is the database, and giving up after five tries would end the
+// session claiming GitHub was unreachable while a real branch sat unrecorded.
+// So attempts are unlimited and the whole step is bounded by time instead: an
+// hour covers any outage this system is meant to ride out, and past that the
+// session is failed with a reason that says the branch exists.
+func recordActivityOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout:    30 * time.Second,
+		ScheduleToCloseTimeout: time.Hour,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2,
+			MaximumInterval:    time.Minute,
+			MaximumAttempts:    0,
+			NonRetryableErrorTypes: []string{
+				ErrorTypeNotFound,
+				ErrorTypeBranchRefused,
+			},
+		},
+	}
+}
+
 // Error types an activity can raise that retrying cannot fix.
 const (
 	ErrorTypeNotFound             = "SessionNotFound"
@@ -77,6 +103,11 @@ const (
 	// Version 1 was M5.1: provisioning, then failure.
 	//
 	// versionBranchStep is M5.2: provisioning, the branch, then failure.
+	//
+	// Its shape changed once during review — cutting and recording were split
+	// into two activities — without a new version, because version 2 had
+	// never shipped: every execution that ran it was a local one, and all of
+	// them had closed. A closed execution is never replayed.
 	versionBranchStep workflow.Version = 2
 )
 
@@ -108,20 +139,23 @@ func SessionWorkflow(ctx workflow.Context, input SessionWorkflowInput) error {
 	}
 
 	if version >= versionBranchStep {
-		if err := workflow.ExecuteActivity(ctx, ActivityCreateBranch, input).Get(ctx, nil); err != nil {
-			cause, fail := branchFailureCause(err)
-			if !fail {
-				// The session is gone, or has moved on without us. Neither is
-				// this workflow's to record as a failure.
-				return err
-			}
-			logger.Warn("the session branch could not be created",
-				"session_id", input.SessionID, "cause", cause)
-			return workflow.ExecuteActivity(ctx, ActivityFailSession, FailSessionInput{
-				WorkspaceID: input.WorkspaceID,
-				SessionID:   input.SessionID,
-				Cause:       cause,
-			}).Get(ctx, nil)
+		var branch BranchResult
+		if err := workflow.ExecuteActivity(ctx, ActivityCreateBranch, input).Get(ctx, &branch); err != nil {
+			return failForBranch(ctx, input, err, string(application.BranchFailureUnreachable))
+		}
+
+		// From here the ref exists and `branch` — in history — is the durable
+		// record of it. A failure to write it down is not GitHub being
+		// unreachable, and must not be reported as one.
+		recordCtx := workflow.WithActivityOptions(ctx, recordActivityOptions())
+		if err := workflow.ExecuteActivity(recordCtx, ActivityRecordBranch, RecordBranchInput{
+			WorkspaceID: input.WorkspaceID,
+			SessionID:   input.SessionID,
+			Branch:      branch,
+		}).Get(ctx, nil); err != nil {
+			logger.Error("the session branch exists on GitHub but could not be recorded",
+				"session_id", input.SessionID, "branch", branch.Name, "sha", branch.SHA)
+			return failForBranch(ctx, input, err, string(application.BranchFailureUnrecorded))
 		}
 	}
 
@@ -131,6 +165,24 @@ func SessionWorkflow(ctx workflow.Context, input SessionWorkflowInput) error {
 	return workflow.ExecuteActivity(ctx, ActivityFailUnprovisionable, input).Get(ctx, nil)
 }
 
+// failForBranch ends the session after a branch step failed, unless the
+// session is not this workflow's to fail.
+func failForBranch(ctx workflow.Context, input SessionWorkflowInput, err error, exhausted string) error {
+	cause, fail := branchFailureCause(err, exhausted)
+	if !fail {
+		// The session is gone, or has moved on without us. Neither is this
+		// workflow's to record as a failure.
+		return err
+	}
+	workflow.GetLogger(ctx).Warn("the session branch step failed",
+		"session_id", input.SessionID, "cause", cause)
+	return workflow.ExecuteActivity(ctx, ActivityFailSession, FailSessionInput{
+		WorkspaceID: input.WorkspaceID,
+		SessionID:   input.SessionID,
+		Cause:       cause,
+	}).Get(ctx, nil)
+}
+
 // branchFailureCause decides what a failed branch activity means for the
 // session.
 //
@@ -138,10 +190,12 @@ func SessionWorkflow(ctx workflow.Context, input SessionWorkflowInput) error {
 //
 //   - refused for a named reason: fail the session with that reason;
 //   - the session is gone or no longer provisioning: do not touch it;
-//   - anything else — the retries for a transient error are spent, or the
-//     activity timed out: fail it as unreachable, because the alternative is a
-//     session left in `provisioning` indefinitely, which says nothing true.
-func branchFailureCause(err error) (string, bool) {
+//   - anything else — retries or time spent: fail it with `exhausted`, which
+//     the caller chooses because it knows which step ran out. Out of retries
+//     reaching GitHub is "unreachable"; out of time recording a branch GitHub
+//     already made is "unrecorded", and the difference is whether a real ref
+//     is left behind.
+func branchFailureCause(err error, exhausted string) (string, bool) {
 	var applicationErr *temporal.ApplicationError
 	if errors.As(err, &applicationErr) {
 		switch applicationErr.Type() {
@@ -150,10 +204,10 @@ func branchFailureCause(err error) (string, bool) {
 			if applicationErr.HasDetails() && applicationErr.Details(&cause) == nil && cause != "" {
 				return cause, true
 			}
-			return string(application.BranchFailureUnreachable), true
+			return exhausted, true
 		case ErrorTypeNotFound, ErrorTypeTransitionNotAllowed:
 			return "", false
 		}
 	}
-	return string(application.BranchFailureUnreachable), true
+	return exhausted, true
 }

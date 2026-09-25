@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jigmetnamgyal/weave/internal/application"
 )
@@ -66,7 +67,7 @@ func (p *Port) Branch(ctx context.Context, githubInstallationID int64, owner, re
 		if errors.Is(err, ErrNotFound) {
 			return application.RemoteBranch{}, application.ErrRemoteNotFound
 		}
-		return application.RemoteBranch{}, err
+		return application.RemoteBranch{}, translateRefusal(err)
 	}
 	return application.RemoteBranch{Name: state.Name, SHA: state.SHA, Protected: state.Protected}, nil
 }
@@ -82,7 +83,7 @@ func (p *Port) CreateBranch(ctx context.Context, githubInstallationID int64, own
 		if errors.Is(err, ErrRefExists) {
 			return application.RemoteBranch{}, application.ErrRemoteRefExists
 		}
-		return application.RemoteBranch{}, err
+		return application.RemoteBranch{}, translateRefusal(err)
 	}
 	return application.RemoteBranch{Name: ref.Name, SHA: ref.SHA}, nil
 }
@@ -92,8 +93,23 @@ func (p *Port) CreateBranch(ctx context.Context, githubInstallationID int64, own
 func (p *Port) BranchRules(ctx context.Context, githubInstallationID int64, owner, repo, branch string) (application.BranchRule, error) {
 	rules, err := p.client.BranchRules(ctx, githubInstallationID, owner, repo, branch)
 	if err != nil {
-		return application.BranchRule{}, err
+		return application.BranchRule{}, translateRefusal(err)
 	}
 	name, restricted := rules.RestrictsWriting()
 	return application.BranchRule{Restricted: restricted, Rule: name}, nil
+}
+
+// translateRefusal turns GitHub saying "no" into the port's refusal.
+//
+// Only on the branch path, which is where a refusal is the answer rather than
+// an obstacle: installation and repository reads keep their existing errors,
+// because their callers already decide what a failure there means.
+//
+// Wrapped rather than replaced, so GitHub's own message — which names the
+// permission or rule at fault — is still in the error for the log line.
+func translateRefusal(err error) error {
+	if errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnprocessable) {
+		return fmt.Errorf("%w: %w", application.ErrRemoteRefused, err)
+	}
+	return err
 }

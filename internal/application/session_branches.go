@@ -62,59 +62,73 @@ func NewSessionBranchService(sessions SessionBranchStore, cutter SessionBranchCu
 	return &SessionBranchService{sessions: sessions, cutter: cutter}
 }
 
-// EnsureBranch cuts the session's branch if it has not been, and records it.
+// CutBranch makes the session's branch exist on GitHub, and records nothing.
 //
-// Called by the session workflow, which may call it more than once for one
-// session: Temporal redelivers an activity whose acknowledgement was lost.
-// Three layers make the repeat harmless, and this relies on all of them:
+// The first of two steps, split so that a branch GitHub made is never lost to
+// a failure writing it down. The workflow runs this as one activity; once it
+// completes, the branch and its SHA are in the workflow's history, which is
+// durable. RecordBranch then runs as a second activity that touches only the
+// database and can retry patiently, rather than re-asking GitHub and — if the
+// database stays down — ending in a failure that calls GitHub unreachable while
+// a real ref sits unrecorded.
+//
+// Called more than once for one session when Temporal redelivers. Three layers
+// make the repeat harmless:
 //
 //  1. **The name is stable.** M4.2 derived it from the session id and stored
 //     it; this reads it rather than generating one.
 //  2. **Cutting is idempotent by name.** A branch already at the requested
 //     base comes back as success with Created false.
-//  3. **Recording is write-once.** A SHA already on the session short-circuits
-//     before GitHub is asked anything, and RecordBranch refuses to write a
-//     second one.
+//  3. **A recorded SHA short-circuits.** If the branch was already recorded,
+//     that record is returned and GitHub is not asked anything.
 //
 // **Everything comes from the session row.** The workflow input names the
 // workspace and the session; the repository, branch name and base are read
 // here, under that workspace's scope. A session id from another workspace is
 // not found, so the pair cannot be mismatched into reaching someone else's
 // repository.
-//
-// **The record is the SHA, not a separate audit.** The earlier plan wrote the
-// branch audit as a best-effort event beside the SHA. It is written in the
-// same transaction instead, so neither can exist without the other. What
-// remains unrecoverable is the case this cannot fix: GitHub made the branch
-// and the process died before the transaction. The retry then finds the
-// branch at its base and records it as *found*, which is true, rather than as
-// created, which it cannot prove.
-func (s *SessionBranchService) EnsureBranch(
+func (s *SessionBranchService) CutBranch(
 	ctx context.Context,
 	workspaceID, sessionID uuid.UUID,
-) (domain.Session, error) {
+) (domain.Branch, error) {
 	session, err := s.sessions.Get(ctx, sessionID, workspaceID)
 	if err != nil {
-		return domain.Session{}, err
+		return domain.Branch{}, err
 	}
-	// Already recorded: a redelivery after the transaction committed. No
-	// GitHub call, because the answer is already durable.
 	if session.BranchSHA != "" {
-		return session, nil
+		return domain.Branch{
+			Name: session.BranchName, SHA: session.BranchSHA, Base: session.BaseBranch,
+		}, nil
 	}
 	if session.State != domain.SessionProvisioning {
-		return domain.Session{}, fmt.Errorf("%w: it is %s", ErrSessionNotProvisioning, session.State)
+		return domain.Branch{}, fmt.Errorf("%w: it is %s", ErrSessionNotProvisioning, session.State)
 	}
 
-	branch, err := s.cutter.CreateBranchAsSystem(ctx, workspaceID, CreateBranchCommand{
+	return s.cutter.CreateBranchAsSystem(ctx, workspaceID, CreateBranchCommand{
 		RepositoryID: session.RepositoryID,
 		Name:         session.BranchName,
 		Base:         session.BaseBranch,
 	})
-	if err != nil {
-		return domain.Session{}, err
-	}
+}
 
+// RecordBranch writes the cut branch's SHA and its audit row, together, once.
+//
+// **The record is the SHA, not a separate audit.** Both are written in one
+// transaction, so neither can exist without the other. A branch found rather
+// than created — the usual cause is our own attempt whose completion was lost
+// — is audited as *found*, which is true, rather than as created, which this
+// cannot prove.
+//
+// Deliberately **not** conditional on the session's state. A ref that exists
+// is a fact whether or not the session is still provisioning, and refusing to
+// record it would leave a branch nobody knows about. Removing a branch for a
+// session that will not run belongs to cancellation, which nothing routes to
+// yet — see the tracker.
+func (s *SessionBranchService) RecordBranch(
+	ctx context.Context,
+	workspaceID, sessionID uuid.UUID,
+	branch domain.Branch,
+) (domain.Session, error) {
 	recorded, _, err := s.sessions.RecordBranch(ctx, sessionID, workspaceID, branch.SHA,
 		SystemActor(),
 		func(after domain.Session) AuditEvent {
@@ -164,10 +178,18 @@ const (
 	BranchFailureProtected             BranchFailure = "branch_protected"
 	BranchFailureConflict              BranchFailure = "branch_conflict"
 	BranchFailureInvalidName           BranchFailure = "invalid_branch_name"
+	// BranchFailureRefused is GitHub itself saying no to a request the
+	// prechecks passed — a permission or rule they could not see.
+	BranchFailureRefused BranchFailure = "github_refused"
 	// BranchFailureUnreachable is not terminal when raised: it is what the
 	// workflow records once the bounded retries for a transient failure are
 	// spent, so the session does not sit in `provisioning` for someone to find.
 	BranchFailureUnreachable BranchFailure = "github_unreachable"
+	// BranchFailureUnrecorded is the case that must never read as an outage:
+	// GitHub made the branch and the database would not take its SHA, even
+	// after an hour of retries. The ref exists; its commit is in the workflow
+	// history and the worker's log.
+	BranchFailureUnrecorded BranchFailure = "branch_unrecorded"
 )
 
 // ClassifyBranchFailure reports whether err is a refusal retrying cannot fix,
@@ -199,6 +221,8 @@ func ClassifyBranchFailure(err error) (BranchFailure, bool) {
 		return BranchFailureConflict, true
 	case errors.Is(err, domain.ErrInvalidBranchName):
 		return BranchFailureInvalidName, true
+	case errors.Is(err, ErrRemoteRefused):
+		return BranchFailureRefused, true
 	default:
 		return "", false
 	}
@@ -226,6 +250,12 @@ func (f BranchFailure) Reason() string {
 			"points at other work"
 	case BranchFailureInvalidName:
 		return "the session branch could not be created: its name is not a valid branch name"
+	case BranchFailureRefused:
+		return "the session branch could not be created: GitHub refused the request — check the " +
+			"App's permissions and the repository's rules"
+	case BranchFailureUnrecorded:
+		return "the session branch was created on GitHub but could not be recorded here; " +
+			"its commit is in the workflow history"
 	case BranchFailureUnreachable:
 		return "the session branch could not be created: GitHub could not be reached " +
 			"after repeated attempts"
