@@ -97,7 +97,7 @@ INSERT INTO sessions (
     repository_id, branch_name, base_branch, created_by
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at
+RETURNING id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at, branch_sha
 `
 
 type CreateSessionParams struct {
@@ -139,6 +139,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BranchSha,
 	)
 	return i, err
 }
@@ -189,7 +190,7 @@ func (q *Queries) EnqueueOutboxEvent(ctx context.Context, arg EnqueueOutboxEvent
 }
 
 const getSessionForWorkspace = `-- name: GetSessionForWorkspace :one
-SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at FROM sessions
+SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at, branch_sha FROM sessions
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -217,6 +218,7 @@ func (q *Queries) GetSessionForWorkspace(ctx context.Context, arg GetSessionForW
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BranchSha,
 	)
 	return i, err
 }
@@ -353,7 +355,7 @@ func (q *Queries) ListSessionTransitions(ctx context.Context, arg ListSessionTra
 }
 
 const listSessionsForWorkspace = `-- name: ListSessionsForWorkspace :many
-SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at FROM sessions
+SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at, branch_sha FROM sessions
 WHERE workspace_id = $1
 ORDER BY created_at DESC
 `
@@ -381,6 +383,7 @@ func (q *Queries) ListSessionsForWorkspace(ctx context.Context, workspaceID uuid
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.BranchSha,
 		); err != nil {
 			return nil, err
 		}
@@ -393,7 +396,7 @@ func (q *Queries) ListSessionsForWorkspace(ctx context.Context, workspaceID uuid
 }
 
 const lockSessionForUpdate = `-- name: LockSessionForUpdate :one
-SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at FROM sessions
+SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at, branch_sha FROM sessions
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE
 `
@@ -423,6 +426,50 @@ func (q *Queries) LockSessionForUpdate(ctx context.Context, arg LockSessionForUp
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BranchSha,
+	)
+	return i, err
+}
+
+const recordSessionBranch = `-- name: RecordSessionBranch :one
+UPDATE sessions
+SET branch_sha = $3,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND branch_sha IS NULL
+RETURNING id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at, branch_sha
+`
+
+type RecordSessionBranchParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	BranchSha   *string
+}
+
+// Sets the branch commit once. `branch_sha IS NULL` is the application's half
+// of write-once; the trigger in 00010 is the database's.
+//
+// The version is deliberately not bumped. It exists to stop two *state*
+// changes colliding, and recording the branch is not one: the branch is cut
+// while the session stays in `provisioning`. Bumping it would make a member's pause or cancel fail as a
+// conflict against a change that did not touch the state they read.
+func (q *Queries) RecordSessionBranch(ctx context.Context, arg RecordSessionBranchParams) (Session, error) {
+	row := q.db.QueryRow(ctx, recordSessionBranch, arg.ID, arg.WorkspaceID, arg.BranchSha)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.TaskID,
+		&i.AgentVersionID,
+		&i.State,
+		&i.Version,
+		&i.RepositoryID,
+		&i.BranchName,
+		&i.BaseBranch,
+		&i.ContinuesID,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.BranchSha,
 	)
 	return i, err
 }
@@ -433,7 +480,7 @@ SET state      = $3,
     version    = version + 1,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND version = $4
-RETURNING id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at
+RETURNING id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at, branch_sha
 `
 
 type UpdateSessionStateParams struct {
@@ -468,6 +515,7 @@ func (q *Queries) UpdateSessionState(ctx context.Context, arg UpdateSessionState
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BranchSha,
 	)
 	return i, err
 }

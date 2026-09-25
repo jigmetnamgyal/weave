@@ -87,3 +87,17 @@ SET state      = $3,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND version = $4
 RETURNING *;
+
+-- name: RecordSessionBranch :one
+-- Sets the branch commit once. `branch_sha IS NULL` is the application's half
+-- of write-once; the trigger in 00010 is the database's.
+--
+-- The version is deliberately not bumped. It exists to stop two *state*
+-- changes colliding, and recording the branch is not one: the branch is cut
+-- while the session stays in `provisioning`. Bumping it would make a member's pause or cancel fail as a
+-- conflict against a change that did not touch the state they read.
+UPDATE sessions
+SET branch_sha = $3,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND branch_sha IS NULL
+RETURNING *;

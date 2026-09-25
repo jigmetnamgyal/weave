@@ -17,6 +17,8 @@ import (
 const (
 	ActivityMarkProvisioning    = "MarkSessionProvisioning"
 	ActivityFailUnprovisionable = "FailSessionUnprovisionable"
+	ActivityCreateBranch        = "CreateSessionBranch"
+	ActivityFailSession         = "FailSession"
 )
 
 // SessionActivities moves a session through its states on the workflow's
@@ -26,11 +28,72 @@ const (
 // because workflow code is replayed and must be deterministic.
 type SessionActivities struct {
 	sessions *application.SessionService
+	branches *application.SessionBranchService
 }
 
 // NewSessionActivities wires the activities.
-func NewSessionActivities(sessions *application.SessionService) *SessionActivities {
-	return &SessionActivities{sessions: sessions}
+func NewSessionActivities(
+	sessions *application.SessionService,
+	branches *application.SessionBranchService,
+) *SessionActivities {
+	return &SessionActivities{sessions: sessions, branches: branches}
+}
+
+// FailSessionInput ends a session with a cause the workflow chose.
+//
+// A code rather than a reason string, so that nothing the workflow carries in
+// its history becomes a sentence in the session's trail without passing
+// through application.BranchFailure.Reason first.
+type FailSessionInput struct {
+	WorkspaceID string `json:"workspace_id"`
+	SessionID   string `json:"session_id"`
+	Cause       string `json:"cause"`
+}
+
+// CreateBranch cuts the session's branch and records its SHA.
+//
+// Safe to redeliver: see application.SessionBranchService.EnsureBranch for the
+// three layers that make a repeat find its own work rather than make more.
+//
+// A refusal retrying cannot fix is raised as ErrorTypeBranchRefused with the
+// cause as its detail, and the workflow turns that into a failed session with
+// a reason naming it. Everything else is returned as-is and retried within the
+// activity's bounded policy.
+func (a *SessionActivities) CreateBranch(ctx context.Context, input SessionWorkflowInput) error {
+	workspaceID, sessionID, err := parseIdentifiers(input)
+	if err != nil {
+		return err
+	}
+
+	_, err = a.branches.EnsureBranch(postgresTenant(ctx, workspaceID), workspaceID, sessionID)
+	if err == nil {
+		return nil
+	}
+
+	switch {
+	case errors.Is(err, application.ErrSessionNotFound):
+		return temporal.NewNonRetryableApplicationError(
+			"the session no longer exists", ErrorTypeNotFound, err)
+	case errors.Is(err, application.ErrSessionNotProvisioning):
+		// Moved on without us: a member cancelled it, most likely. It is not
+		// this workflow's to fail, so it is reported as a refused transition
+		// and the workflow stops.
+		return temporal.NewNonRetryableApplicationError(
+			"the session is no longer provisioning", ErrorTypeTransitionNotAllowed, err)
+	}
+	if cause, terminal := application.ClassifyBranchFailure(err); terminal {
+		return temporal.NewNonRetryableApplicationError(
+			cause.Reason(), ErrorTypeBranchRefused, err, string(cause))
+	}
+	return err
+}
+
+// FailSession ends a provisioning session for the cause the workflow names.
+func (a *SessionActivities) FailSession(ctx context.Context, input FailSessionInput) error {
+	return a.transition(ctx, SessionWorkflowInput{
+		WorkspaceID: input.WorkspaceID,
+		SessionID:   input.SessionID,
+	}, domain.SessionFailed, application.BranchFailure(input.Cause).Reason())
 }
 
 // MarkProvisioning moves a queued session to provisioning.
@@ -68,15 +131,9 @@ func (a *SessionActivities) transition(
 	to domain.SessionState,
 	reason string,
 ) error {
-	workspaceID, err := uuid.Parse(input.WorkspaceID)
+	workspaceID, sessionID, err := parseIdentifiers(input)
 	if err != nil {
-		return temporal.NewNonRetryableApplicationError(
-			"workspace id is not a uuid", ErrorTypeNotFound, err)
-	}
-	sessionID, err := uuid.Parse(input.SessionID)
-	if err != nil {
-		return temporal.NewNonRetryableApplicationError(
-			"session id is not a uuid", ErrorTypeNotFound, err)
+		return err
 	}
 
 	tenant := postgresTenant(ctx, workspaceID)
@@ -96,4 +153,22 @@ func (a *SessionActivities) transition(
 		}
 	}
 	return nil
+}
+
+// parseIdentifiers reads the workflow input's identifiers.
+//
+// A malformed one will not become well-formed by waiting, so it is
+// non-retryable.
+func parseIdentifiers(input SessionWorkflowInput) (uuid.UUID, uuid.UUID, error) {
+	workspaceID, err := uuid.Parse(input.WorkspaceID)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, temporal.NewNonRetryableApplicationError(
+			"workspace id is not a uuid", ErrorTypeNotFound, err)
+	}
+	sessionID, err := uuid.Parse(input.SessionID)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, temporal.NewNonRetryableApplicationError(
+			"session id is not a uuid", ErrorTypeNotFound, err)
+	}
+	return workspaceID, sessionID, nil
 }

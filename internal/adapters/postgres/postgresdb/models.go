@@ -140,6 +140,8 @@ type Session struct {
 	CreatedBy      uuid.UUID
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	// The commit the session branch pointed at when the workflow confirmed it. NULL until then; written once.
+	BranchSha *string
 }
 
 // Who is in a session and in what capacity. Distinct from workspace membership.

@@ -12,7 +12,15 @@ import (
 //
 // Both the constructor and the raw literal, because the constructor is only a
 // convention and a struct literal setting the field would bypass it.
-var systemActorPattern = regexp.MustCompile(`SystemActor\(\)|System:\s*true`)
+//
+// And, since M5.2, the service methods that act as the system on a caller's
+// behalf — TransitionAsSystem, CreateBranchAsSystem and EnsureBranch. They
+// construct the system actor internally, so a handler calling one would never
+// write either of the first two patterns. CreateBranchAsSystem skips the
+// `repository:manage` check; reached from HTTP it would let a viewer write a
+// ref.
+var systemActorPattern = regexp.MustCompile(
+	`SystemActor\(\)|System:\s*true|[A-Za-z]+AsSystem\(|\.EnsureBranch\(`)
 
 // TestNoHandlerActsAsTheSystem is the guard a comment in
 // internal/application/workspaces.go promises.
