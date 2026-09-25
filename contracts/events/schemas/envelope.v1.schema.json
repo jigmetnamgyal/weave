@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://weave.dev/contracts/events/envelope.v1.schema.json",
+  "title": "Session event envelope, version 1",
+  "description": "Every event a runner publishes. Every field is a claim by an untrusted producer: session_id must match the subject and workspace_id must match the session row, or the event is quarantined. Unknown top-level fields are ignored.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "schema_version",
+    "type",
+    "occurred_at",
+    "producer",
+    "workspace_id",
+    "session_id",
+    "correlation_id",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Producer-generated, UUIDv7. With session_id and producer, the deduplication key."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "MAJOR.MINOR of the event type's schema. An unknown major is quarantined; a newer minor is accepted and its unknown fields ignored."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["message.created", "provider.failed"],
+      "description": "The normalized type stored in history. The transport name is session.<type>.v<major>. An unknown type is quarantined."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The producer's claim. Stored, never used for ordering."
+    },
+    "producer": { "type": "string", "format": "uuid", "description": "The runner id." },
+    "workspace_id": { "type": "string", "format": "uuid" },
+    "session_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The aggregate, and the ordering key."
+    },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "description": "Validated against the schema for type and major version."
+    }
+  }
+}

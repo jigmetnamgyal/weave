@@ -15,6 +15,9 @@ type Querier interface {
 	AddSessionParticipant(ctx context.Context, arg AddSessionParticipantParams) (SessionParticipant, error)
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	AppendAuditEvent(ctx context.Context, arg AppendAuditEventParams) (AuditEvent, error)
+	// DO NOTHING on the deduplication key, so a duplicate returns no row rather
+	// than an error — the caller distinguishes it without parsing a message.
+	AppendSessionEvent(ctx context.Context, arg AppendSessionEventParams) (int64, error)
 	// Append-only, enforced by trigger as well as by there being no other
 	// statement that touches this table.
 	AppendSessionTransition(ctx context.Context, arg AppendSessionTransitionParams) (SessionStateTransition, error)
@@ -154,6 +157,9 @@ type Querier interface {
 	// as current state — and they would match no connected account in the
 	// interface, which reads as a build mismatch.
 	ListRepositoriesForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Repository, error)
+	// For tests and, later, the session room. Scoped by workspace as well as the
+	// policy, and ordered by the sequence — never by occurred_at, which is a claim.
+	ListSessionEvents(ctx context.Context, arg ListSessionEventsParams) ([]SessionEvent, error)
 	ListSessionParticipants(ctx context.Context, arg ListSessionParticipantsParams) ([]SessionParticipant, error)
 	ListSessionTransitions(ctx context.Context, arg ListSessionTransitionsParams) ([]SessionStateTransition, error)
 	ListSessionsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Session, error)
@@ -198,6 +204,12 @@ type Querier interface {
 	// Read under the agent's row lock by the caller, so two concurrent edits
 	// cannot both compute the same next number and collide on the unique index.
 	NextAgentVersionNumber(ctx context.Context, arg NextAgentVersionNumberParams) (int32, error)
+	// Takes the next number for a session, creating its counter on first use.
+	//
+	// The upsert locks the counter row until the transaction ends, which is what
+	// serialises two ingestor replicas on one session. If the insert that follows
+	// is a duplicate, the caller rolls back, and the number goes with it.
+	NextSessionEventSequence(ctx context.Context, arg NextSessionEventSequenceParams) (int64, error)
 	// Retention, through a SECURITY DEFINER function.
 	//
 	// The sweep runs from a background goroutine with no tenant context, and under
@@ -210,6 +222,7 @@ type Querier interface {
 	// Deliveries are only needed while deduplication might see a retry. GitHub
 	// gives up well inside this window.
 	PruneWebhookDeliveries(ctx context.Context, retention pgtype.Interval) error
+	QuarantineSessionEvent(ctx context.Context, arg QuarantineSessionEventParams) error
 	RecordInstallationPermission(ctx context.Context, arg RecordInstallationPermissionParams) error
 	// Sets the branch commit once. `branch_sha IS NULL` is the application's half
 	// of write-once; the trigger in 00010 is the database's.
