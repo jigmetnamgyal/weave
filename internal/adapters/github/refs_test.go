@@ -205,3 +205,51 @@ func TestThePortReportsARefusalAsARefusal(t *testing.T) {
 		})
 	}
 }
+
+// TestARateLimitIsNotARefusal is the second review round's finding on PR #17,
+// and a regression the first round's fix introduced.
+//
+// Naming 403s as refusals made them terminal. GitHub also sends its rate
+// limits as 403s, so a session would have been failed for good by a limit that
+// resets within the hour. Each signal GitHub uses is checked on its own,
+// because a response may carry only one of them.
+func TestARateLimitIsNotARefusal(t *testing.T) {
+	cases := map[string]struct {
+		status int
+		header map[string]string
+		body   string
+	}{
+		"primary limit, remaining 0": {http.StatusForbidden,
+			map[string]string{"X-RateLimit-Remaining": "0"}, `{"message":"API rate limit exceeded for installation"}`},
+		"secondary limit, Retry-After": {http.StatusForbidden,
+			map[string]string{"Retry-After": "60"}, `{"message":"You have exceeded a secondary rate limit"}`},
+		"message only": {http.StatusForbidden,
+			nil, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes"}`},
+		"429": {http.StatusTooManyRequests, nil, `{"message":"Too many requests"}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := tokenAndThen(t, func(w http.ResponseWriter, _ *http.Request) {
+				for key, value := range tc.header {
+					w.Header().Set(key, value)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			defer server.Close()
+
+			port := github.NewPort(clientFor(t, server))
+			_, err := port.CreateBranch(context.Background(), 42, "acme", "app", "weave/x", "abc")
+			if !errors.Is(err, github.ErrRateLimited) {
+				t.Errorf("CreateBranch = %v, want ErrRateLimited", err)
+			}
+			if errors.Is(err, application.ErrRemoteRefused) {
+				t.Error("a rate limit was reported as a refusal; the session would fail for good " +
+					"over something that resets")
+			}
+			if _, terminal := application.ClassifyBranchFailure(err); terminal {
+				t.Error("a rate limit was classified as terminal; it must be retried")
+			}
+		})
+	}
+}
