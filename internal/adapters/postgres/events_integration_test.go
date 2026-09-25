@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
+	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/internal/domain"
 )
 
@@ -277,5 +279,84 @@ func TestTheSessionLookupCannotEnumerateIntegration(t *testing.T) {
 	}
 	if _, err := appPool.Exec(context.Background(), `SELECT * FROM weave_session_for_event(NULL)`); err == nil {
 		t.Error("the lookup accepted NULL")
+	}
+}
+
+// TestATerminalTransitionInFlightBlocksTheAppendIntegration is the second
+// review finding on PR #18.
+//
+// The first version read the session's state before the append transaction,
+// so a terminal transition committing in between let the event through.
+// Here a transaction holds the session row as a transition does — FOR UPDATE —
+// and moves it to failed. The append must wait for it and then refuse, not
+// read the old state and store. Watched failing without the share lock: the
+// append returned at once and stored the event.
+func TestATerminalTransitionInFlightBlocksTheAppendIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	fixture := seedSessionFixture(t, ownerPool, "In Flight Workspace")
+	session, err := fixture.createSession(t, postgres.NewSessionStore(ownerPool), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	tx, err := ownerPool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(),
+		`SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE`, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(),
+		`UPDATE sessions SET state = 'failed' WHERE id = $1`, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		appended bool
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, appended, err := postgres.NewEventStore(appPool).AppendEvent(
+			postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID), eventFor(session, uuid.New()))
+		done <- result{appended, err}
+	}()
+
+	select {
+	case r := <-done:
+		t.Fatalf("the append did not wait for the transition in flight (appended=%v, err=%v)", r.appended, r.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	r := <-done
+	if !errors.Is(r.err, application.ErrEventSessionTerminal) {
+		t.Errorf("append after the terminal commit = (%v, %v), want ErrEventSessionTerminal", r.appended, r.err)
+	}
+}
+
+// TestContentTheDatabaseRejectsIsNotTransientIntegration: bypassing the
+// decoder, a payload jsonb refuses must come back as a rejection — not a
+// failure the ingestor would retry to exhaustion.
+func TestContentTheDatabaseRejectsIsNotTransientIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	fixture := seedSessionFixture(t, ownerPool, "Rejected Content Workspace")
+	session, err := fixture.createSession(t, postgres.NewSessionStore(ownerPool), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	event := eventFor(session, uuid.New())
+	event.Payload = []byte(`{"message_id":"` + uuid.NewString() + `","role":"assistant","text":"a\u0000b"}`)
+
+	_, _, err = postgres.NewEventStore(appPool).AppendEvent(
+		postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID), event)
+	if !errors.Is(err, application.ErrEventRejectedByStore) {
+		t.Errorf("AppendEvent with a NUL escape = %v, want ErrEventRejectedByStore", err)
 	}
 }

@@ -151,7 +151,10 @@ type ProviderFailed struct {
 }
 
 var (
-	schemaVersionPattern = regexp.MustCompile(`^([0-9]+)\.([0-9]+)$`)
+	// No leading zeros and bounded, the same shape the database's CHECK
+	// accepts. `"01.0"` read as major 1 here and was then rejected by the
+	// table — which the ingestor took for a transient failure and retried.
+	schemaVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$`)
 	failureCodePattern   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
@@ -195,9 +198,7 @@ func DecodeEvent(raw []byte) (SessionEvent, error) {
 		if envelope.SessionID != nil {
 			refusal.SessionID = *envelope.SessionID
 		}
-		if len(refusal.SchemaVersion) > 32 {
-			refusal.SchemaVersion = refusal.SchemaVersion[:32]
-		}
+		refusal.SchemaVersion = SafeText(refusal.SchemaVersion, 32)
 		return refusal
 	}
 
@@ -278,16 +279,20 @@ func validatePayload(eventType EventType, raw json.RawMessage) (json.RawMessage,
 			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "message_id is missing"}
 		case payload.Role != "assistant" && payload.Role != "user" && payload.Role != "system":
 			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "role is not assistant, user or system"}
-		case payload.Text == "" || !utf8.ValidString(payload.Text) || utf8.RuneCountInString(payload.Text) > 32768:
-			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "text is empty, not UTF-8, or too long"}
+		case payload.Text == "" || !storableText(payload.Text) || utf8.RuneCountInString(payload.Text) > 32768:
+			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "text is empty, not storable text, or too long"}
 		}
 		return json.Marshal(payload)
 
 	case EventProviderFailed:
+		// Pointers for the required fields, so absent is told apart from
+		// zero. A missing `message` used to decode as "" and be stored as
+		// though the producer had sent it — history that does not satisfy
+		// the contract it claims.
 		var payload struct {
-			Code      string `json:"code"`
-			Retryable *bool  `json:"retryable"`
-			Message   string `json:"message"`
+			Code      string  `json:"code"`
+			Retryable *bool   `json:"retryable"`
+			Message   *string `json:"message"`
 		}
 		if err := json.Unmarshal(trimmed, &payload); err != nil {
 			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "provider.failed payload does not decode"}
@@ -297,10 +302,12 @@ func validatePayload(eventType EventType, raw json.RawMessage) (json.RawMessage,
 			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "code is not a stable identifier"}
 		case payload.Retryable == nil:
 			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "retryable is missing"}
-		case !utf8.ValidString(payload.Message) || utf8.RuneCountInString(payload.Message) > 2000:
-			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "message is not UTF-8 or too long"}
+		case payload.Message == nil:
+			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "message is missing"}
+		case !storableText(*payload.Message) || utf8.RuneCountInString(*payload.Message) > 2000:
+			return nil, &EventRefusalError{Reason: RefusalInvalidPayload, Detail: "message is not storable text or too long"}
 		}
-		return json.Marshal(ProviderFailed{Code: payload.Code, Retryable: *payload.Retryable, Message: payload.Message})
+		return json.Marshal(ProviderFailed{Code: payload.Code, Retryable: *payload.Retryable, Message: *payload.Message})
 
 	default:
 		// Unknown types are quarantined, not stored. The standards say
@@ -310,6 +317,36 @@ func validatePayload(eventType EventType, raw json.RawMessage) (json.RawMessage,
 		// producer.
 		return nil, &EventRefusalError{Reason: RefusalUnknownType, Detail: "type is not one this consumer knows"}
 	}
+}
+
+// storableText reports whether PostgreSQL will accept a string in jsonb.
+//
+// Valid UTF-8 without NUL. Provider output can contain a NUL byte;
+// `json.Marshal` escapes it as \u0000, and jsonb refuses that escape outright.
+// Accepting it here made the database reject the insert, which the ingestor
+// could only read as a transient failure and retry — for a condition waiting
+// can never change.
+func storableText(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
+}
+
+// SafeText makes producer-supplied text safe to store in a bounded text
+// column: invalid UTF-8 and NUL replaced, then cut to at most n bytes on a
+// rune boundary.
+//
+// Byte-slicing can split a multi-byte character, and PostgreSQL rejects the
+// resulting invalid UTF-8. For the quarantine that was the worst possible
+// failure: the insert failed on every redelivery, so the record meant to stop
+// an event vanishing is exactly what could not be written.
+func SafeText(s string, n int) string {
+	s = strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "\uFFFD")
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // EventSubject is the NATS subject a session's events travel on.

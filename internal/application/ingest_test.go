@@ -66,7 +66,7 @@ func (w *ingestWorld) envelope(edit func(*domain.EventEnvelope)) []byte {
 func (w *ingestWorld) deliver(data []byte, delivered uint64) application.IngestOutcome {
 	return w.ingestor.Ingest(context.Background(), application.EventDelivery{
 		Subject: domain.EventSubject(prefix, w.session), Data: data,
-		Delivered: delivered, MaxDeliver: 5,
+		Delivered: delivered, ExhaustAfter: 5,
 	})
 }
 
@@ -145,7 +145,7 @@ func TestRefusalsAreQuarantinedForTheRightReason(t *testing.T) {
 			w := newIngestWorld(t)
 			subject, data := tc.arrange(w)
 			got := w.ingestor.Ingest(context.Background(), application.EventDelivery{
-				Subject: subject, Data: data, Delivered: 1, MaxDeliver: 5,
+				Subject: subject, Data: data, Delivered: 1, ExhaustAfter: 5,
 			})
 			if got != application.IngestQuarantined {
 				t.Fatalf("outcome = %v, want quarantined", got)
@@ -175,6 +175,45 @@ func TestAWorkspaceMismatchRecordsTheRealOwner(t *testing.T) {
 	w.deliver(w.envelope(func(e *domain.EventEnvelope) { e.WorkspaceID = claimed }), 1)
 	if got := w.store.quarantined[0].WorkspaceID; got != w.workspace {
 		t.Errorf("quarantine workspace = %s, want the session's %s (the event claimed %s)", got, w.workspace, claimed)
+	}
+}
+
+// TestAStoredEventRedeliveredAfterTheEndIsADuplicate is a review finding on
+// PR #18. An event stored while the session ran, redelivered after it ended —
+// an unconfirmed ack is enough — must be a duplicate, not a session_terminal
+// refusal for an event that is in fact in history.
+func TestAStoredEventRedeliveredAfterTheEndIsADuplicate(t *testing.T) {
+	w := newIngestWorld(t)
+	event := w.envelope(nil)
+	if got := w.deliver(event, 1); got != application.IngestPersisted {
+		t.Fatalf("first delivery = %v", got)
+	}
+	w.store.sessions[w.session] = application.SessionForEvent{WorkspaceID: w.workspace, State: domain.SessionFailed}
+
+	if got := w.deliver(event, 2); got != application.IngestDuplicate {
+		t.Errorf("redelivery after the end = %v, want duplicate", got)
+	}
+	if len(w.store.quarantined) != 0 {
+		t.Errorf("a stored event was quarantined as %s", w.store.quarantined[0].Reason)
+	}
+	// And a new one is still refused.
+	if got := w.deliver(w.envelope(nil), 1); got != application.IngestQuarantined {
+		t.Errorf("a new event after the end = %v, want quarantined", got)
+	}
+}
+
+// TestContentTheStoreRejectsIsRefusedNotRetried: a constraint the decoder did
+// not anticipate fails identically on every delivery. Retrying it would end
+// in delivery_exhausted — "try harder" about something that cannot succeed.
+func TestContentTheStoreRejectsIsRefusedNotRetried(t *testing.T) {
+	w := newIngestWorld(t)
+	w.store.appendErr = application.ErrEventRejectedByStore
+
+	if got := w.deliver(w.envelope(nil), 1); got != application.IngestQuarantined {
+		t.Fatalf("outcome = %v, want quarantined on the first delivery", got)
+	}
+	if w.store.quarantined[0].Reason != domain.RefusalInvalidPayload {
+		t.Errorf("reason = %s, want invalid_payload", w.store.quarantined[0].Reason)
 	}
 }
 
@@ -237,6 +276,8 @@ func (f *fakeEventStore) ResolveSession(_ context.Context, id uuid.UUID) (applic
 	return session, nil
 }
 
+// AppendEvent mirrors the real store: terminality is decided here, and a
+// stored event is a duplicate before a terminal session is a refusal.
 func (f *fakeEventStore) AppendEvent(ctx context.Context, event domain.SessionEvent) (int64, bool, error) {
 	if f.appendErr != nil {
 		return 0, false, f.appendErr
@@ -246,6 +287,9 @@ func (f *fakeEventStore) AppendEvent(ctx context.Context, event domain.SessionEv
 	key := event.SessionID.String() + event.RunnerID.String() + event.EventID.String()
 	if f.seen[key] {
 		return 0, false, nil
+	}
+	if f.sessions[event.SessionID].State.Terminal() {
+		return 0, false, application.ErrEventSessionTerminal
 	}
 	f.seen[key] = true
 	f.next++

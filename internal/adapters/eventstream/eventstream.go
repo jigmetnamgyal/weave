@@ -32,6 +32,11 @@ type Config struct {
 	Stream        string
 	SubjectPrefix string
 	Consumer      string
+	// ExhaustAfter is how many transient failures an event survives before
+	// the ingestor quarantines it as delivery_exhausted. The ingestor's
+	// ceiling; JetStream's is unlimited. Configurable so a test does not wait
+	// out ten backoffs.
+	ExhaustAfter int
 	// AckWait is how long an ingestor has before a message is redelivered.
 	// An ingestion is one short transaction; thirty seconds is far outside
 	// it, and short enough that a killed ingestor's messages come back
@@ -44,6 +49,8 @@ func DefaultConfig() Config {
 	return Config{
 		Stream: "SESSION_EVENTS", SubjectPrefix: "weave.session",
 		Consumer: "session-event-ingestor", AckWait: 30 * time.Second,
+		// With the 30-second backoff cap, about five minutes of failures.
+		ExhaustAfter: 10,
 	}
 }
 
@@ -71,10 +78,15 @@ const (
 	// megabytes nobody will keep.
 	streamMaxMsgSize = 2 * domain.MaxEventBytes
 
-	// ConsumerMaxDeliver is the delivery ceiling. The ingestor quarantines on
-	// the attempt that reaches it, because past it JetStream stops
-	// redelivering and the event would simply be gone.
-	ConsumerMaxDeliver = 5
+	// consumerMaxDeliver is unlimited, deliberately.
+	//
+	// The first version set 5 and had the ingestor quarantine on the fifth
+	// attempt. A review found the hole: with the database down, the
+	// quarantine write fails too, the fifth delivery is spent, JetStream
+	// stops, and the event is gone with no record. So JetStream never gives
+	// up, and the ceiling is the ingestor's (Config.ExhaustAfter), which only
+	// counts once its quarantine row is actually written.
+	consumerMaxDeliver = -1
 )
 
 // streamConfig is the stream this code expects.
@@ -179,6 +191,8 @@ type Consumer struct {
 	ingestor *application.Ingestor
 	logger   *slog.Logger
 	ackWait  time.Duration
+	// exhaustAfter is passed to the ingestor with each delivery.
+	exhaustAfter int
 }
 
 // NewConsumer creates or updates the durable consumer and wires it.
@@ -202,13 +216,14 @@ func NewConsumer(
 		FilterSubject: cfg.SubjectPrefix + ".*.events",
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       cfg.AckWait,
-		MaxDeliver:    ConsumerMaxDeliver,
+		MaxDeliver:    consumerMaxDeliver,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create event consumer %s: %w", cfg.Consumer, err)
 	}
-	return &Consumer{consumer: consumer, ingestor: ingestor, logger: logger, ackWait: cfg.AckWait}, nil
+	return &Consumer{consumer: consumer, ingestor: ingestor, logger: logger,
+		ackWait: cfg.AckWait, exhaustAfter: cfg.ExhaustAfter}, nil
 }
 
 // Run consumes until ctx is cancelled.
@@ -240,10 +255,10 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	defer cancelIngest()
 
 	outcome := c.ingestor.Ingest(ingestCtx, application.EventDelivery{
-		Subject:    msg.Subject(),
-		Data:       msg.Data(),
-		Delivered:  delivered,
-		MaxDeliver: ConsumerMaxDeliver,
+		Subject:      msg.Subject(),
+		Data:         msg.Data(),
+		Delivered:    delivered,
+		ExhaustAfter: c.exhaustAfter,
 	})
 
 	if outcome == application.IngestRetry {

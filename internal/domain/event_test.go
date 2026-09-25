@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -124,6 +125,48 @@ func TestEventsAreRefusedForTheRightReason(t *testing.T) {
 			_, err := domain.DecodeEvent(tc.raw)
 			assertRefused(t, err, tc.want)
 		})
+	}
+}
+
+// TestProviderFailedRequiresEveryField: a missing field is not an empty one.
+// A payload without `message` was stored with a synthesized "", which the
+// v1 schema does not allow.
+func TestProviderFailedRequiresEveryField(t *testing.T) {
+	valid, err := os.ReadFile(filepath.Join(fixturesDir, "provider.failed.v1.valid.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"code", "retryable", "message"} {
+		var envelope map[string]any
+		_ = json.Unmarshal(valid, &envelope)
+		delete(envelope["payload"].(map[string]any), field)
+		raw, _ := json.Marshal(envelope)
+		_, err := domain.DecodeEvent(raw)
+		assertRefused(t, err, domain.RefusalInvalidPayload)
+	}
+}
+
+// TestSafeTextNeverSplitsARune: the quarantine insert must never fail on its
+// own input, or the record meant to stop an event vanishing cannot be written.
+func TestSafeTextNeverSplitsARune(t *testing.T) {
+	cases := map[string]struct {
+		in   string
+		n    int
+		want string
+	}{
+		"short is untouched":         {"weave.session", 32, "weave.session"},
+		"cut before a split rune":    {"ab€", 4, "ab"},
+		"invalid bytes are replaced": {"a\xffb", 16, "a\uFFFDb"},
+		"NUL is replaced":            {"a\x00b", 16, "a\uFFFDb"},
+	}
+	for name, tc := range cases {
+		got := domain.SafeText(tc.in, tc.n)
+		if got != tc.want {
+			t.Errorf("%s: SafeText(%q, %d) = %q, want %q", name, tc.in, tc.n, got, tc.want)
+		}
+		if !utf8.ValidString(got) || len(got) > tc.n {
+			t.Errorf("%s: %q is not valid UTF-8 within %d bytes", name, got, tc.n)
+		}
 	}
 }
 

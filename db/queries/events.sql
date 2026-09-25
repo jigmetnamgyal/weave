@@ -34,3 +34,23 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 SELECT * FROM session_events
 WHERE session_id = $1 AND workspace_id = $2
 ORDER BY sequence;
+
+-- name: LockSessionForEvent :one
+-- The session's state, read under a share lock inside the append transaction.
+--
+-- A transition takes FOR UPDATE on this row, so the two serialise: an event
+-- cannot be appended between a session's terminal transition and its commit,
+-- and a terminal transition cannot slip in between this read and the
+-- event's insert. Reading the state earlier, outside this transaction, is
+-- the race that let a terminal session gain an event.
+SELECT state FROM sessions
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE;
+
+-- name: SessionEventExists :one
+-- Whether an event is already stored, for a terminal session: a redelivery of
+-- an event stored before the session ended is a duplicate, not a refusal.
+SELECT EXISTS (
+    SELECT 1 FROM session_events
+    WHERE session_id = $1 AND runner_id = $2 AND event_id = $3
+);

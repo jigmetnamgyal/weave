@@ -20,10 +20,12 @@ type EventDelivery struct {
 	Data    []byte
 	// Delivered counts this attempt: 1 on first delivery.
 	Delivered uint64
-	// MaxDeliver is the transport's ceiling. On the attempt that reaches it,
-	// a failure is quarantined rather than left for redelivery that will
-	// never come.
-	MaxDeliver int
+	// ExhaustAfter is how many transient failures the ingestor tolerates
+	// before quarantining the event as delivery_exhausted. The ingestor's
+	// ceiling, not the transport's: the transport redelivers without limit,
+	// so an event whose quarantine write *also* fails is redelivered later
+	// rather than dropped. Zero means never exhaust.
+	ExhaustAfter int
 }
 
 // IngestOutcome is what the transport must do with the message.
@@ -79,6 +81,17 @@ type QuarantinedEvent struct {
 	PayloadSHA256 string
 }
 
+// Errors an EventStore returns that are decisions, not failures: each is
+// quarantined, never retried.
+var (
+	// ErrEventSessionTerminal: the session is terminal and this event was
+	// not already stored before it ended.
+	ErrEventSessionTerminal = errors.New("the session is terminal")
+	// ErrEventRejectedByStore: the database refused the event's content — a
+	// constraint the decoder did not anticipate. Retrying cannot change it.
+	ErrEventRejectedByStore = errors.New("the database rejected the event's content")
+)
+
 // EventStore is the ingestor's persistence port.
 type EventStore interface {
 	// ResolveSession finds a session's workspace and state by id alone,
@@ -87,6 +100,11 @@ type EventStore interface {
 	// AppendEvent takes the next sequence and stores the event, in the tenant
 	// context on ctx. appended is false for a duplicate, in which case no
 	// sequence was consumed.
+	//
+	// It decides terminality itself, under a lock on the session inside the
+	// append transaction: ErrEventSessionTerminal for a new event on a
+	// terminal session, and a duplicate — not a refusal — for one stored
+	// before the session ended. ErrSessionNotFound if the session is gone.
 	AppendEvent(ctx context.Context, event domain.SessionEvent) (sequence int64, appended bool, err error)
 	// Quarantine records a refusal. It needs no tenant.
 	Quarantine(ctx context.Context, event QuarantinedEvent) error
@@ -116,9 +134,10 @@ func NewIngestor(store EventStore, bind TenantBinder, subjectPrefix string, now 
 //
 //	persisted                         -> ack after commit
 //	duplicate                         -> ack; nothing written, no sequence used
-//	transient (database unreachable)  -> retry, unless this is the last attempt
+//	transient (database unreachable)  -> retry, until the ingestor's ceiling
 //	refused for a reason time cannot change -> quarantine, then ack
-//	transient on the last attempt     -> quarantine as delivery_exhausted
+//	transient at the ceiling          -> quarantine as delivery_exhausted
+//	quarantine cannot be written      -> retry; the transport never drops it
 //
 // **Every identifier in the event is a claim.** The session comes from the
 // subject and must equal the envelope's; the workspace comes from the session
@@ -169,21 +188,34 @@ func (i *Ingestor) Ingest(ctx context.Context, delivery EventDelivery) IngestOut
 		}, session.WorkspaceID)
 	}
 
-	if session.State.Terminal() {
-		// Invariant 10: terminal history is immutable, and an event after the
-		// end would rewrite it. May prove too strict once a real runner's
-		// last events race the terminal transition; M5.4 revisits it with a
-		// runner that can show the race.
-		return i.quarantine(ctx, delivery, &domain.EventRefusalError{
-			Reason: domain.RefusalSessionTerminal, EventID: event.EventID,
-			SessionID: subjectSession, SchemaVersion: event.SchemaVersion,
-		}, session.WorkspaceID)
-	}
-
 	event.ReceivedAt = i.now().UTC()
 	tenant := i.bind(ctx, session.WorkspaceID)
 	sequence, appended, err := i.store.AppendEvent(tenant, event)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrEventSessionTerminal):
+		// Invariant 10: terminal history is immutable. Decided by the store
+		// under a lock, not from the state read above, which a transition
+		// can overtake. May prove too strict once a real runner's last events
+		// race the terminal transition; M5.4 revisits it with a runner that
+		// can show the race.
+		return i.quarantine(ctx, delivery, &domain.EventRefusalError{
+			Reason: domain.RefusalSessionTerminal, EventID: event.EventID,
+			SessionID: event.SessionID, SchemaVersion: event.SchemaVersion,
+		}, session.WorkspaceID)
+	case errors.Is(err, ErrSessionNotFound):
+		// Deleted between the lookup and the append.
+		return i.quarantine(ctx, delivery, &domain.EventRefusalError{
+			Reason: domain.RefusalUnknownSession, EventID: event.EventID,
+			SessionID: event.SessionID, SchemaVersion: event.SchemaVersion,
+		}, uuid.Nil)
+	case errors.Is(err, ErrEventRejectedByStore):
+		// A decision, not an outage: retrying would end in delivery_exhausted
+		// for something that was never going to succeed.
+		return i.quarantine(ctx, delivery, &domain.EventRefusalError{
+			Reason: domain.RefusalInvalidPayload, EventID: event.EventID,
+			SessionID: event.SessionID, SchemaVersion: event.SchemaVersion,
+		}, session.WorkspaceID)
+	case err != nil:
 		return i.transient(ctx, delivery, event, session.WorkspaceID, fmt.Errorf("append event: %w", err))
 	}
 	if !appended {
@@ -202,10 +234,15 @@ func (i *Ingestor) Ingest(ctx context.Context, delivery EventDelivery) IngestOut
 
 // transient handles a failure waiting might fix.
 //
-// Retried, except on the transport's last attempt: at the ceiling JetStream
-// stops redelivering, and an event not recorded now simply vanishes. So the
-// last attempt quarantines it as delivery_exhausted — which is not a claim
-// that the event was bad, only that it could not be stored in time.
+// Retried until the ingestor's own ceiling, then quarantined as
+// delivery_exhausted — not a claim that the event was bad, only that it could
+// not be stored in time. The ceiling is the ingestor's rather than JetStream's
+// on purpose. The first version relied on JetStream's MaxDeliver and
+// quarantined on the attempt that reached it; if the database was down, the
+// quarantine write failed too, the last redelivery was spent, and the event
+// was gone with no record — the exact loss the ceiling existed to prevent.
+// Now the transport never gives up, and an event is acknowledged only once it
+// is stored or its quarantine row is.
 func (i *Ingestor) transient(
 	ctx context.Context,
 	delivery EventDelivery,
@@ -213,7 +250,7 @@ func (i *Ingestor) transient(
 	workspaceID uuid.UUID,
 	err error,
 ) IngestOutcome {
-	final := delivery.MaxDeliver > 0 && delivery.Delivered >= uint64(delivery.MaxDeliver)
+	final := delivery.ExhaustAfter > 0 && delivery.Delivered >= uint64(delivery.ExhaustAfter)
 	i.logger.WarnContext(ctx, "event ingestion failed transiently",
 		slog.String("session_id", event.SessionID.String()),
 		slog.String("event_id", event.EventID.String()),
@@ -234,17 +271,15 @@ func (i *Ingestor) transient(
 //
 // If the record itself cannot be written, the message is **not** acknowledged
 // — dropping a refused event with no record is exactly the silent loss the
-// quarantine exists to prevent.
+// quarantine exists to prevent. Because the transport redelivers without
+// limit, "not acknowledged" means "tried again later", never "lost".
 func (i *Ingestor) quarantine(ctx context.Context, delivery EventDelivery, refusalErr error, workspaceID uuid.UUID) IngestOutcome {
 	var refusal *domain.EventRefusalError
 	if !errors.As(refusalErr, &refusal) {
 		refusal = &domain.EventRefusalError{Reason: domain.RefusalMalformed}
 	}
 
-	subject := delivery.Subject
-	if len(subject) > 256 {
-		subject = subject[:256]
-	}
+	subject := domain.SafeText(delivery.Subject, 256)
 	digest := sha256.Sum256(delivery.Data)
 	record := QuarantinedEvent{
 		Subject:       subject,

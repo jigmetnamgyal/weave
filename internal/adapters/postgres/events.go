@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -74,6 +76,35 @@ func (s *EventStore) AppendEvent(ctx context.Context, event domain.SessionEvent)
 
 	var sequence int64
 	err := inTenantTx(ctx, s.pool, func(q *postgresdb.Queries) error {
+		// Terminality decided here, under a share lock that serialises with
+		// transitions, rather than from a state read before this transaction
+		// — which a terminal transition could overtake.
+		state, err := q.LockSessionForEvent(ctx, postgresdb.LockSessionForEventParams{
+			ID: event.SessionID, WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrSessionNotFound
+			}
+			return fmt.Errorf("lock session for event: %w", err)
+		}
+		if domain.SessionState(state).Terminal() {
+			// A redelivery of an event stored before the session ended is a
+			// duplicate. Checked before refusing, or an unconfirmed ack would
+			// leave an operator a refusal record for an event that was in
+			// fact stored.
+			exists, err := q.SessionEventExists(ctx, postgresdb.SessionEventExistsParams{
+				SessionID: event.SessionID, RunnerID: event.RunnerID, EventID: event.EventID,
+			})
+			if err != nil {
+				return fmt.Errorf("check for a stored event: %w", err)
+			}
+			if exists {
+				return errDuplicateEvent
+			}
+			return application.ErrEventSessionTerminal
+		}
+
 		next, err := q.NextSessionEventSequence(ctx, postgresdb.NextSessionEventSequenceParams{
 			SessionID:   event.SessionID,
 			WorkspaceID: workspaceID,
@@ -98,6 +129,9 @@ func (s *EventStore) AppendEvent(ctx context.Context, event domain.SessionEvent)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errDuplicateEvent
+			}
+			if rejectedContent(err) {
+				return fmt.Errorf("%w: %w", application.ErrEventRejectedByStore, err)
 			}
 			return fmt.Errorf("append session event: %w", err)
 		}
@@ -157,6 +191,23 @@ func (s *EventStore) ListEvents(ctx context.Context, sessionID, workspaceID uuid
 		return nil
 	})
 	return events, err
+}
+
+// rejectedContent reports whether the database refused the event's content
+// rather than failing to take it.
+//
+// A data exception (class 22 — an unsupported escape, an invalid value) or a
+// CHECK violation will fail identically on every redelivery. Treated as
+// transient, it would be retried to the ceiling and recorded as
+// delivery_exhausted, which says "try harder" about something that can never
+// succeed. The decoder should catch these first; this is what happens when it
+// does not.
+func rejectedContent(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Code, "22") || pgErr.Code == "23514"
 }
 
 // nullUUID renders the zero id as SQL NULL.

@@ -64,6 +64,7 @@ func newIngestionHarness(t *testing.T) *ingestionHarness {
 		SubjectPrefix: "weavetest" + id + ".session",
 		Consumer:      "test-ingestor",
 		AckWait:       2 * time.Second,
+		ExhaustAfter:  3,
 	}
 	ctx := context.Background()
 	if err := eventstream.EnsureStream(ctx, js, cfg); err != nil {
@@ -296,12 +297,21 @@ func TestRefusedEventsAreQuarantinedWithoutPayloadIntegration(t *testing.T) {
 	})
 }
 
-// flakyStore fails AppendEvent a set number of times, or always.
+// flakyStore fails AppendEvent a set number of times, or always; and can fail
+// Quarantine too, for the case where the database is simply down.
 type flakyStore struct {
 	application.EventStore
-	failures atomic.Int32
-	always   bool
-	calls    atomic.Int32
+	failures           atomic.Int32
+	always             bool
+	calls              atomic.Int32
+	quarantineFailures atomic.Int32
+}
+
+func (f *flakyStore) Quarantine(ctx context.Context, event application.QuarantinedEvent) error {
+	if f.quarantineFailures.Add(-1) >= 0 {
+		return errors.New("database: connection refused (injected)")
+	}
+	return f.EventStore.Quarantine(ctx, event)
 }
 
 func (f *flakyStore) AppendEvent(ctx context.Context, event domain.SessionEvent) (int64, bool, error) {
@@ -338,9 +348,9 @@ func TestATransientFailureIsRedeliveredAndStoredOnceIntegration(t *testing.T) {
 	}
 }
 
-// TestTheFinalDeliveryIsQuarantinedNotDroppedIntegration: at the ceiling
-// JetStream stops redelivering. Without the ingestor checking the count, the
-// event would simply vanish.
+// TestTheFinalDeliveryIsQuarantinedNotDroppedIntegration: at the ingestor's
+// ceiling a persistently failing event is quarantined as delivery_exhausted
+// rather than retried for ever or dropped.
 func TestTheFinalDeliveryIsQuarantinedNotDroppedIntegration(t *testing.T) {
 	h := newIngestionHarness(t)
 	fixture, session := h.session(t, "Exhausted Workspace")
@@ -351,17 +361,98 @@ func TestTheFinalDeliveryIsQuarantinedNotDroppedIntegration(t *testing.T) {
 	if err := h.publisher.Publish(context.Background(), envelope); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	// Backoff 1+2+4+8 seconds across five deliveries.
-	eventually(t, 40*time.Second, "a delivery_exhausted row", func() bool {
+	// Backoff 1+2 seconds across three deliveries.
+	eventually(t, 30*time.Second, "a delivery_exhausted row", func() bool {
 		var n int
 		_ = h.ownerPool.QueryRow(context.Background(),
 			`SELECT count(*) FROM session_event_quarantine
 			 WHERE event_id = $1 AND reason = 'delivery_exhausted' AND delivery_count = $2`,
-			envelope.EventID, eventstream.ConsumerMaxDeliver).Scan(&n)
+			envelope.EventID, h.cfg.ExhaustAfter).Scan(&n)
 		return n == 1
 	})
-	if calls := store.calls.Load(); calls != eventstream.ConsumerMaxDeliver {
-		t.Errorf("attempted %d times, want exactly the ceiling of %d", calls, eventstream.ConsumerMaxDeliver)
+	if calls := store.calls.Load(); calls != int32(h.cfg.ExhaustAfter) {
+		t.Errorf("attempted %d times, want exactly the ceiling of %d", calls, h.cfg.ExhaustAfter)
+	}
+}
+
+// TestAnEventIsNotLostWhenItsQuarantineFailsTooIntegration is the first
+// review finding on PR #18.
+//
+// The database is down: the append fails, and at the ceiling the quarantine
+// write fails as well. The first design quarantined on JetStream's last
+// permitted delivery, so this combination spent that delivery and the event
+// was gone with no record. Now JetStream never gives up, and the event is
+// stored once the database is back.
+func TestAnEventIsNotLostWhenItsQuarantineFailsTooIntegration(t *testing.T) {
+	h := newIngestionHarness(t)
+	fixture, session := h.session(t, "Database Down Workspace")
+	store := &flakyStore{EventStore: h.store}
+	// Appends fail on deliveries 1-4; the quarantine attempts on 3 and 4 fail
+	// too. Delivery 5 finds the database back.
+	store.failures.Store(4)
+	store.quarantineFailures.Store(2)
+	h.run(t, store)
+
+	envelope := message(fixture, session, uuid.New(), "outlast the outage")
+	if err := h.publisher.Publish(context.Background(), envelope); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	// Backoff 1+2+4+8 seconds.
+	eventually(t, 40*time.Second, "the event stored after the outage", func() bool {
+		return len(h.events(t, fixture, session)) == 1
+	})
+	var quarantined int
+	_ = h.ownerPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM session_event_quarantine WHERE event_id = $1`, envelope.EventID).Scan(&quarantined)
+	if quarantined != 0 {
+		t.Errorf("%d quarantine rows for an event that was stored", quarantined)
+	}
+}
+
+// TestAStoredEventRedeliveredAfterTheEndIsADuplicateIntegration: stored while
+// the session ran, redelivered after it failed. A duplicate, not a
+// session_terminal refusal for an event that is in history.
+func TestAStoredEventRedeliveredAfterTheEndIsADuplicateIntegration(t *testing.T) {
+	h := newIngestionHarness(t)
+	fixture, session := h.session(t, "Ended Session Workspace")
+	h.run(t, h.store)
+
+	stored := message(fixture, session, uuid.New(), "before the end")
+	if err := h.publisher.Publish(context.Background(), stored); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	eventually(t, 10*time.Second, "the event stored", func() bool { return len(h.events(t, fixture, session)) == 1 })
+
+	if _, err := h.ownerPool.Exec(context.Background(),
+		`UPDATE sessions SET state = 'failed' WHERE id = $1`, session.ID); err != nil {
+		t.Fatalf("end the session: %v", err)
+	}
+	raw, _ := json.Marshal(stored)
+	h.publishRaw(t, session.ID, raw)
+	late := message(fixture, session, stored.Producer, "after the end")
+	if err := h.publisher.Publish(context.Background(), late); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	eventually(t, 10*time.Second, "both acknowledged", func() bool {
+		pending, ackPending := h.pending(t)
+		return pending == 0 && ackPending == 0
+	})
+	reasons := map[uuid.UUID]string{}
+	rows, _ := h.ownerPool.Query(context.Background(),
+		`SELECT event_id, reason FROM session_event_quarantine WHERE session_id = $1`, session.ID)
+	for rows.Next() {
+		var id uuid.UUID
+		var reason string
+		_ = rows.Scan(&id, &reason)
+		reasons[id] = reason
+	}
+	rows.Close()
+	if reason, ok := reasons[stored.EventID]; ok {
+		t.Errorf("the stored event was quarantined as %s on redelivery", reason)
+	}
+	if reasons[late.EventID] != string(domain.RefusalSessionTerminal) {
+		t.Errorf("the late event = %q, want session_terminal", reasons[late.EventID])
 	}
 }
 

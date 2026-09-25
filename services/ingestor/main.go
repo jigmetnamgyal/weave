@@ -129,13 +129,20 @@ func run() error {
 	consumed := make(chan error, 1)
 	go func() { consumed <- consumer.Run(consumeCtx) }()
 
-	var failure error
+	var (
+		failure         error
+		consumerStopped bool
+	)
 	select {
 	case <-ctx.Done():
 	case failure = <-healthFailed:
 		logger.Error("the ingestor health server stopped; shutting down", slog.String("error", failure.Error()))
 		failure = fmt.Errorf("ingestor health server: %w", failure)
 	case failure = <-consumed:
+		// The channel's only value is taken here, so the drain wait below
+		// must not wait for another — it would sit out the whole timeout and
+		// then warn about a drain that had already happened.
+		consumerStopped = true
 		if failure == nil {
 			failure = errors.New("the consumer stopped unexpectedly")
 		}
@@ -143,15 +150,17 @@ func run() error {
 	logger.Info("ingestor shutting down")
 	cancelConsume()
 
-	select {
-	case err := <-consumed:
-		if failure == nil && err != nil {
-			failure = err
+	if !consumerStopped {
+		select {
+		case err := <-consumed:
+			if failure == nil && err != nil {
+				failure = err
+			}
+		case <-time.After(shutdownTimeout):
+			// Unacknowledged events are redelivered after the ack wait, so a
+			// hard stop loses nothing.
+			logger.Warn("the consumer did not drain in time; unacknowledged events will be redelivered")
 		}
-	case <-time.After(shutdownTimeout):
-		// Unacknowledged events are redelivered after the ack wait, so a hard
-		// stop loses nothing.
-		logger.Warn("the consumer did not drain in time; unacknowledged events will be redelivered")
 	}
 	return failure
 }

@@ -102,6 +102,31 @@ func (q *Queries) ListSessionEvents(ctx context.Context, arg ListSessionEventsPa
 	return items, nil
 }
 
+const lockSessionForEvent = `-- name: LockSessionForEvent :one
+SELECT state FROM sessions
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type LockSessionForEventParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+// The session's state, read under a share lock inside the append transaction.
+//
+// A transition takes FOR UPDATE on this row, so the two serialise: an event
+// cannot be appended between a session's terminal transition and its commit,
+// and a terminal transition cannot slip in between this read and the
+// event's insert. Reading the state earlier, outside this transaction, is
+// the race that let a terminal session gain an event.
+func (q *Queries) LockSessionForEvent(ctx context.Context, arg LockSessionForEventParams) (string, error) {
+	row := q.db.QueryRow(ctx, lockSessionForEvent, arg.ID, arg.WorkspaceID)
+	var state string
+	err := row.Scan(&state)
+	return state, err
+}
+
 const nextSessionEventSequence = `-- name: NextSessionEventSequence :one
 INSERT INTO session_event_sequences (session_id, workspace_id, last_sequence)
 VALUES ($1, $2, 1)
@@ -160,4 +185,26 @@ func (q *Queries) QuarantineSessionEvent(ctx context.Context, arg QuarantineSess
 		arg.PayloadSha256,
 	)
 	return err
+}
+
+const sessionEventExists = `-- name: SessionEventExists :one
+SELECT EXISTS (
+    SELECT 1 FROM session_events
+    WHERE session_id = $1 AND runner_id = $2 AND event_id = $3
+)
+`
+
+type SessionEventExistsParams struct {
+	SessionID uuid.UUID
+	RunnerID  uuid.UUID
+	EventID   uuid.UUID
+}
+
+// Whether an event is already stored, for a terminal session: a redelivery of
+// an event stored before the session ended is a duplicate, not a refusal.
+func (q *Queries) SessionEventExists(ctx context.Context, arg SessionEventExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, sessionEventExists, arg.SessionID, arg.RunnerID, arg.EventID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

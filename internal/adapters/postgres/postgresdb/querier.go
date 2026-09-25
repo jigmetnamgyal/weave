@@ -170,6 +170,14 @@ type Querier interface {
 	// edits both read the same MAX(version) and one fails on the unique index —
 	// an error the caller can do nothing useful with.
 	LockAgentForUpdate(ctx context.Context, arg LockAgentForUpdateParams) (Agent, error)
+	// The session's state, read under a share lock inside the append transaction.
+	//
+	// A transition takes FOR UPDATE on this row, so the two serialise: an event
+	// cannot be appended between a session's terminal transition and its commit,
+	// and a terminal transition cannot slip in between this read and the
+	// event's insert. Reading the state earlier, outside this transaction, is
+	// the race that let a terminal session gain an event.
+	LockSessionForEvent(ctx context.Context, arg LockSessionForEventParams) (string, error)
 	// Taken before a state change. The version read here is the one the change is
 	// checked against, and holding the lock is what stops two transitions reading
 	// the same version and both believing they are current.
@@ -271,6 +279,9 @@ type Querier interface {
 	// Only an outstanding invitation can be revoked; revoking an accepted or
 	// already-revoked one matches no row.
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
+	// Whether an event is already stored, for a terminal session: a redelivery of
+	// an event stored before the session ended is a duplicate, not a refusal.
+	SessionEventExists(ctx context.Context, arg SessionEventExistsParams) (bool, error)
 	// The pointer is the only mutable thing about a profile. Moving it changes
 	// what the next session will use and nothing about what past sessions did.
 	SetAgentCurrentVersion(ctx context.Context, arg SetAgentCurrentVersionParams) (Agent, error)
