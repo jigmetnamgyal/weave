@@ -45,6 +45,67 @@ func (s *InstallationService) CreateBranch(
 			ErrPermissionDenied, membership.Role, domain.PermissionRepositoryManage)
 	}
 
+	branch, repository, err := s.cutBranch(ctx, membership.WorkspaceID, command)
+	if err != nil || !branch.Created {
+		// No audit on the idempotent path; see resolveExisting.
+		return branch, err
+	}
+
+	if err := s.auditBranch(ctx, membership, repository, branch); err != nil {
+		// The branch exists and the record does not. Both facts go to the
+		// caller: swallowing the error would hide an unaudited write, and
+		// reporting a bare failure would suggest nothing happened when
+		// something irreversible did.
+		return branch, fmt.Errorf("%w: branch %s at %s: %v",
+			ErrAuditNotRecorded, branch.Name, short(branch.SHA), err)
+	}
+	return branch, nil
+}
+
+// CreateBranchAsSystem cuts a branch on the product's behalf, for the session
+// workflow.
+//
+// Two things differ from CreateBranch, and each is a decision:
+//
+//  1. **No permission check.** There is no member to check. Authorization
+//     happened when a member holding `session:create` created the session,
+//     and creating a session *is* authorizing the branch it names. Re-checking
+//     `repository:manage` here would either always fail or require borrowing
+//     that member's identity, which is how an automated write becomes a
+//     false statement about a person.
+//
+//  2. **No audit.** The caller records the branch and its audit row together,
+//     in the same transaction as the SHA on the session (see
+//     SessionBranchService). Auditing here would be a second, separately
+//     losable write describing the same fact.
+//
+// Reach is still checked: RepositoryForUse reconciles with GitHub, and
+// protection, rulesets and `contents: write` are all enforced exactly as for a
+// member. The system skips *who may ask*, never *whether it may be done*.
+//
+// **The identifiers must come from a row, never from a caller.** The workspace
+// and repository are read from the session the workflow is acting on; every
+// lookup below is scoped to the workspace, so a repository belonging to
+// another workspace is not found rather than written to. Nothing reachable
+// from HTTP may call this, and TestNoHandlerActsAsTheSystem enforces that.
+func (s *InstallationService) CreateBranchAsSystem(
+	ctx context.Context,
+	workspaceID uuid.UUID,
+	command CreateBranchCommand,
+) (domain.Branch, error) {
+	branch, _, err := s.cutBranch(ctx, workspaceID, command)
+	return branch, err
+}
+
+// cutBranch is the part of creating a branch that does not depend on who asked.
+//
+// Everything numbered in CreateBranch's comment from step 1 on. Returns the
+// repository alongside the branch because the member path audits against it.
+func (s *InstallationService) cutBranch(
+	ctx context.Context,
+	workspaceID uuid.UUID,
+	command CreateBranchCommand,
+) (domain.Branch, domain.Repository, error) {
 	// The name is required, and that is what makes the operation retryable.
 	//
 	// An earlier revision generated one when it was omitted. Each attempt then
@@ -56,28 +117,28 @@ func (s *InstallationService) CreateBranch(
 	// where a session id supplies the stable identity a name can be derived
 	// from. It does not belong on an endpoint whose caller may retry.
 	if command.Name == "" {
-		return domain.Branch{}, fmt.Errorf(
+		return domain.Branch{}, domain.Repository{}, fmt.Errorf(
 			"%w: a branch name is required, so that retrying this request finds the same branch "+
 				"rather than creating another", domain.ErrInvalidBranchName)
 	}
 	name := command.Name
 	if err := domain.ValidateBranchName(name); err != nil {
-		return domain.Branch{}, err
+		return domain.Branch{}, domain.Repository{}, err
 	}
 
 	// Reconciles before answering, so a grant withdrawn on GitHub since this
 	// page was rendered stops the write here rather than at GitHub.
-	repository, err := s.RepositoryForUse(ctx, command.RepositoryID, membership.WorkspaceID)
+	repository, err := s.RepositoryForUse(ctx, command.RepositoryID, workspaceID)
 	if err != nil {
-		return domain.Branch{}, err
+		return domain.Branch{}, domain.Repository{}, err
 	}
 
-	installation, err := s.installations.Get(ctx, repository.InstallationID, membership.WorkspaceID)
+	installation, err := s.installations.Get(ctx, repository.InstallationID, workspaceID)
 	if err != nil {
-		return domain.Branch{}, err
+		return domain.Branch{}, domain.Repository{}, err
 	}
-	if err := s.requireWritePermission(ctx, installation, membership.WorkspaceID); err != nil {
-		return domain.Branch{}, err
+	if err := s.requireWritePermission(ctx, installation, workspaceID); err != nil {
+		return domain.Branch{}, domain.Repository{}, err
 	}
 
 	base := command.Base
@@ -87,9 +148,9 @@ func (s *InstallationService) CreateBranch(
 	baseBranch, err := s.api.Branch(ctx, installation.GitHubID, repository.Owner, repository.Name, base)
 	if err != nil {
 		if errors.Is(err, ErrRemoteNotFound) {
-			return domain.Branch{}, fmt.Errorf("%w: %s", domain.ErrBaseNotFound, base)
+			return domain.Branch{}, domain.Repository{}, fmt.Errorf("%w: %s", domain.ErrBaseNotFound, base)
 		}
-		return domain.Branch{}, fmt.Errorf("read base branch: %w", err)
+		return domain.Branch{}, domain.Repository{}, fmt.Errorf("read base branch: %w", err)
 	}
 
 	// Ask about the target before writing. A branch that already exists may be
@@ -98,7 +159,8 @@ func (s *InstallationService) CreateBranch(
 	existing, err := s.api.Branch(ctx, installation.GitHubID, repository.Owner, repository.Name, name)
 	switch {
 	case err == nil:
-		return s.resolveExisting(existing, baseBranch, base)
+		branch, err := s.resolveExisting(existing, baseBranch, base)
+		return branch, repository, err
 	case errors.Is(err, ErrRemoteNotFound):
 		// The ordinary path: nothing there yet. A branch that does not exist
 		// still has no `protected` flag to read, and a ruleset matching
@@ -106,10 +168,10 @@ func (s *InstallationService) CreateBranch(
 		// branch is not the absence of protection, and asking about the name
 		// is the only way to find out.
 		if err := s.requireUnrestrictedName(ctx, installation, repository, name); err != nil {
-			return domain.Branch{}, err
+			return domain.Branch{}, domain.Repository{}, err
 		}
 	default:
-		return domain.Branch{}, fmt.Errorf("read target branch: %w", err)
+		return domain.Branch{}, domain.Repository{}, fmt.Errorf("read target branch: %w", err)
 	}
 
 	created, err := s.api.CreateBranch(ctx, installation.GitHubID,
@@ -120,23 +182,15 @@ func (s *InstallationService) CreateBranch(
 			// outcomes apply, so re-read rather than guessing which.
 			raced, readErr := s.api.Branch(ctx, installation.GitHubID, repository.Owner, repository.Name, name)
 			if readErr != nil {
-				return domain.Branch{}, fmt.Errorf("read branch after conflict: %w", readErr)
+				return domain.Branch{}, domain.Repository{}, fmt.Errorf("read branch after conflict: %w", readErr)
 			}
-			return s.resolveExisting(raced, baseBranch, base)
+			branch, err := s.resolveExisting(raced, baseBranch, base)
+			return branch, repository, err
 		}
-		return domain.Branch{}, fmt.Errorf("create branch: %w", err)
+		return domain.Branch{}, domain.Repository{}, fmt.Errorf("create branch: %w", err)
 	}
 
-	branch := domain.Branch{Name: created.Name, SHA: created.SHA, Base: base, Created: true}
-	if err := s.auditBranch(ctx, membership, repository, branch); err != nil {
-		// The branch exists and the record does not. Both facts go to the
-		// caller: swallowing the error would hide an unaudited write, and
-		// reporting a bare failure would suggest nothing happened when
-		// something irreversible did.
-		return branch, fmt.Errorf("%w: branch %s at %s: %v",
-			ErrAuditNotRecorded, branch.Name, short(branch.SHA), err)
-	}
-	return branch, nil
+	return domain.Branch{Name: created.Name, SHA: created.SHA, Base: base, Created: true}, repository, nil
 }
 
 // resolveExisting decides what an already-present branch means.

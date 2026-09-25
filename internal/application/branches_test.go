@@ -263,6 +263,7 @@ type fakeGitHub struct {
 	// that name exists.
 	restrictedNames map[string]string
 	rulesErr        error
+	createErr       error
 	withdrawn       bool
 	created         int
 	calls           int
@@ -307,6 +308,9 @@ func (f *fakeGitHub) Branch(_ context.Context, _ int64, _, _, branch string) (ap
 
 func (f *fakeGitHub) CreateBranch(_ context.Context, _ int64, _, _, name, sha string) (application.RemoteBranch, error) {
 	f.calls++
+	if f.createErr != nil {
+		return application.RemoteBranch{}, f.createErr
+	}
 	f.created++
 	if _, exists := f.branches[name]; exists {
 		return application.RemoteBranch{}, application.ErrRemoteRefExists

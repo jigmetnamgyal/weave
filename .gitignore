@@ -22,6 +22,10 @@ build/
 
 # go
 bin/
+# `go build ./services/<name>` from the root writes the binary here rather than
+# into bin/. One was committed by accident on PR #17, 47 MB of it.
+/api
+/worker
 *.test
 *.out
 

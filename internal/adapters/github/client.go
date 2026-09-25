@@ -51,6 +51,20 @@ var (
 	// ErrUnauthorized is returned when GitHub rejects our credentials, which
 	// almost always means a wrong App id or a key that is not the App's.
 	ErrUnauthorized = errors.New("github: credentials rejected")
+	// ErrForbidden is a 403 that is not a suspension: GitHub was reached and
+	// refused the request — a permission the installation lacks, or a rule
+	// over the resource. Distinct from a generic failure because retrying it
+	// changes nothing, and a caller that retries it will eventually report
+	// "GitHub unreachable", which is false.
+	ErrForbidden = errors.New("github: request refused")
+	// ErrUnprocessable is a 422: GitHub understood the request and will not
+	// perform it. Retrying the same request cannot help. The message is kept,
+	// because GitHub's text is the only thing that separates its causes.
+	ErrUnprocessable = errors.New("github: request unprocessable")
+	// ErrRateLimited is GitHub asking us to slow down, as a 403 or a 429. The
+	// opposite of ErrForbidden in the way that matters: the same request will
+	// succeed later, so it must be retried rather than treated as refused.
+	ErrRateLimited = errors.New("github: rate limited")
 )
 
 // appJWTLifetime is how long a minted App JWT is valid.
@@ -225,12 +239,48 @@ func (c *Client) do(ctx context.Context, method, path, auth string, body io.Read
 		return nil, ErrNotFound
 	case resp.StatusCode == http.StatusForbidden && bytes.Contains(payload, []byte("suspended")):
 		return nil, ErrSuspended
+	case rateLimited(resp, payload):
+		// Checked before the plain 403: GitHub reports both primary and
+		// secondary rate limits as 403 (or 429), and a caller that took one
+		// for a permission refusal would fail for good something that
+		// succeeds once the window resets. Not ErrForbidden, so it stays
+		// retryable to every caller.
+		return nil, fmt.Errorf("%w: %s %s returned %d: %s",
+			ErrRateLimited, method, path, resp.StatusCode, truncate(string(payload), 512))
+	case resp.StatusCode == http.StatusForbidden:
+		return nil, fmt.Errorf("%w: %s %s returned %d: %s",
+			ErrForbidden, method, path, resp.StatusCode, truncate(string(payload), 512))
+	case resp.StatusCode == http.StatusUnprocessableEntity:
+		return nil, fmt.Errorf("%w: %s %s returned %d: %s",
+			ErrUnprocessable, method, path, resp.StatusCode, truncate(string(payload), 512))
 	default:
 		// The body is included because GitHub's messages are specific and
 		// usually name the exact permission or resource at fault. It is
 		// truncated because a 8MB error in a log line helps nobody.
 		return nil, fmt.Errorf("github: %s %s returned %d: %s",
 			method, path, resp.StatusCode, truncate(string(payload), 512))
+	}
+}
+
+// rateLimited reports whether a response is GitHub's rate limit rather than a
+// refusal.
+//
+// Three signals, because GitHub uses all three and a response may carry only
+// one. The primary limit exhausts `X-RateLimit-Remaining`; a secondary limit
+// sends `Retry-After`; and both say "rate limit" in the message. A 429 is a
+// rate limit by definition. Only 403 and 429 are considered, so a genuine
+// permission refusal that happens to mention rate limits in passing is not
+// misread unless GitHub also sent it with a limit status.
+func rateLimited(resp *http.Response, payload []byte) bool {
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		return true
+	case http.StatusForbidden:
+		return resp.Header.Get("X-RateLimit-Remaining") == "0" ||
+			resp.Header.Get("Retry-After") != "" ||
+			bytes.Contains(bytes.ToLower(payload), []byte("rate limit"))
+	default:
+		return false
 	}
 }
 

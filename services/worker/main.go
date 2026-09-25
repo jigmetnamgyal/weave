@@ -22,12 +22,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/activity"
 	temporalclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
+	githubadapter "github.com/jigmetnamgyal/weave/internal/adapters/github"
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
+	weaveredis "github.com/jigmetnamgyal/weave/internal/adapters/redis"
 	weavetemporal "github.com/jigmetnamgyal/weave/internal/adapters/temporal"
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/services/worker/internal/config"
@@ -82,7 +85,43 @@ func run() error {
 	sessions := application.NewSessionService(
 		sessionStore, postgres.NewTaskStore(appPool), postgres.NewAgentStore(appPool))
 
-	activities := weavetemporal.NewSessionActivities(sessions)
+	// GitHub, since M5.2: the workflow cuts the session's branch.
+	//
+	// Deliberately **not** part of readiness. Redis and GitHub are reached per
+	// activity, under a bounded retry policy, and a session whose branch cannot
+	// be cut is failed with a reason that says so. A worker that reported
+	// unready whenever GitHub did would be restarted by its orchestrator for an
+	// outage it cannot fix, and would stop draining the outbox for sessions
+	// that never needed GitHub at that moment. The API makes the same choice.
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		return fmt.Errorf("parse REDIS_URL: %w", err)
+	}
+	redisClient := redis.NewClient(redisOpts)
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Error("redis client close failed", slog.String("error", err.Error()))
+		}
+	}()
+
+	githubClient, err := githubadapter.NewClient(
+		cfg.GitHubAppID, cfg.GitHubAppPrivateKeyPath, weaveredis.NewTokenCache(redisClient))
+	if err != nil {
+		return fmt.Errorf("configure github client: %w", err)
+	}
+	// No install-state store and no slug: the worker never begins an
+	// installation. If that ever changes, the nil store panics on first use
+	// rather than quietly binding an installation nowhere.
+	installations := application.NewInstallationService(
+		postgres.NewInstallationStore(appPool),
+		nil,
+		githubadapter.NewPort(githubClient),
+		postgres.WithTenantWorkspace,
+		"",
+	)
+	branches := application.NewSessionBranchService(sessionStore, installations)
+
+	activities := weavetemporal.NewSessionActivities(sessions, branches)
 
 	w := worker.New(temporalClient, weavetemporal.TaskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(weavetemporal.SessionWorkflow, workflowOptions())
@@ -90,6 +129,12 @@ func run() error {
 		activityOptions(weavetemporal.ActivityMarkProvisioning))
 	w.RegisterActivityWithOptions(activities.FailUnprovisionable,
 		activityOptions(weavetemporal.ActivityFailUnprovisionable))
+	w.RegisterActivityWithOptions(activities.CreateBranch,
+		activityOptions(weavetemporal.ActivityCreateBranch))
+	w.RegisterActivityWithOptions(activities.RecordBranch,
+		activityOptions(weavetemporal.ActivityRecordBranch))
+	w.RegisterActivityWithOptions(activities.FailSession,
+		activityOptions(weavetemporal.ActivityFailSession))
 
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("start temporal worker: %w", err)

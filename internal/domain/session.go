@@ -322,6 +322,11 @@ type Session struct {
 	// BaseBranch empty means the repository's default, resolved by the
 	// workflow rather than here.
 	BaseBranch string
+	// BranchSHA is the commit the branch pointed at when the workflow
+	// confirmed it exists. Empty until then, and written once: it is the
+	// record that the intent above became a real ref, and what a checkout is
+	// made from.
+	BranchSHA string
 
 	// ContinuesID links a continuation to the terminal session it follows.
 	ContinuesID *uuid.UUID

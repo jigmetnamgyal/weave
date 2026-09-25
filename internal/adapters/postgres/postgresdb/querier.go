@@ -211,6 +211,14 @@ type Querier interface {
 	// gives up well inside this window.
 	PruneWebhookDeliveries(ctx context.Context, retention pgtype.Interval) error
 	RecordInstallationPermission(ctx context.Context, arg RecordInstallationPermissionParams) error
+	// Sets the branch commit once. `branch_sha IS NULL` is the application's half
+	// of write-once; the trigger in 00010 is the database's.
+	//
+	// The version is deliberately not bumped. It exists to stop two *state*
+	// changes colliding, and recording the branch is not one: the branch is cut
+	// while the session stays in `provisioning`. Bumping it would make a member's pause or cancel fail as a
+	// conflict against a change that did not touch the state they read.
+	RecordSessionBranch(ctx context.Context, arg RecordSessionBranchParams) (Session, error)
 	// Deduplication. GitHub retries deliveries, and a retry must not produce a
 	// second effect.
 	//

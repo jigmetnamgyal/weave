@@ -29,6 +29,22 @@ import (
 // duplicate, and it does not cover a closed one.
 func newHarness(t *testing.T) (*pgxpool.Pool, *application.Publisher, func()) {
 	t.Helper()
+	h := startHarness(t)
+	return h.pool, h.publisher, h.stop
+}
+
+// harness is a running worker and publisher, with the fake GitHub they reach.
+type harness struct {
+	pool      *pgxpool.Pool
+	publisher *application.Publisher
+	github    *fakeGitHubServer
+	stop      func()
+}
+
+// startHarness is newHarness, keeping hold of the fake GitHub so a test can
+// grant repositories and count what was created.
+func startHarness(t *testing.T) harness {
+	t.Helper()
 
 	hostPort := os.Getenv("TEST_TEMPORAL_HOST_PORT")
 	if hostPort == "" {
@@ -41,9 +57,12 @@ func newHarness(t *testing.T) (*pgxpool.Pool, *application.Publisher, func()) {
 		t.Fatalf("connect to temporal at %s: %v", hostPort, err)
 	}
 
+	sessionStore := postgres.NewSessionStore(pool)
 	sessions := application.NewSessionService(
-		postgres.NewSessionStore(pool), postgres.NewTaskStore(pool), postgres.NewAgentStore(pool))
-	activities := weavetemporal.NewSessionActivities(sessions)
+		sessionStore, postgres.NewTaskStore(pool), postgres.NewAgentStore(pool))
+	github := newFakeGitHubServer(t)
+	branches := application.NewSessionBranchService(sessionStore, installationServiceFor(t, pool, github))
+	activities := weavetemporal.NewSessionActivities(sessions, branches)
 
 	// A task queue per test, so two tests never race for each other's work.
 	queue := "weave-sessions-test-" + uuid.NewString()
@@ -54,6 +73,12 @@ func newHarness(t *testing.T) (*pgxpool.Pool, *application.Publisher, func()) {
 		activity.RegisterOptions{Name: weavetemporal.ActivityMarkProvisioning})
 	w.RegisterActivityWithOptions(activities.FailUnprovisionable,
 		activity.RegisterOptions{Name: weavetemporal.ActivityFailUnprovisionable})
+	w.RegisterActivityWithOptions(activities.CreateBranch,
+		activity.RegisterOptions{Name: weavetemporal.ActivityCreateBranch})
+	w.RegisterActivityWithOptions(activities.RecordBranch,
+		activity.RegisterOptions{Name: weavetemporal.ActivityRecordBranch})
+	w.RegisterActivityWithOptions(activities.FailSession,
+		activity.RegisterOptions{Name: weavetemporal.ActivityFailSession})
 	if err := w.Start(); err != nil {
 		t.Fatalf("start worker: %v", err)
 	}
@@ -71,12 +96,12 @@ func newHarness(t *testing.T) (*pgxpool.Pool, *application.Publisher, func()) {
 		publisher.Run(ctx)
 	}()
 
-	return pool, publisher, func() {
+	return harness{pool: pool, publisher: publisher, github: github, stop: func() {
 		cancel()
 		<-done
 		w.Stop()
 		client.Close()
-	}
+	}}
 }
 
 // waitForState polls until a session reaches the state, or gives up.

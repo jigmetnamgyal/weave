@@ -273,6 +273,10 @@ func TestStatusMapping(t *testing.T) {
 		"404 is not found":            {http.StatusNotFound, `{"message":"Not Found"}`, github.ErrNotFound},
 		"401 is rejected credentials": {http.StatusUnauthorized, `{"message":"Bad credentials"}`, github.ErrUnauthorized},
 		"403 naming suspension":       {http.StatusForbidden, `{"message":"This installation has been suspended"}`, github.ErrSuspended},
+		// Reached and refused. Not a transient failure, so it must not look
+		// like one to a caller deciding whether to retry.
+		"403 otherwise is a refusal": {http.StatusForbidden, `{"message":"Resource not accessible by integration"}`, github.ErrForbidden},
+		"422 is unprocessable":       {http.StatusUnprocessableEntity, `{"message":"Validation Failed"}`, github.ErrUnprocessable},
 	}
 
 	for name, tt := range tests {

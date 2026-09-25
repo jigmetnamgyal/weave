@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/github"
+	"github.com/jigmetnamgyal/weave/internal/application"
 )
 
 // tokenAndThen answers the installation-token request, then delegates.
@@ -165,5 +166,90 @@ func TestBranchNotFoundIsNotAFailure(t *testing.T) {
 	_, err := clientFor(t, server).Branch(context.Background(), 1, "acme", "app", "weave/absent")
 	if !errors.Is(err, github.ErrNotFound) {
 		t.Errorf("Branch = %v, want ErrNotFound", err)
+	}
+}
+
+// TestThePortReportsARefusalAsARefusal is the review finding on PR #17.
+//
+// A 403 the permission precheck could not see — a rule, or a permission that
+// changed between the check and the write — used to pass through as a generic
+// error. The session workflow then retried it five times and recorded "GitHub
+// could not be reached", when GitHub had answered clearly. The duplicate-ref
+// 422 must still be told apart, because it is success.
+func TestThePortReportsARefusalAsARefusal(t *testing.T) {
+	cases := map[string]struct {
+		status int
+		body   string
+		want   error
+	}{
+		"403 on create":     {http.StatusForbidden, `{"message":"Resource not accessible by integration"}`, application.ErrRemoteRefused},
+		"422 other refusal": {http.StatusUnprocessableEntity, `{"message":"Invalid request"}`, application.ErrRemoteRefused},
+		"422 duplicate ref": {http.StatusUnprocessableEntity, `{"message":"Reference already exists"}`, application.ErrRemoteRefExists},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := tokenAndThen(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			defer server.Close()
+
+			port := github.NewPort(clientFor(t, server))
+			_, err := port.CreateBranch(context.Background(), 42, "acme", "app", "weave/x", "abc")
+			if !errors.Is(err, tc.want) {
+				t.Errorf("CreateBranch = %v, want %v", err, tc.want)
+			}
+			if tc.want == application.ErrRemoteRefused && !strings.Contains(err.Error(), tc.body[12:20]) {
+				t.Errorf("the refusal lost GitHub's message: %v", err)
+			}
+		})
+	}
+}
+
+// TestARateLimitIsNotARefusal is the second review round's finding on PR #17,
+// and a regression the first round's fix introduced.
+//
+// Naming 403s as refusals made them terminal. GitHub also sends its rate
+// limits as 403s, so a session would have been failed for good by a limit that
+// resets within the hour. Each signal GitHub uses is checked on its own,
+// because a response may carry only one of them.
+func TestARateLimitIsNotARefusal(t *testing.T) {
+	cases := map[string]struct {
+		status int
+		header map[string]string
+		body   string
+	}{
+		"primary limit, remaining 0": {http.StatusForbidden,
+			map[string]string{"X-RateLimit-Remaining": "0"}, `{"message":"API rate limit exceeded for installation"}`},
+		"secondary limit, Retry-After": {http.StatusForbidden,
+			map[string]string{"Retry-After": "60"}, `{"message":"You have exceeded a secondary rate limit"}`},
+		"message only": {http.StatusForbidden,
+			nil, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes"}`},
+		"429": {http.StatusTooManyRequests, nil, `{"message":"Too many requests"}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := tokenAndThen(t, func(w http.ResponseWriter, _ *http.Request) {
+				for key, value := range tc.header {
+					w.Header().Set(key, value)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			defer server.Close()
+
+			port := github.NewPort(clientFor(t, server))
+			_, err := port.CreateBranch(context.Background(), 42, "acme", "app", "weave/x", "abc")
+			if !errors.Is(err, github.ErrRateLimited) {
+				t.Errorf("CreateBranch = %v, want ErrRateLimited", err)
+			}
+			if errors.Is(err, application.ErrRemoteRefused) {
+				t.Error("a rate limit was reported as a refusal; the session would fail for good " +
+					"over something that resets")
+			}
+			if _, terminal := application.ClassifyBranchFailure(err); terminal {
+				t.Error("a rate limit was classified as terminal; it must be retried")
+			}
+		})
 	}
 }

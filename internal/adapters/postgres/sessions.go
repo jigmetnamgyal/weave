@@ -256,6 +256,89 @@ func (s *SessionStore) Transition(
 	return moved, nil
 }
 
+// RecordBranch writes the session's branch commit, once, with its audit row.
+//
+// One transaction for both, which is the point of doing it here rather than
+// through the installation store's standalone AppendAudit. The branch itself
+// was made on GitHub and nothing here can roll that back; what this can do is
+// make the *record* of it all-or-nothing. A SHA with no audit, or an audit with
+// no SHA, is the seam M3.3 shipped three regressions in.
+//
+// Three outcomes under the lock:
+//
+//   - nothing recorded yet: write the SHA and the audit, report recorded;
+//   - the same SHA already recorded: a redelivered activity finding its own
+//     work, so success, and nothing written twice;
+//   - a different SHA already recorded: refused as a conflict. The column is
+//     write-once in the database as well, so this is the friendly half of a
+//     rule that holds regardless.
+func (s *SessionStore) RecordBranch(
+	ctx context.Context,
+	sessionID, workspaceID uuid.UUID,
+	sha string,
+	actor application.Actor,
+	audit func(domain.Session) application.AuditEvent,
+) (domain.Session, bool, error) {
+	var (
+		session  domain.Session
+		recorded bool
+	)
+
+	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
+		if err := authorizeActor(ctx, q, workspaceID, actor); err != nil {
+			return err
+		}
+
+		locked, err := q.LockSessionForUpdate(ctx, postgresdb.LockSessionForUpdateParams{
+			ID:          sessionID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return application.ErrSessionNotFound
+			}
+			return fmt.Errorf("lock session: %w", err)
+		}
+
+		if locked.BranchSha != nil {
+			session = sessionToDomain(locked)
+			if *locked.BranchSha == sha {
+				return nil
+			}
+			return fmt.Errorf("%w: this session already recorded its branch at %s",
+				domain.ErrBranchConflict, shortSHA(*locked.BranchSha))
+		}
+
+		row, err := q.RecordSessionBranch(ctx, postgresdb.RecordSessionBranchParams{
+			ID:          sessionID,
+			WorkspaceID: workspaceID,
+			BranchSha:   &sha,
+		})
+		if err != nil {
+			if constraintViolated(err, "sessions_branch_sha_format") {
+				return fmt.Errorf("%w: %q is not a commit id", domain.ErrInvalidSession, sha)
+			}
+			return fmt.Errorf("record session branch: %w", err)
+		}
+
+		session = sessionToDomain(row)
+		recorded = true
+		return appendAudit(ctx, q, audit(session))
+	})
+	if err != nil {
+		return domain.Session{}, false, err
+	}
+	return session, recorded, nil
+}
+
+// shortSHA truncates a commit id for a message, as Git does.
+func shortSHA(sha string) string {
+	if len(sha) <= 7 {
+		return sha
+	}
+	return sha[:7]
+}
+
 // Get returns one session, scoped to the workspace in context.
 func (s *SessionStore) Get(ctx context.Context, sessionID, workspaceID uuid.UUID) (domain.Session, error) {
 	var session domain.Session
@@ -467,6 +550,9 @@ func sessionToDomain(row postgresdb.Session) domain.Session {
 	if row.ContinuesID.Valid {
 		id := uuid.UUID(row.ContinuesID.Bytes)
 		session.ContinuesID = &id
+	}
+	if row.BranchSha != nil {
+		session.BranchSHA = *row.BranchSha
 	}
 	return session
 }
