@@ -87,6 +87,9 @@ var (
 	// ErrEventSessionTerminal: the session is terminal and this event was
 	// not already stored before it ended.
 	ErrEventSessionTerminal = errors.New("the session is terminal")
+	// ErrEventRunnerNotBound: the producer is not a live runner of the
+	// session, and this event was not already stored before it ended.
+	ErrEventRunnerNotBound = errors.New("the producer is not a live runner of this session")
 	// ErrEventRejectedByStore: the database refused the event's content — a
 	// constraint the decoder did not anticipate. Retrying cannot change it.
 	ErrEventRejectedByStore = errors.New("the database rejected the event's content")
@@ -200,6 +203,18 @@ func (i *Ingestor) Ingest(ctx context.Context, delivery EventDelivery) IngestOut
 		// can show the race.
 		return i.quarantine(ctx, delivery, &domain.EventRefusalError{
 			Reason: domain.RefusalSessionTerminal, EventID: event.EventID,
+			SessionID: event.SessionID, SchemaVersion: event.SchemaVersion,
+		}, session.WorkspaceID)
+	case errors.Is(err, ErrEventRunnerNotBound):
+		// A producer that is not this session's live runner: a runner of
+		// another session, one already torn down, or not a runner at all.
+		// Logged as a security event, identifiers only.
+		i.logger.WarnContext(ctx, "security: an event came from a producer not bound to its session",
+			slog.String("session_id", event.SessionID.String()),
+			slog.String("event_id", event.EventID.String()),
+			slog.String("runner_id", event.RunnerID.String()))
+		return i.quarantine(ctx, delivery, &domain.EventRefusalError{
+			Reason: domain.RefusalRunnerNotBound, EventID: event.EventID,
 			SessionID: event.SessionID, SchemaVersion: event.SchemaVersion,
 		}, session.WorkspaceID)
 	case errors.Is(err, ErrSessionNotFound):

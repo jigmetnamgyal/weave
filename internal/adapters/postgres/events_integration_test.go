@@ -28,6 +28,29 @@ func eventFor(session domain.Session, runner uuid.UUID) domain.SessionEvent {
 	}
 }
 
+// bindRunner returns the session's live runner, creating one if it has none.
+//
+// Since M5.4a the ingestor accepts an event only from a live runner of its
+// session, so every test producer must be one. One per session, because the
+// one-live-runner index allows no more.
+func bindRunner(t *testing.T, ownerPool *pgxpool.Pool, session domain.Session) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	err := ownerPool.QueryRow(context.Background(),
+		`SELECT id FROM runners WHERE session_id = $1 AND state IN ('provisioning', 'running', 'terminating')`,
+		session.ID).Scan(&id)
+	if err == nil {
+		return id
+	}
+	id = uuid.New()
+	if _, err := ownerPool.Exec(context.Background(),
+		`INSERT INTO runners (id, session_id, workspace_id, backend, state) VALUES ($1, $2, $3, 'test', 'running')`,
+		id, session.ID, session.WorkspaceID); err != nil {
+		t.Fatalf("bind a runner: %v", err)
+	}
+	return id
+}
+
 // warm opens connections up front, so concurrent writers really overlap.
 //
 // M4.2's concurrency test passed against unfixed code because pgxpool opened
@@ -66,7 +89,7 @@ func TestEventsAreSequencedGaplessUnderConcurrencyIntegration(t *testing.T) {
 
 	const writers, each = 8, 10
 	warm(t, appPool, writers)
-	runner := uuid.New()
+	runner := bindRunner(t, ownerPool, session)
 
 	var (
 		wg      sync.WaitGroup
@@ -128,7 +151,7 @@ func TestARacedDuplicateIsStoredOnceAndConsumesNoNumberIntegration(t *testing.T)
 
 	const racers = 8
 	warm(t, appPool, racers)
-	event := eventFor(session, uuid.New())
+	event := eventFor(session, bindRunner(t, ownerPool, session))
 
 	var (
 		wg       sync.WaitGroup
@@ -181,7 +204,7 @@ func TestSessionEventsAreAppendOnlyIntegration(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	tenant := postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID)
-	if _, _, err := postgres.NewEventStore(appPool).AppendEvent(tenant, eventFor(session, uuid.New())); err != nil {
+	if _, _, err := postgres.NewEventStore(appPool).AppendEvent(tenant, eventFor(session, bindRunner(t, ownerPool, session))); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -214,7 +237,7 @@ func TestEventsAndQuarantineAreNotReadableAcrossTenantsIntegration(t *testing.T)
 	}
 	store := postgres.NewEventStore(appPool)
 	if _, _, err := store.AppendEvent(postgres.WithTenantWorkspace(context.Background(), a.workspace.ID),
-		eventFor(session, uuid.New())); err != nil {
+		eventFor(session, bindRunner(t, ownerPool, session))); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -231,7 +254,7 @@ func TestEventsAndQuarantineAreNotReadableAcrossTenantsIntegration(t *testing.T)
 	// A writer claiming another tenant's workspace is refused by the policy,
 	// behind the ingestor's own check.
 	if _, _, err := store.AppendEvent(postgres.WithTenantWorkspace(context.Background(), b.workspace.ID),
-		eventFor(session, uuid.New())); err == nil {
+		eventFor(session, bindRunner(t, ownerPool, session))); err == nil {
 		t.Error("an event for A's session was written under B's tenant context")
 	}
 
@@ -324,7 +347,7 @@ func TestATerminalTransitionInFlightBlocksTheAppendIntegration(t *testing.T) {
 	done := make(chan result, 1)
 	go func() {
 		_, appended, err := postgres.NewEventStore(appPool).AppendEvent(
-			postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID), eventFor(session, uuid.New()))
+			postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID), eventFor(session, bindRunner(t, ownerPool, session)))
 		done <- result{appended, err}
 	}()
 
@@ -365,6 +388,7 @@ func TestATerminalTransitionIsNotStarvedByOutputIntegration(t *testing.T) {
 	events := postgres.NewEventStore(appPool)
 	tenant := postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID)
 	warm(t, appPool, 10)
+	producer := bindRunner(t, ownerPool, session)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var (
@@ -378,7 +402,7 @@ func TestATerminalTransitionIsNotStarvedByOutputIntegration(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for ctx.Err() == nil {
-				_, _, err := events.AppendEvent(tenant, eventFor(session, uuid.New()))
+				_, _, err := events.AppendEvent(tenant, eventFor(session, producer))
 				mu.Lock()
 				switch {
 				case errors.Is(err, application.ErrEventSessionTerminal):
@@ -442,7 +466,7 @@ func TestContentTheDatabaseRejectsIsNotTransientIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	event := eventFor(session, uuid.New())
+	event := eventFor(session, bindRunner(t, ownerPool, session))
 	event.Payload = []byte(`{"message_id":"` + uuid.NewString() + `","role":"assistant","text":"a\u0000b"}`)
 
 	_, _, err = postgres.NewEventStore(appPool).AppendEvent(
@@ -467,7 +491,7 @@ func TestTheTableAgreesWithTheVersionContractIntegration(t *testing.T) {
 	tenant := postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID)
 
 	for version, accepted := range map[string]bool{"1.0": true, "1.10": true, "1.01": false, "1.1234567890": false} {
-		event := eventFor(session, uuid.New())
+		event := eventFor(session, bindRunner(t, ownerPool, session))
 		event.SchemaVersion = version
 		_, _, err := store.AppendEvent(tenant, event)
 		switch {

@@ -97,6 +97,35 @@ func (s *InstallationService) CreateBranchAsSystem(
 	return branch, err
 }
 
+// CloneCredentialsAsSystem issues a runner the means to clone one repository.
+//
+// The same reach check as cutting a branch — RepositoryForUse reconciles with
+// GitHub first, so a grant withdrawn since the session was created stops the
+// clone rather than handing out a token for it — and the same system-actor
+// shape: identifiers from the session row, never from a caller, and nothing
+// reachable from HTTP (TestNoHandlerActsAsTheSystem).
+//
+// The token GitHub returns is restricted to this repository and to
+// contents:read, whatever the installation itself holds.
+func (s *InstallationService) CloneCredentialsAsSystem(
+	ctx context.Context,
+	workspaceID, repositoryID uuid.UUID,
+) (CloneCredentials, error) {
+	repository, err := s.RepositoryForUse(ctx, repositoryID, workspaceID)
+	if err != nil {
+		return CloneCredentials{}, err
+	}
+	installation, err := s.installations.Get(ctx, repository.InstallationID, workspaceID)
+	if err != nil {
+		return CloneCredentials{}, err
+	}
+	token, err := s.api.RepositoryReadToken(ctx, installation.GitHubID, repository.GitHubID)
+	if err != nil {
+		return CloneCredentials{}, fmt.Errorf("mint a repository token: %w", err)
+	}
+	return CloneCredentials{Owner: repository.Owner, Name: repository.Name, Token: token}, nil
+}
+
 // cutBranch is the part of creating a branch that does not depend on who asked.
 //
 // Everything numbered in CreateBranch's comment from step 1 on. Returns the

@@ -306,6 +306,11 @@ func (f *fakeGitHub) Branch(_ context.Context, _ int64, _, _, branch string) (ap
 	return application.RemoteBranch{}, application.ErrRemoteNotFound
 }
 
+func (f *fakeGitHub) RepositoryReadToken(context.Context, int64, int64) (string, error) {
+	f.calls++
+	return "ghs_repository_scoped", nil
+}
+
 func (f *fakeGitHub) CreateBranch(_ context.Context, _ int64, _, _, name, sha string) (application.RemoteBranch, error) {
 	f.calls++
 	if f.createErr != nil {

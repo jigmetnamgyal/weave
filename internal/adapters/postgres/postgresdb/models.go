@@ -125,6 +125,21 @@ type RepositoryPermission struct {
 	RecordedAt     pgtype.Timestamptz
 }
 
+// Execution environments, one live per session. The id binds a runner's events to its session.
+type Runner struct {
+	ID            uuid.UUID
+	SessionID     uuid.UUID
+	WorkspaceID   uuid.UUID
+	Backend       string
+	BackendHandle *string
+	State         string
+	FailureReason *string
+	CreatedAt     pgtype.Timestamptz
+	ReadyAt       pgtype.Timestamptz
+	TerminatedAt  pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
 // A run of an agent against a task. Carries the pinned agent version, which is the policy snapshot, and the branch intent M5 acts on.
 type Session struct {
 	ID             uuid.UUID

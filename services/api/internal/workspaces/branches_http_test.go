@@ -137,6 +137,10 @@ func (branchFakeAPI) CreateBranch(_ context.Context, _ int64, _, _, name, sha st
 	return application.RemoteBranch{Name: name, SHA: sha}, nil
 }
 
+func (branchFakeAPI) RepositoryReadToken(context.Context, int64, int64) (string, error) {
+	return "ghs_repository_scoped", nil
+}
+
 func (branchFakeAPI) BranchRules(context.Context, int64, string, string, string) (application.BranchRule, error) {
 	return application.BranchRule{}, nil
 }

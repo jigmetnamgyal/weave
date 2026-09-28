@@ -144,7 +144,7 @@ func (a *SessionActivities) FailSession(ctx context.Context, input FailSessionIn
 	return a.transition(ctx, SessionWorkflowInput{
 		WorkspaceID: input.WorkspaceID,
 		SessionID:   input.SessionID,
-	}, domain.SessionFailed, application.BranchFailure(input.Cause).Reason())
+	}, domain.SessionFailed, application.SessionFailureReason(input.Cause))
 }
 
 // MarkProvisioning moves a queued session to provisioning.

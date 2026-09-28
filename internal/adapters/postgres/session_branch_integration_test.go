@@ -40,15 +40,15 @@ func TestTheWorkflowCutsTheSessionBranchIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if after.BranchSHA != baseSHA {
-		t.Errorf("recorded branch SHA = %q, want the base commit %q", after.BranchSHA, baseSHA)
+	if after.BranchSHA != h.commit {
+		t.Errorf("recorded branch SHA = %q, want the base commit %q", after.BranchSHA, h.commit)
 	}
 
-	// It still fails, because there is no runner — and says so, rather than
-	// blaming the branch that was in fact made.
+	// It still fails — since M5.4a, because there is no provider — and says
+	// so, rather than blaming the branch that was in fact made.
 	reason := lastReason(t, h.pool, session.ID)
-	if !strings.Contains(reason, "no runner") {
-		t.Errorf("final reason = %q, want the missing runner named", reason)
+	if !strings.Contains(reason, "no provider adapter") {
+		t.Errorf("final reason = %q, want the missing provider named", reason)
 	}
 
 	// The creation is audited, and attributed to nobody.

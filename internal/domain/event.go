@@ -86,6 +86,10 @@ const (
 	RefusalSessionTerminal    EventRefusal = "session_terminal"
 	RefusalDeliveryExhausted  EventRefusal = "delivery_exhausted"
 	RefusalUnparseableSubject EventRefusal = "unparseable_subject"
+	// RefusalRunnerNotBound: the producer is not a live runner of this
+	// session. Closes the gap M5.3 handed to M5.4a — before runners were
+	// bound, anything able to publish could write any session's history.
+	RefusalRunnerNotBound EventRefusal = "runner_not_bound"
 )
 
 // EventRefusalError carries the refusal reason and what parsed before it.

@@ -122,7 +122,7 @@ shutdown() {
 trap shutdown INT TERM EXIT
 
 echo
-echo "Starting API on ${API_HTTP_ADDR:-:8080}, the worker, the ingestor, and web on http://localhost:3000"
+echo "Starting API on ${API_HTTP_ADDR:-:8080}, the worker, the ingestor, the runner manager, and web on http://localhost:3000"
 echo "Press Ctrl-C to stop."
 echo
 
@@ -137,6 +137,10 @@ echo "Building the API and the worker..."
 go build -o "${REPO_ROOT}/bin/api" ./services/api
 go build -o "${REPO_ROOT}/bin/worker" ./services/worker
 go build -o "${REPO_ROOT}/bin/ingestor" ./services/ingestor
+go build -o "${REPO_ROOT}/bin/runner-manager" ./services/runner-manager
+# The image the dev backend starts runners from. Rebuilt every time so a
+# runner never runs code older than the tree.
+make -C "${REPO_ROOT}" runner-image
 
 "${REPO_ROOT}/bin/api" &
 api_pid=$!
@@ -155,6 +159,13 @@ pids+=("${worker_pid}")
 ingestor_pid=$!
 pids+=("${ingestor_pid}")
 
+# The runner manager provisions each session's runner as a local container.
+# The dev backend is not a security boundary (ADR-013) and refuses to start
+# outside development.
+"${REPO_ROOT}/bin/runner-manager" &
+runner_manager_pid=$!
+pids+=("${runner_manager_pid}")
+
 npm run dev --workspace @weave/web &
 web_pid=$!
 pids+=("${web_pid}")
@@ -167,6 +178,11 @@ while true; do
   if ! kill -0 "${api_pid}" 2>/dev/null; then
     echo
     echo "API process exited." >&2
+    exit 1
+  fi
+  if ! kill -0 "${runner_manager_pid}" 2>/dev/null; then
+    echo
+    echo "Runner manager process exited." >&2
     exit 1
   fi
   if ! kill -0 "${ingestor_pid}" 2>/dev/null; then

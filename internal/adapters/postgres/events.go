@@ -104,12 +104,27 @@ func (s *EventStore) AppendEvent(ctx context.Context, event domain.SessionEvent)
 			}
 			return fmt.Errorf("read session state for event: %w", err)
 		}
-		if domain.SessionState(state).Terminal() {
-			// A redelivery of an event stored before the session ended is a
-			// duplicate. Checked before refusing, or an unconfirmed ack would
-			// leave an operator a refusal record for an event that was in
-			// fact stored. Either way the transaction rolls back and returns
-			// the number it took.
+		terminal := domain.SessionState(state).Terminal()
+
+		// The producer must be a live runner of this session (M5.4a). Read in
+		// the same place and the same way as the state: after the counter is
+		// taken, without a lock on `runners` that teardown would queue behind.
+		// A runner being torn down at this moment may land one last event
+		// before its row reads terminated — it was this session's runner, so
+		// that is history, not an intrusion.
+		bound, err := q.RunnerBoundToSession(ctx, postgresdb.RunnerBoundToSessionParams{
+			ID: event.RunnerID, SessionID: event.SessionID,
+		})
+		if err != nil {
+			return fmt.Errorf("check the producer's runner: %w", err)
+		}
+
+		if terminal || !bound {
+			// A redelivery of an event stored before the session ended, or
+			// before its runner was torn down, is a duplicate. Checked before
+			// refusing, or an unconfirmed ack would leave an operator a
+			// refusal record for an event that was in fact stored. Either way
+			// the transaction rolls back and returns the number it took.
 			exists, err := q.SessionEventExists(ctx, postgresdb.SessionEventExistsParams{
 				SessionID: event.SessionID, RunnerID: event.RunnerID, EventID: event.EventID,
 			})
@@ -119,7 +134,10 @@ func (s *EventStore) AppendEvent(ctx context.Context, event domain.SessionEvent)
 			if exists {
 				return errDuplicateEvent
 			}
-			return application.ErrEventSessionTerminal
+			if terminal {
+				return application.ErrEventSessionTerminal
+			}
+			return application.ErrEventRunnerNotBound
 		}
 
 		stored, err := q.AppendSessionEvent(ctx, postgresdb.AppendSessionEventParams{

@@ -355,6 +355,45 @@ func (c *Client) Installation(ctx context.Context, installationID int64) (Instal
 	return installation, nil
 }
 
+// RepositoryReadToken mints an installation token that can read one
+// repository and nothing else, for a runner's clone.
+//
+// **Not cached, never persisted.** The installation-wide token above is shared
+// across the control plane's own calls; this one leaves the process — it is
+// handed to a sandbox running untrusted code — so it is minted fresh per
+// runner, restricted by GitHub itself to `repository_ids: [one]` and
+// `contents: read`, and expires within the hour. A token that escaped the
+// sandbox could read that one repository, which the session already could,
+// and write nothing.
+func (c *Client) RepositoryReadToken(ctx context.Context, installationID, repositoryID int64) (string, error) {
+	appToken, err := c.appJWT()
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"repository_ids": []int64{repositoryID},
+		"permissions":    map[string]string{"contents": "read"},
+	})
+	if err != nil {
+		return "", fmt.Errorf("github: encode token request: %w", err)
+	}
+	path := "/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens"
+	body, err := c.do(ctx, http.MethodPost, path, appToken, bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", fmt.Errorf("github: decode repository token: %w", err)
+	}
+	if response.Token == "" {
+		return "", errors.New("github: the repository token response carried no token")
+	}
+	return response.Token, nil
+}
+
 // installationTokenTTL is how long a minted installation token is cached.
 //
 // GitHub issues them for an hour. Caching for fifty minutes leaves ten

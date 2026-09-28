@@ -186,7 +186,7 @@ func TestPublishedEventsArePersistedInOrderIntegration(t *testing.T) {
 	fixture, session := h.session(t, "Ingestion Order Workspace")
 	h.run(t, h.store)
 
-	runner := uuid.New()
+	runner := bindRunner(t, h.ownerPool, session)
 	first := message(fixture, session, runner, "first")
 	second := message(fixture, session, runner, "second")
 	for _, envelope := range []domain.EventEnvelope{first, second} {
@@ -225,7 +225,7 @@ func TestRefusedEventsAreQuarantinedWithoutPayloadIntegration(t *testing.T) {
 	other := seedSessionFixture(t, h.ownerPool, "Other Tenant")
 	h.run(t, h.store)
 
-	runner := uuid.New()
+	runner := bindRunner(t, h.ownerPool, session)
 	secret := "SECRET-SOURCE-LINE"
 	cases := map[string]func() domain.EventEnvelope{
 		string(domain.RefusalWorkspaceMismatch): func() domain.EventEnvelope {
@@ -331,7 +331,7 @@ func TestATransientFailureIsRedeliveredAndStoredOnceIntegration(t *testing.T) {
 	store.failures.Store(2)
 	h.run(t, store)
 
-	if err := h.publisher.Publish(context.Background(), message(fixture, session, uuid.New(), "retry me")); err != nil {
+	if err := h.publisher.Publish(context.Background(), message(fixture, session, bindRunner(t, h.ownerPool, session), "retry me")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	eventually(t, 20*time.Second, "the event stored after redelivery", func() bool {
@@ -357,7 +357,7 @@ func TestTheFinalDeliveryIsQuarantinedNotDroppedIntegration(t *testing.T) {
 	store := &flakyStore{EventStore: h.store, always: true}
 	h.run(t, store)
 
-	envelope := message(fixture, session, uuid.New(), "never stored")
+	envelope := message(fixture, session, bindRunner(t, h.ownerPool, session), "never stored")
 	if err := h.publisher.Publish(context.Background(), envelope); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestAnEventIsNotLostWhenItsQuarantineFailsTooIntegration(t *testing.T) {
 	store.quarantineFailures.Store(2)
 	h.run(t, store)
 
-	envelope := message(fixture, session, uuid.New(), "outlast the outage")
+	envelope := message(fixture, session, bindRunner(t, h.ownerPool, session), "outlast the outage")
 	if err := h.publisher.Publish(context.Background(), envelope); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestAStoredEventRedeliveredAfterTheEndIsADuplicateIntegration(t *testing.T)
 	fixture, session := h.session(t, "Ended Session Workspace")
 	h.run(t, h.store)
 
-	stored := message(fixture, session, uuid.New(), "before the end")
+	stored := message(fixture, session, bindRunner(t, h.ownerPool, session), "before the end")
 	if err := h.publisher.Publish(context.Background(), stored); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestAKilledIngestorLosesNothingIntegration(t *testing.T) {
 	// server's side.
 	stop := h.run(t, &flakyStore{EventStore: h.store, always: true})
 	stop()
-	envelope := message(fixture, session, uuid.New(), "survive a crash")
+	envelope := message(fixture, session, bindRunner(t, h.ownerPool, session), "survive a crash")
 	if err := h.publisher.Publish(context.Background(), envelope); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
