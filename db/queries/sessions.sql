@@ -73,9 +73,19 @@ ORDER BY available_at, id;
 -- Taken before a state change. The version read here is the one the change is
 -- checked against, and holding the lock is what stops two transitions reading
 -- the same version and both believing they are current.
+--
+-- NO KEY UPDATE rather than UPDATE, because nothing that takes this lock
+-- changes a key column. The difference matters since M5.3: every event
+-- appended for a session makes a foreign-key check that takes FOR KEY SHARE
+-- on this row, and plain FOR UPDATE conflicts with that — so under continuous
+-- output a transition queued behind an unbounded stream of appends, and a
+-- terminal transition holding this row while waiting for the event counter
+-- would deadlock with an append holding the counter while its FK check
+-- waited for this row. NO KEY UPDATE still serialises transitions and branch
+-- recording against each other, which is all it was ever for.
 SELECT * FROM sessions
 WHERE id = $1 AND workspace_id = $2
-FOR UPDATE;
+FOR NO KEY UPDATE;
 
 -- name: UpdateSessionState :one
 -- The version predicate is belt-and-braces behind LockSessionForUpdate: the

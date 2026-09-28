@@ -398,7 +398,7 @@ func (q *Queries) ListSessionsForWorkspace(ctx context.Context, workspaceID uuid
 const lockSessionForUpdate = `-- name: LockSessionForUpdate :one
 SELECT id, workspace_id, task_id, agent_version_id, state, version, repository_id, branch_name, base_branch, continues_id, created_by, created_at, updated_at, branch_sha FROM sessions
 WHERE id = $1 AND workspace_id = $2
-FOR UPDATE
+FOR NO KEY UPDATE
 `
 
 type LockSessionForUpdateParams struct {
@@ -409,6 +409,16 @@ type LockSessionForUpdateParams struct {
 // Taken before a state change. The version read here is the one the change is
 // checked against, and holding the lock is what stops two transitions reading
 // the same version and both believing they are current.
+//
+// NO KEY UPDATE rather than UPDATE, because nothing that takes this lock
+// changes a key column. The difference matters since M5.3: every event
+// appended for a session makes a foreign-key check that takes FOR KEY SHARE
+// on this row, and plain FOR UPDATE conflicts with that — so under continuous
+// output a transition queued behind an unbounded stream of appends, and a
+// terminal transition holding this row while waiting for the event counter
+// would deadlock with an append holding the counter while its FK check
+// waited for this row. NO KEY UPDATE still serialises transitions and branch
+// recording against each other, which is all it was ever for.
 func (q *Queries) LockSessionForUpdate(ctx context.Context, arg LockSessionForUpdateParams) (Session, error) {
 	row := q.db.QueryRow(ctx, lockSessionForUpdate, arg.ID, arg.WorkspaceID)
 	var i Session

@@ -39,8 +39,9 @@ This design supports an efficient MVP while preserving clear extraction boundari
 2. **API** — Go control-plane service; owns synchronous product operations and authorization.
 3. **Realtime gateway** — authenticated WebSocket/SSE connections, presence, and event replay. It may begin inside the API binary but must remain a distinct package and deployment configuration.
 4. **Workflow workers** — execute Temporal workflow/activity code for session lifecycle and integrations.
-5. **Runner manager** — provisions, monitors, and terminates isolated runners; it does not make product authorization decisions.
-6. **Runner** — per-session ephemeral environment containing a repository checkout, provider adapter, policy-enforcing tool proxy, and event emitter.
+5. **Event ingestor** — consumes runner events from NATS JetStream, then validates, deduplicates, sequences and persists them to `session_events`, quarantining what it refuses. Separate from the workflow workers because it scales with runner output rather than with sessions, and because neither may stall the other: a poison event must not hold up workflows, and a Temporal outage must not stop ingestion. Its readiness is PostgreSQL and NATS only.
+6. **Runner manager** — provisions, monitors, and terminates isolated runners; it does not make product authorization decisions.
+7. **Runner** — per-session ephemeral environment containing a repository checkout, provider adapter, policy-enforcing tool proxy, and event emitter.
 
 Only the runner manager and workflow workers can provision runners. The browser never connects directly to a runner.
 
@@ -49,6 +50,7 @@ Only the runner manager and workflow workers can provision runners. The browser 
 - `apps/web` — routes, UI composition, accessibility, client state, and generated API usage
 - `services/api` — HTTP API, authentication verification, authorization enforcement, and business modules
 - `services/worker` — durable workflow and external-integration activities
+- `services/ingestor` — the session event consumer; treats every field of a runner event as an untrusted claim, checked against rows the runner did not supply
 - `services/runner-manager` — execution-environment lifecycle and runner health
 - `services/runner` — provider adapters and process supervision inside the sandbox
 - `internal/domain` — provider-independent entities, value objects, policies, and state transitions
@@ -79,7 +81,7 @@ Domain code must not import web frameworks, SQL drivers, provider SDKs, queue cl
 2. An outbox publisher starts a Temporal workflow using the session ID as the workflow ID.
 3. The workflow validates quota and GitHub access, creates the branch, and asks the runner manager to provision a sandbox.
 4. The runner emits versioned events through NATS JetStream.
-5. An event ingestor validates, deduplicates, sequences, and persists durable session events.
+5. An event ingestor validates, deduplicates, sequences, and persists durable session events. Sequence is per session and gapless, assigned at acceptance; a transition into a terminal state and an event append are serialised on the session's event counter, so no event lands after a session ends.
 6. The realtime gateway fans authorized events to connected clients and supports replay from the last sequence.
 7. Large payloads are stored in object storage; events retain immutable references and integrity hashes.
 8. Approval waits use durable Temporal signals and timers.

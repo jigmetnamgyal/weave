@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://weave.dev/contracts/events/provider.failed.v1.schema.json",
+  "title": "provider.failed, version 1 (transport name session.provider.failed.v1)",
+  "description": "The provider stopped with an error. code is a stable machine-readable identifier; message is provider text and untrusted. Unknown fields are ignored and not stored.",
+  "type": "object",
+  "required": ["code", "retryable", "message"],
+  "properties": {
+    "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "retryable": { "type": "boolean" },
+    "message": { "type": "string", "maxLength": 2000 }
+  }
+}

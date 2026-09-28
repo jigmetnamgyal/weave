@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://weave.dev/contracts/events/message.created.v1.schema.json",
+  "title": "message.created, version 1 (transport name session.message.created.v1)",
+  "description": "A message in the session conversation. Provider output: untrusted, may contain customer source, never logged. Unknown fields are ignored and not stored.",
+  "type": "object",
+  "required": ["message_id", "role", "text"],
+  "properties": {
+    "message_id": { "type": "string", "format": "uuid" },
+    "role": { "type": "string", "enum": ["assistant", "user", "system"] },
+    "text": { "type": "string", "minLength": 1, "maxLength": 32768 }
+  }
+}
