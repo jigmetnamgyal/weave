@@ -344,10 +344,14 @@ func TestATerminalTransitionInFlightBlocksTheAppendIntegration(t *testing.T) {
 		appended bool
 		err      error
 	}
+	// Bound here, on the test goroutine: bindRunner can t.Fatalf, which must
+	// not run in a goroutine, and binding inside the goroutine would put the
+	// insert inside the window that proves the append waits.
+	producer := bindRunner(t, ownerPool, session)
 	done := make(chan result, 1)
 	go func() {
 		_, appended, err := postgres.NewEventStore(appPool).AppendEvent(
-			postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID), eventFor(session, bindRunner(t, ownerPool, session)))
+			postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID), eventFor(session, producer))
 		done <- result{appended, err}
 	}()
 

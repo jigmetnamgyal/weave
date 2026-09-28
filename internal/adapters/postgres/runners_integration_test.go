@@ -70,23 +70,34 @@ func TestRunnersAreTenantScopedAndReconcileIsBoundedIntegration(t *testing.T) {
 	}
 
 	// The reconciler's cross-tenant read, as weave_app with no tenant.
-	live, err := store.ListToReconcile(context.Background(), application.ReconcileBatch)
-	if err != nil {
-		t.Fatalf("list to reconcile: %v", err)
-	}
+	// Walk every page with a page size of one, so paging is what finds it.
 	found := false
-	for _, item := range live {
-		if item.Runner.ID == created.ID {
-			found = item.Runner.WorkspaceID == a.workspace.ID
+	var cursor application.ReconcileCursor
+	for pages := 0; pages < 100000; pages++ {
+		page, err := store.ListToReconcile(context.Background(), 1, cursor)
+		if err != nil {
+			t.Fatalf("list to reconcile: %v", err)
 		}
+		if len(page) == 0 {
+			break
+		}
+		if page[0].Runner.ID == created.ID {
+			found = page[0].Runner.WorkspaceID == a.workspace.ID
+		}
+		cursor = application.ReconcileCursor{CreatedAt: page[0].Runner.CreatedAt, ID: page[0].Runner.ID}
 	}
 	if !found {
-		t.Error("the reconciler did not find a live runner, or not with its own workspace")
+		t.Error("paging through live runners did not reach this one, or not with its own workspace")
 	}
 	for _, bad := range []int{0, 501} {
-		if _, err := store.ListToReconcile(context.Background(), bad); err == nil {
+		if _, err := store.ListToReconcile(context.Background(), bad, application.ReconcileCursor{}); err == nil {
 			t.Errorf("batch size %d was accepted", bad)
 		}
+	}
+	// Half a cursor is a caller bug, refused rather than read as a first page.
+	if _, err := appPool.Exec(context.Background(),
+		`SELECT * FROM weave_runners_to_reconcile(1, now(), NULL)`); err == nil {
+		t.Error("a cursor with a time and no id was accepted")
 	}
 }
 
@@ -123,6 +134,15 @@ func TestOnlyALiveRunnerOfTheSessionMayWriteItsHistoryIntegration(t *testing.T) 
 		if _, _, err := events.AppendEvent(tenant, eventFor(session, producer)); !errors.Is(err, application.ErrEventRunnerNotBound) {
 			t.Errorf("%s: %v, want ErrEventRunnerNotBound", name, err)
 		}
+	}
+
+	// Being torn down: its last events are still history.
+	if _, err := ownerPool.Exec(context.Background(),
+		`UPDATE runners SET state = 'terminating' WHERE id = $1`, own); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := events.AppendEvent(tenant, eventFor(session, own)); err != nil || !ok {
+		t.Errorf("an event from a terminating runner = (%v, %v), want stored — a shutdown is not an intrusion", ok, err)
 	}
 
 	// Torn down: new events refused, a stored one redelivered is a duplicate.

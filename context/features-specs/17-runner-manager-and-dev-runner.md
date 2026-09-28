@@ -99,26 +99,25 @@ whose id it knows. Close it:
   `runner_not_bound` in quarantine. This is decided inside the append
   transaction, beside the terminal-state check, for the same reason: a
   state read earlier can be overtaken.
-- **NATS publish permission is scoped to the runner's own subject.** The
-  runner receives credentials that can publish to
-  `weave.session.<its session>.events` and nothing else, and can subscribe
-  to nothing. Local NATS currently runs without authentication, so this
-  unit enables it: decentralized JWT auth or per-runner users, whichever is
-  simpler to operate. The stream then refuses the rest, rather than relying
-  on the ingestor alone. State how credentials are minted, how long they
-  live, and how they are revoked at teardown.
+- **NATS publish permission is not scoped in this unit** — see "Narrowed
+  before implementation". A runner in M5.4a holds no NATS credentials and does
+  not connect to NATS, because it emits nothing. Scoped, expiring credentials
+  — publish to `weave.session.<its session>.events` only, subscribe to
+  nothing — are issued by the unit where a runner first publishes (M5.5), and
+  gated there.
 
-Test that a runner bound to session A cannot get an event stored for session
-B **at both layers**: NATS refuses the publish, and an event injected past NATS
-is quarantined by the ingestor.
+Test that an event for session B from a runner bound to session A is
+quarantined by the ingestor as `runner_not_bound`. The broker-side refusal is
+M5.5's test, once runners hold credentials.
 
 ## What the runner does in this unit
 
 Little, on purpose. The provider adapters are M5.5 (fake) and M6
 (Claude Code). The M5.4a runner:
 
-1. starts in the sandbox with its runner id, session id, and scoped NATS
-   credentials — delivered at start, **never baked into the image**;
+1. starts in the sandbox with its runner id and session id — delivered at
+   start, **never baked into the image**, and with no NATS credentials (see
+   above);
 2. receives a **short-lived GitHub installation token scoped to the one
    repository** with `contents: read` only, and clones the session branch at
    `sessions.branch_sha`. The branch was cut in M5.2 and its commit recorded;
@@ -194,12 +193,12 @@ production. The dev backend is the obvious place to slip.
 - A session created through the API reaches `running` with a real container
   holding a checkout at exactly `sessions.branch_sha`, then is torn down and
   ends `failed` naming the missing provider. Container and volume are gone.
-- A runner cannot get an event stored for another session, refused by NATS
-  and, past NATS, quarantined as `runner_not_bound`.
+- A runner cannot get an event stored for another session: the ingestor
+  quarantines it as `runner_not_bound`. (The NATS-side refusal is M5.5's.)
 - Every exit path tears down, including lost heartbeat and a runner-manager
   restart.
 - The runner manager refuses the dev backend in staging and production.
-- The runner-manager placement, the NATS credential model, and the runner
-  record are recorded in the tracker with reasoning.
+- The runner-manager placement, the runner record, and why NATS credentials
+  move to M5.5 are recorded in the tracker with reasoning.
 - `go.mod` keeps its `toolchain` directive; `govulncheck` is clean.
 - `make ci` and `make test-integration` pass.

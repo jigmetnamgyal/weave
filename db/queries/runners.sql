@@ -50,7 +50,14 @@ RETURNING *;
 -- name: RunnerBoundToSession :one
 -- Whether a producer is a live runner of this session. Read inside the event
 -- append transaction, without a lock, after the event counter is taken.
+--
+-- `terminating` counts. Teardown marks the runner terminating *before* it
+-- asks the backend to destroy anything, so a runner's last events — flushed
+-- as it is stopped — arrive while its row reads terminating. They are that
+-- session's history, from that session's runner; refusing them would record
+-- a normal shutdown as an intrusion. Once the backend confirms the
+-- environment is gone the row reads terminated, and nothing more is accepted.
 SELECT EXISTS (
     SELECT 1 FROM runners
-    WHERE id = $1 AND session_id = $2 AND state IN ('provisioning', 'running')
+    WHERE id = $1 AND session_id = $2 AND state IN ('provisioning', 'running', 'terminating')
 );

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +148,42 @@ func TestReconcileListsTheBackendBeforeTheDatabase(t *testing.T) {
 	}
 }
 
+// TestReconcileReachesRunnersPastTheFirstPage is a review finding on PR #19.
+// The first version read one batch of the oldest live runners, so a backlog of
+// healthy ones hid every newer runner whose session had ended, and a full
+// batch switched the orphan sweep off. Here the one runner needing cleanup is
+// the newest of 501, and an orphaned environment must still be swept.
+func TestReconcileReachesRunnersPastTheFirstPage(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	w.store.sessionStates = map[uuid.UUID]domain.SessionState{}
+	base := time.Now().Add(-time.Hour)
+	var newest domain.Runner
+	for i := 0; i <= application.ReconcileBatch; i++ {
+		r := domain.Runner{
+			ID: uuid.New(), SessionID: uuid.New(), WorkspaceID: w.session.WorkspaceID,
+			Backend: "fake", State: domain.RunnerRunning, CreatedAt: base.Add(time.Duration(i) * time.Second),
+		}
+		r.Handle = "env-" + r.ID.String()
+		w.backend.envs[r.Handle] = application.RunnerStatus{Exists: true, Running: true, Ready: true}
+		w.store.runners[r.ID] = r
+		w.store.sessionStates[r.SessionID] = domain.SessionRunning
+		newest = r
+	}
+	w.store.sessionStates[newest.SessionID] = domain.SessionFailed
+	w.backend.envs["orphan"] = application.RunnerStatus{Exists: true, Running: true}
+	w.backend.orphans = map[string]uuid.UUID{"orphan": uuid.New()}
+
+	if _, err := w.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w.store.runners[newest.ID].State.Live() {
+		t.Error("the newest runner, on the second page, was never reached")
+	}
+	if _, exists := w.backend.envs["orphan"]; exists {
+		t.Error("a full first page switched off the orphan sweep")
+	}
+}
+
 // --- fakes -----------------------------------------------------------------
 
 type fakeSessionReader struct{ w *runnerWorld }
@@ -208,6 +245,8 @@ func (b *fakeBackend) List(context.Context) ([]application.BackendRunner, error)
 type fakeRunnerStore struct {
 	w       *runnerWorld
 	runners map[uuid.UUID]domain.Runner
+	// sessionStates overrides the world's session state per runner session.
+	sessionStates map[uuid.UUID]domain.SessionState
 }
 
 func (s *fakeRunnerStore) Create(_ context.Context, r domain.Runner) (domain.Runner, error) {
@@ -250,13 +289,61 @@ func (s *fakeRunnerStore) End(_ context.Context, id, _ uuid.UUID, state domain.R
 	s.w.log("store.end")
 	return s.update(id, func(r *domain.Runner) { r.State = state })
 }
-func (s *fakeRunnerStore) ListToReconcile(context.Context, int) ([]application.RunnerToReconcile, error) {
+
+// ListToReconcile pages as the real function does: (created_at, id) order,
+// strictly after the cursor, at most limit.
+func (s *fakeRunnerStore) ListToReconcile(_ context.Context, limit int, after application.ReconcileCursor) ([]application.RunnerToReconcile, error) {
 	s.w.log("store.list")
-	var out []application.RunnerToReconcile
+	var live []domain.Runner
 	for _, r := range s.runners {
 		if r.State.Live() {
-			out = append(out, application.RunnerToReconcile{Runner: r, SessionState: s.w.session.State})
+			live = append(live, r)
+		}
+	}
+	sort.Slice(live, func(i, j int) bool {
+		if !live[i].CreatedAt.Equal(live[j].CreatedAt) {
+			return live[i].CreatedAt.Before(live[j].CreatedAt)
+		}
+		return live[i].ID.String() < live[j].ID.String()
+	})
+	var out []application.RunnerToReconcile
+	for _, r := range live {
+		if after.ID != uuid.Nil && (r.CreatedAt.Before(after.CreatedAt) ||
+			(r.CreatedAt.Equal(after.CreatedAt) && r.ID.String() <= after.ID.String())) {
+			continue
+		}
+		state := s.w.session.State
+		if override, ok := s.sessionStates[r.SessionID]; ok {
+			state = override
+		}
+		out = append(out, application.RunnerToReconcile{Runner: r, SessionState: state})
+		if len(out) == limit {
+			break
 		}
 	}
 	return out, nil
+}
+
+// TestACancelledWaitIsNotAVerdictOnTheRunner is a review finding on PR #19.
+// A runner manager shutting down mid-wait cancels the activity's context; the
+// first version called that "not ready in time" — terminal — and failed the
+// session over a deploy. Only an expired deadline is a verdict.
+func TestACancelledWaitIsNotAVerdictOnTheRunner(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	runner, _ := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+	w.backend.envs[runner.Handle] = application.RunnerStatus{Exists: true, Running: true} // never ready
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := w.service.AwaitReady(cancelled, w.session.WorkspaceID, runner, time.Millisecond, func() {})
+	if _, terminal := application.ClassifyRunnerFailure(err); terminal {
+		t.Errorf("a cancelled wait (%v) was classified terminal; it must be retried", err)
+	}
+
+	expired, cancelExpired := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancelExpired()
+	_, err = w.service.AwaitReady(expired, w.session.WorkspaceID, runner, time.Millisecond, func() {})
+	if cause, terminal := application.ClassifyRunnerFailure(err); !terminal || cause != application.RunnerFailureNotReady {
+		t.Errorf("an expired wait = %v (%q, terminal %v), want runner_not_ready", err, cause, terminal)
+	}
 }

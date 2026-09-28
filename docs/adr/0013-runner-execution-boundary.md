@@ -113,10 +113,22 @@ applies to that workspace's sessions only.
   MVP's scale, engineering time is the scarcer resource.
 - Cold dependency installs. Slower first builds are the price of promising
   that source is not retained.
-- A registry on the default list is a channel an agent can reach. It is a
-  narrow one: registries do not expose request logs to attackers, and runners
+- A registry on the default list is a channel an agent can reach. Runners
   hold no publish credentials, so they cannot push a package carrying data
-  out. An attacker-controlled host is not reachable unless an admin adds it.
+  out, and an attacker-controlled host is not reachable unless an admin adds
+  it. **One residual channel remains, and is accepted with a control:** a
+  public registry reports per-package download counts, so an agent induced to
+  fetch attacker-owned packages — `leak-a`, `leak-b`, in an order or a count —
+  signals out a few bits per request through numbers anyone can read. It is
+  low-bandwidth, noisy (counts include mirrors and bots), and cannot carry a
+  file, but it is real, and the first version of this ADR wrongly said
+  registries expose nothing. **Control, required with the egress proxy
+  (M5.4b), before M6:** the proxy logs every registry request with its
+  package path per session, so a session fetching packages no manifest in its
+  repository names is visible and alertable. **Revisit** — with a pull-through
+  registry mirror resolving only packages the repository's lockfiles name —
+  if a customer's threat model includes a determined insider or high-value
+  source.
 - The dev backend is weaker than production and must never be mistaken for it.
   That is enforced by configuration, not by convention.
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres/postgresdb"
@@ -101,9 +102,21 @@ func (s *RunnerStore) End(
 // ListToReconcile reads live runners across every workspace through the one
 // bounded privileged function. Each carries its own workspace, which is what
 // every write after this is scoped by.
-func (s *RunnerStore) ListToReconcile(ctx context.Context, limit int) ([]application.RunnerToReconcile, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, session_id, workspace_id, backend, backend_handle, state, session_state
-		FROM weave_runners_to_reconcile($1)`, limit)
+func (s *RunnerStore) ListToReconcile(
+	ctx context.Context,
+	limit int,
+	after application.ReconcileCursor,
+) ([]application.RunnerToReconcile, error) {
+	var (
+		afterCreated pgtype.Timestamptz
+		afterID      pgtype.UUID
+	)
+	if after.ID != uuid.Nil {
+		afterCreated = pgtype.Timestamptz{Time: after.CreatedAt, Valid: true}
+		afterID = pgtype.UUID{Bytes: after.ID, Valid: true}
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, session_id, workspace_id, backend, backend_handle, state, session_state, created_at
+		FROM weave_runners_to_reconcile($1, $2, $3)`, limit, afterCreated, afterID)
 	if err != nil {
 		return nil, fmt.Errorf("list runners to reconcile: %w", err)
 	}
@@ -118,7 +131,7 @@ func (s *RunnerStore) ListToReconcile(ctx context.Context, limit int) ([]applica
 			sessionState string
 		)
 		if err := rows.Scan(&runner.ID, &runner.SessionID, &runner.WorkspaceID, &runner.Backend,
-			&handle, &state, &sessionState); err != nil {
+			&handle, &state, &sessionState, &runner.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan runner to reconcile: %w", err)
 		}
 		if handle != nil {

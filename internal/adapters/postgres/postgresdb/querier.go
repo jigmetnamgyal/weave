@@ -303,6 +303,13 @@ type Querier interface {
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
 	// Whether a producer is a live runner of this session. Read inside the event
 	// append transaction, without a lock, after the event counter is taken.
+	//
+	// `terminating` counts. Teardown marks the runner terminating *before* it
+	// asks the backend to destroy anything, so a runner's last events — flushed
+	// as it is stopped — arrive while its row reads terminating. They are that
+	// session's history, from that session's runner; refusing them would record
+	// a normal shutdown as an intrusion. Once the backend confirms the
+	// environment is gone the row reads terminated, and nothing more is accepted.
 	RunnerBoundToSession(ctx context.Context, arg RunnerBoundToSessionParams) (bool, error)
 	// Whether an event is already stored, for a terminal session: a redelivery of
 	// an event stored before the session ended is a duplicate, not a refusal.

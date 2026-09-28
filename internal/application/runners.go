@@ -98,6 +98,13 @@ type RunnerToReconcile struct {
 	SessionState domain.SessionState
 }
 
+// ReconcileCursor pages through live runners. The zero value is the first
+// page.
+type ReconcileCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
 // RunnerStore persists runners. Every method but ListToReconcile runs in the
 // tenant context on ctx.
 type RunnerStore interface {
@@ -111,9 +118,10 @@ type RunnerStore interface {
 	// End records the runner as terminated or failed. ErrRunnerNotFound if it
 	// is no longer live — already ended by someone else.
 	End(ctx context.Context, runnerID, workspaceID uuid.UUID, state domain.RunnerState, reason string) (domain.Runner, error)
-	// ListToReconcile reads live runners across every workspace, through a
-	// bounded privileged function. No tenant needed.
-	ListToReconcile(ctx context.Context, limit int) ([]RunnerToReconcile, error)
+	// ListToReconcile reads one page of live runners across every workspace,
+	// in (created_at, id) order after the cursor, through a bounded
+	// privileged function. No tenant needed.
+	ListToReconcile(ctx context.Context, limit int, after ReconcileCursor) ([]RunnerToReconcile, error)
 }
 
 // ErrRunnerExists is returned by RunnerStore.Create when a live runner is
@@ -303,7 +311,16 @@ func (s *RunnerService) AwaitReady(
 		heartbeat()
 		select {
 		case <-ctx.Done():
-			return domain.Runner{}, fmt.Errorf("%w: %w", ErrRunnerNotReady, ctx.Err())
+			// Only an expired readiness deadline is a verdict on the runner.
+			// A cancellation — the runner manager shutting down mid-wait, a
+			// workflow cancelled — is not, and must stay retryable: the retry
+			// finds the same runner. The first version classified every
+			// ctx.Done() as not-ready, so a deploy during the wait failed the
+			// session for good.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return domain.Runner{}, fmt.Errorf("%w: %w", ErrRunnerNotReady, ctx.Err())
+			}
+			return domain.Runner{}, fmt.Errorf("await runner readiness: %w", ctx.Err())
 		case <-time.After(poll):
 		}
 	}
@@ -371,10 +388,14 @@ func (s *RunnerService) teardown(ctx context.Context, runner domain.Runner, fail
 	return nil
 }
 
-// ReconcileBatch is the most live runners one reconciliation reads. Above it
-// the orphan sweep is skipped, because an environment whose runner simply was
-// not in the batch would look orphaned.
+// ReconcileBatch is the page size for reading live runners.
 const ReconcileBatch = 500
+
+// reconcileMaxPages bounds one pass. Past it the pass stops early and skips
+// the orphan sweep, which needs the complete live set to be safe; the next
+// pass starts again from the beginning. Two hundred pages is a hundred
+// thousand live runners, far beyond anything this backend will hold.
+const reconcileMaxPages = 200
 
 // Reconcile finds runners a crash, a lost environment or an ended session has
 // left behind, and tears them down. Run at startup and periodically.
@@ -399,11 +420,29 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list backend environments: %w", err)
 	}
-	live, err := s.runners.ListToReconcile(ctx, ReconcileBatch)
-	if err != nil {
-		return 0, fmt.Errorf("list live runners: %w", err)
-	}
 
+	// Every live runner, a page at a time. The first version read one batch
+	// of the oldest, so a backlog of healthy old runners hid every newer one
+	// — including ended sessions and lost environments — and a full batch
+	// switched the orphan sweep off for good.
+	var (
+		live     []RunnerToReconcile
+		cursor   ReconcileCursor
+		complete bool
+	)
+	for page := 0; page < reconcileMaxPages; page++ {
+		batch, err := s.runners.ListToReconcile(ctx, ReconcileBatch, cursor)
+		if err != nil {
+			return 0, fmt.Errorf("list live runners: %w", err)
+		}
+		live = append(live, batch...)
+		if len(batch) < ReconcileBatch {
+			complete = true
+			break
+		}
+		last := batch[len(batch)-1].Runner
+		cursor = ReconcileCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
 	cleaned := 0
 	known := make(map[uuid.UUID]bool, len(live))
 	for _, item := range live {
@@ -446,7 +485,9 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 		}
 	}
 
-	if len(live) < ReconcileBatch {
+	// Only with the complete live set: an environment whose runner was simply
+	// on an unread page would otherwise look orphaned.
+	if complete {
 		for _, environment := range environments {
 			if known[environment.RunnerID] {
 				continue

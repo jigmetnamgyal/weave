@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,12 +34,25 @@ import (
 	"github.com/jigmetnamgyal/weave/internal/application"
 )
 
-// BackendName is stored on every runner this backend creates.
+// BackendName selects this backend in configuration. The name stored on
+// runner rows adds the scope — see Name.
 const BackendName = "dev-docker"
 
-// ErrRefusedOutsideDevelopment is returned by New in staging and production.
+// ErrRefusedOutsideDevelopment is returned by New in any environment not
+// explicitly development or test.
 var ErrRefusedOutsideDevelopment = errors.New(
 	"the dev Docker runner backend is not a security boundary and is refused outside development")
+
+// allowedEnvironments is an allowlist, not a denylist. The first version
+// refused only "staging" and "production", so "prod", "live", or a deployment
+// that forgot to set APP_ENV at all passed as development — and would have run
+// untrusted code in a container on a shared kernel. A guard around a
+// non-boundary has to fail closed.
+var allowedEnvironments = map[string]bool{"development": true, "test": true}
+
+// scopePattern keeps the scope short and plain enough to be part of the
+// backend name on runner rows (runners_backend_valid allows 32 characters).
+var scopePattern = regexp.MustCompile(`^[a-z0-9]{1,20}$`)
 
 // ErrImageMissing means the runner image has not been built.
 var ErrImageMissing = errors.New("the runner image is not built; run `make runner-image`")
@@ -78,12 +92,14 @@ var _ application.RunnerBackend = (*Backend)(nil)
 
 // New builds the backend, refusing staging and production.
 func New(cfg Config) (*Backend, error) {
-	switch strings.ToLower(strings.TrimSpace(cfg.AppEnv)) {
-	case "staging", "production":
-		return nil, ErrRefusedOutsideDevelopment
+	if !allowedEnvironments[strings.ToLower(strings.TrimSpace(cfg.AppEnv))] {
+		return nil, fmt.Errorf("%w (APP_ENV=%q)", ErrRefusedOutsideDevelopment, cfg.AppEnv)
 	}
-	if cfg.Socket == "" || cfg.Image == "" || cfg.Scope == "" {
-		return nil, errors.New("devdocker: socket, image and scope are required")
+	if cfg.Socket == "" || cfg.Image == "" {
+		return nil, errors.New("devdocker: socket and image are required")
+	}
+	if !scopePattern.MatchString(cfg.Scope) {
+		return nil, fmt.Errorf("devdocker: scope %q must be 1-20 lowercase letters or digits", cfg.Scope)
 	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -98,8 +114,15 @@ func New(cfg Config) (*Backend, error) {
 	}, nil
 }
 
-// Name identifies this backend on runner rows.
-func (b *Backend) Name() string { return BackendName }
+// Name identifies this backend **and its scope** on runner rows.
+//
+// The scope is part of the identity because reconciliation judges only
+// runners whose backend name is its own. The first version returned
+// "dev-docker" for every scope, so a developer's `make dev` runner manager
+// reconciled a test's runners — tearing them down, or, for one with no
+// handle, looking for it under its own scope's name, finding nothing, and
+// recording it terminated while its container still held a checkout.
+func (b *Backend) Name() string { return BackendName + "-" + b.scope }
 
 // name is the container's and its volume's name. Deterministic from the runner
 // id, which is what makes Provision idempotent and HandleFor possible.
@@ -229,20 +252,26 @@ func (b *Backend) Destroy(ctx context.Context, handle string) error {
 	return fmt.Errorf("devdocker: remove workspace volume: %w", err)
 }
 
-// HandleFor finds a runner's container or volume by runner id.
+// HandleFor finds a runner's container by runner id.
+//
+// A container, not a volume. The first version also answered for a volume on
+// its own — which is exactly what a provision that created the volume and then
+// failed to create the container leaves — so a retry found it, took
+// provisioning as done, and skipped creating the container; the runner then
+// read as lost. A leftover volume is not an environment that can run.
+// Provision creates one idempotently, and the orphan sweep removes one whose
+// runner has ended.
 func (b *Backend) HandleFor(ctx context.Context, runnerID uuid.UUID) (string, bool, error) {
 	name := b.name(runnerID)
-	if _, err := b.call(ctx, http.MethodGet, "/containers/"+name+"/json", nil, http.StatusOK); err == nil {
+	_, err := b.call(ctx, http.MethodGet, "/containers/"+name+"/json", nil, http.StatusOK)
+	switch {
+	case err == nil:
 		return name, true, nil
-	} else if !errors.Is(err, errNotFound) {
+	case errors.Is(err, errNotFound):
+		return "", false, nil
+	default:
 		return "", false, err
 	}
-	if _, err := b.call(ctx, http.MethodGet, "/volumes/"+name, nil, http.StatusOK); err == nil {
-		return name, true, nil
-	} else if !errors.Is(err, errNotFound) {
-		return "", false, err
-	}
-	return "", false, nil
 }
 
 // List returns every runner environment in this scope — containers, and

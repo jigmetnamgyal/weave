@@ -109,9 +109,10 @@ func (s *EventStore) AppendEvent(ctx context.Context, event domain.SessionEvent)
 		// The producer must be a live runner of this session (M5.4a). Read in
 		// the same place and the same way as the state: after the counter is
 		// taken, without a lock on `runners` that teardown would queue behind.
-		// A runner being torn down at this moment may land one last event
-		// before its row reads terminated — it was this session's runner, so
-		// that is history, not an intrusion.
+		// A runner being torn down reads `terminating` until the backend
+		// confirms it is gone, and its events until then are accepted — it
+		// was this session's runner, so they are history, not an intrusion.
+		// See RunnerBoundToSession.
 		bound, err := q.RunnerBoundToSession(ctx, postgresdb.RunnerBoundToSessionParams{
 			ID: event.RunnerID, SessionID: event.SessionID,
 		})

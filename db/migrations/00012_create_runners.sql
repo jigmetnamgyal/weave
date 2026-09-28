@@ -53,7 +53,7 @@ CREATE UNIQUE INDEX runners_one_live_per_session
     WHERE state IN ('provisioning', 'running', 'terminating');
 
 CREATE INDEX runners_workspace_idx ON runners (workspace_id);
-CREATE INDEX runners_live_idx ON runners (state) WHERE state IN ('provisioning', 'running', 'terminating');
+CREATE INDEX runners_live_idx ON runners (created_at, id) WHERE state IN ('provisioning', 'running', 'terminating');
 
 -- --------------------------------------------------------------------------
 -- Finding runners to reconcile
@@ -68,7 +68,11 @@ CREATE INDEX runners_live_idx ON runners (state) WHERE state IN ('provisioning',
 -- caller beyond the cap. Each runner it returns carries its own workspace, and
 -- every write that follows runs in a tenant transaction scoped by **that**.
 -- --------------------------------------------------------------------------
-CREATE FUNCTION weave_runners_to_reconcile(batch_size integer)
+CREATE FUNCTION weave_runners_to_reconcile(
+    batch_size integer,
+    after_created_at timestamptz,
+    after_id uuid
+)
 RETURNS TABLE (
     id uuid, session_id uuid, workspace_id uuid, backend text,
     backend_handle text, state text, session_state text, created_at timestamptz
@@ -81,22 +85,33 @@ BEGIN
         RAISE EXCEPTION 'runner reconcile batch size must be between 1 and 500, got %', batch_size
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
+    -- Both or neither: a half-given cursor is a caller bug, not a first page.
+    IF (after_created_at IS NULL) <> (after_id IS NULL) THEN
+        RAISE EXCEPTION 'runner reconcile cursor must give both created_at and id, or neither'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
 
+    -- Keyset pagination on (created_at, id), so the reconciler walks every
+    -- live runner. The first version returned only the oldest batch: five
+    -- hundred healthy old runners would have hidden every newer one — ended
+    -- sessions and vanished environments never cleaned up, and a full batch
+    -- also switched off the orphan sweep.
     RETURN QUERY
     SELECT r.id, r.session_id, r.workspace_id, r.backend, r.backend_handle,
            r.state, s.state, r.created_at
     FROM runners r
     JOIN sessions s ON s.id = r.session_id
     WHERE r.state IN ('provisioning', 'running', 'terminating')
-    ORDER BY r.created_at
+      AND (after_created_at IS NULL OR (r.created_at, r.id) > (after_created_at, after_id))
+    ORDER BY r.created_at, r.id
     LIMIT batch_size;
 END;
 $$;
 
-ALTER FUNCTION weave_runners_to_reconcile(integer) OWNER TO weave_rls_bypass;
+ALTER FUNCTION weave_runners_to_reconcile(integer, timestamptz, uuid) OWNER TO weave_rls_bypass;
 GRANT SELECT ON runners TO weave_rls_bypass;
-REVOKE ALL ON FUNCTION weave_runners_to_reconcile(integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION weave_runners_to_reconcile(integer) TO weave_app;
+REVOKE ALL ON FUNCTION weave_runners_to_reconcile(integer, timestamptz, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION weave_runners_to_reconcile(integer, timestamptz, uuid) TO weave_app;
 
 -- --------------------------------------------------------------------------
 -- The quarantine learns a reason: an event from a runner not bound to its
@@ -143,7 +158,7 @@ ALTER TABLE session_event_quarantine ADD CONSTRAINT session_event_quarantine_rea
     'unknown_session', 'session_terminal', 'delivery_exhausted',
     'unparseable_subject'
 ));
-DROP FUNCTION IF EXISTS weave_runners_to_reconcile(integer);
+DROP FUNCTION IF EXISTS weave_runners_to_reconcile(integer, timestamptz, uuid);
 DROP TABLE IF EXISTS runners;
 
 -- +goose StatementEnd

@@ -25,6 +25,11 @@ import (
 	"github.com/jigmetnamgyal/weave/internal/domain"
 )
 
+// fakeTokenPrefix is how the fake GitHub's minted tokens begin. A test
+// fixture, not a credential: the fake server mints "ghs_fake_<installation>"
+// for anyone who asks.
+const fakeTokenPrefix = "ghs_fake_" // ggignore
+
 // gitServer serves one real repository over smart HTTP, as GitHub would, so a
 // runner's clone is a real clone. Reached from containers through
 // host.docker.internal. Returns the base URL and the commit the repository's
@@ -80,13 +85,13 @@ func gitServer(t *testing.T, owner, name string) (string, string) {
 	// survives the runner's re-exec and reaches git.
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, password, ok := r.BasicAuth()
-		if !ok || user != "x-access-token" || !strings.HasPrefix(password, "ghs_fake_") {
+		if !ok || user != "x-access-token" || !strings.HasPrefix(password, fakeTokenPrefix) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
 		backend.ServeHTTP(w, r)
-	}), ReadHeaderTimeout: 5 * time.Second}
+	}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
 
@@ -389,5 +394,66 @@ func TestReconcileTearsDownWhatACrashLeftIntegration(t *testing.T) {
 	}
 	if states[lost.ID] != "failed" {
 		t.Errorf("the lost runner = %q, want failed", states[lost.ID])
+	}
+}
+
+// TestAnotherScopesManagerLeavesTheseRunnersAloneIntegration is a review
+// finding on PR #19. Every scope used to report the backend name
+// "dev-docker", so a developer's `make dev` runner manager reconciled a
+// test's runners. Now the scope is part of the backend's name, and a manager
+// judges only its own.
+func TestAnotherScopesManagerLeavesTheseRunnersAloneIntegration(t *testing.T) {
+	w := newRunnerWorld(t, "Scope Isolation Workspace")
+	runner := w.ready(t)
+	// Make it look abandoned, the way a reconciler would clean it up.
+	if _, err := w.ownerPool.Exec(context.Background(),
+		`UPDATE sessions SET state = 'failed' WHERE id = $1`, w.session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	other := dockerBackend(t) // a different scope
+	if other.Name() == w.backend.Name() {
+		t.Fatalf("two scopes share the backend name %q", other.Name())
+	}
+	elsewhere := application.NewRunnerService(postgres.NewRunnerStore(w.appPool), postgres.NewSessionStore(w.appPool),
+		other, nil, postgres.WithTenantWorkspace, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := elsewhere.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile from another scope: %v", err)
+	}
+
+	if !dockerExists(t, "container", runner.Handle) {
+		t.Error("another scope's runner manager destroyed this scope's container")
+	}
+	var state string
+	_ = w.ownerPool.QueryRow(context.Background(), `SELECT state FROM runners WHERE id = $1`, runner.ID).Scan(&state)
+	if state != string(domain.RunnerRunning) {
+		t.Errorf("runner state = %q after another scope reconciled, want running untouched", state)
+	}
+}
+
+// TestALeftoverVolumeDoesNotPassForARunnerIntegration is a review finding on
+// PR #19. A provision that created the workspace volume and then failed before
+// the container left a volume that HandleFor took for the environment, so the
+// retry skipped creating the container and the runner read as lost.
+func TestALeftoverVolumeDoesNotPassForARunnerIntegration(t *testing.T) {
+	w := newRunnerWorld(t, "Leftover Volume Workspace")
+	runner, err := postgres.NewRunnerStore(w.appPool).Create(w.tenant, domain.Runner{
+		ID: uuid.New(), SessionID: w.session.ID, WorkspaceID: w.fixture.workspace.ID,
+		Backend: w.backend.Name(), State: domain.RunnerProvisioning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "weave-runner-" + strings.TrimPrefix(w.backend.Name(), "dev-docker-") + "-" + runner.ID.String()
+	if out, err := exec.Command("docker", "volume", "create", "--label", "dev.weave.managed=true", name).CombinedOutput(); err != nil {
+		t.Fatalf("leave a volume behind: %v %s", err, out)
+	}
+	if _, found, _ := w.backend.HandleFor(context.Background(), runner.ID); found {
+		t.Error("a volume with no container was taken for a runner")
+	}
+
+	ready := w.ready(t)
+	if ready.ID != runner.ID || ready.State != domain.RunnerRunning {
+		t.Errorf("the retried provision = %+v, want the same runner, running", ready)
 	}
 }

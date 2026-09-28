@@ -46,7 +46,10 @@ func Load() (Config, error) {
 		return fallback
 	}
 	cfg := Config{
-		AppEnv:                  get("APP_ENV", "development"),
+		// Required, with no default: the dev backend is allowed only in
+		// development and test, and a deployment that forgot to set this
+		// must fail to start rather than pass as development.
+		AppEnv:                  get("APP_ENV", ""),
 		AppDatabaseURL:          get("APP_DATABASE_URL", ""),
 		TemporalHostPort:        get("TEMPORAL_HOST_PORT", ""),
 		HealthAddr:              get("RUNNER_MANAGER_HEALTH_ADDR", ":8092"),
@@ -62,7 +65,7 @@ func Load() (Config, error) {
 
 	var missing []string
 	for key, value := range map[string]string{
-		"APP_DATABASE_URL": cfg.AppDatabaseURL, "TEMPORAL_HOST_PORT": cfg.TemporalHostPort,
+		"APP_ENV": cfg.AppEnv, "APP_DATABASE_URL": cfg.AppDatabaseURL, "TEMPORAL_HOST_PORT": cfg.TemporalHostPort,
 		"REDIS_URL": cfg.RedisURL, "GITHUB_APP_ID": cfg.GitHubAppID,
 		"GITHUB_APP_PRIVATE_KEY_PATH": cfg.GitHubAppPrivateKeyPath,
 	} {
