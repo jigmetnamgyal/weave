@@ -76,23 +76,40 @@ func (s *EventStore) AppendEvent(ctx context.Context, event domain.SessionEvent)
 
 	var sequence int64
 	err := inTenantTx(ctx, s.pool, func(q *postgresdb.Queries) error {
-		// Terminality decided here, under a share lock that serialises with
-		// transitions, rather than from a state read before this transaction
-		// — which a terminal transition could overtake.
-		state, err := q.LockSessionForEvent(ctx, postgresdb.LockSessionForEventParams{
+		next, err := q.NextSessionEventSequence(ctx, postgresdb.NextSessionEventSequenceParams{
+			SessionID:   event.SessionID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			// The counter's foreign key: the session was deleted between the
+			// lookup and this append.
+			if constraintViolated(err, "session_event_sequences_session_fkey") {
+				return application.ErrSessionNotFound
+			}
+			return fmt.Errorf("next event sequence: %w", err)
+		}
+
+		// Terminality, decided now that the counter row is locked. A terminal
+		// transition locks the same row before it writes its state, so this
+		// read — a new snapshot, taken after the lock — sees any transition
+		// that got there first, and one that did not waits for this append.
+		// The session row itself is never locked here: a share lock on it was
+		// measured starving transitions under continuous output.
+		state, err := q.SessionStateForEvent(ctx, postgresdb.SessionStateForEventParams{
 			ID: event.SessionID, WorkspaceID: workspaceID,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return application.ErrSessionNotFound
 			}
-			return fmt.Errorf("lock session for event: %w", err)
+			return fmt.Errorf("read session state for event: %w", err)
 		}
 		if domain.SessionState(state).Terminal() {
 			// A redelivery of an event stored before the session ended is a
 			// duplicate. Checked before refusing, or an unconfirmed ack would
 			// leave an operator a refusal record for an event that was in
-			// fact stored.
+			// fact stored. Either way the transaction rolls back and returns
+			// the number it took.
 			exists, err := q.SessionEventExists(ctx, postgresdb.SessionEventExistsParams{
 				SessionID: event.SessionID, RunnerID: event.RunnerID, EventID: event.EventID,
 			})
@@ -103,14 +120,6 @@ func (s *EventStore) AppendEvent(ctx context.Context, event domain.SessionEvent)
 				return errDuplicateEvent
 			}
 			return application.ErrEventSessionTerminal
-		}
-
-		next, err := q.NextSessionEventSequence(ctx, postgresdb.NextSessionEventSequenceParams{
-			SessionID:   event.SessionID,
-			WorkspaceID: workspaceID,
-		})
-		if err != nil {
-			return fmt.Errorf("next event sequence: %w", err)
 		}
 
 		stored, err := q.AppendSessionEvent(ctx, postgresdb.AppendSessionEventParams{

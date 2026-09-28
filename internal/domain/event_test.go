@@ -119,6 +119,12 @@ func TestEventsAreRefusedForTheRightReason(t *testing.T) {
 		"payload not object":  {mutate(func(e map[string]any) { e["payload"] = "hello" }), domain.RefusalInvalidPayload},
 		"oversize":            {append(valid, []byte(strings.Repeat(" ", domain.MaxEventBytes))...), domain.RefusalOversize},
 		"text over the limit": {mutate(func(e map[string]any) { e["payload"].(map[string]any)["text"] = strings.Repeat("x", 32769) }), domain.RefusalInvalidPayload},
+		// PostgreSQL's jsonb refuses a \u0000 escape. Accepted here, it was
+		// rejected by the table and retried as though transient.
+		"text contains NUL": {mutate(func(e map[string]any) { e["payload"].(map[string]any)["text"] = "before\x00after" }), domain.RefusalInvalidPayload},
+		// Read as major 1 by Atoi, then refused by the table's CHECK.
+		"version with a leading zero": {mutate(func(e map[string]any) { e["schema_version"] = "01.0" }), domain.RefusalMalformed},
+		"unbounded minor":             {mutate(func(e map[string]any) { e["schema_version"] = "1." + strings.Repeat("1", 40) }), domain.RefusalMalformed},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -166,6 +172,47 @@ func TestSafeTextNeverSplitsARune(t *testing.T) {
 		}
 		if !utf8.ValidString(got) || len(got) > tc.n {
 			t.Errorf("%s: %q is not valid UTF-8 within %d bytes", name, got, tc.n)
+		}
+	}
+}
+
+// TestTheSchemaFileAndTheDecoderAgreeOnVersions is the drift check the
+// fixtures did not cover: the published schema allowed "1.01", the decoder
+// refused it, and every fixture still passed.
+func TestTheSchemaFileAndTheDecoderAgreeOnVersions(t *testing.T) {
+	raw, err := os.ReadFile("../../contracts/events/schemas/envelope.v1.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties struct {
+			SchemaVersion struct {
+				Pattern string `json:"pattern"`
+			} `json:"schema_version"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if got := schema.Properties.SchemaVersion.Pattern; got != domain.SchemaVersionPattern {
+		t.Errorf("the envelope schema's schema_version pattern is %q; the decoder enforces %q", got, domain.SchemaVersionPattern)
+	}
+
+	valid, _ := os.ReadFile(filepath.Join(fixturesDir, "message.created.v1.valid.json"))
+	for version, accepted := range map[string]bool{
+		"1.0": true, "1.10": true, "1.999999999": true,
+		"1.01": false, "01.0": false, "1.": false, "1.1234567890": false,
+	} {
+		var envelope map[string]any
+		_ = json.Unmarshal(valid, &envelope)
+		envelope["schema_version"] = version
+		data, _ := json.Marshal(envelope)
+		_, err := domain.DecodeEvent(data)
+		if accepted && err != nil {
+			t.Errorf("%q was refused: %v", version, err)
+		}
+		if !accepted && err == nil {
+			t.Errorf("%q was accepted", version)
 		}
 	}
 }

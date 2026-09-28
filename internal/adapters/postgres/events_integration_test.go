@@ -282,15 +282,15 @@ func TestTheSessionLookupCannotEnumerateIntegration(t *testing.T) {
 	}
 }
 
-// TestATerminalTransitionInFlightBlocksTheAppendIntegration is the second
-// review finding on PR #18.
+// TestATerminalTransitionInFlightBlocksTheAppendIntegration is a review
+// finding on PR #18: terminality read before the append transaction could be
+// overtaken by a terminal transition committing in between.
 //
-// The first version read the session's state before the append transaction,
-// so a terminal transition committing in between let the event through.
-// Here a transaction holds the session row as a transition does — FOR UPDATE —
-// and moves it to failed. The append must wait for it and then refuse, not
-// read the old state and store. Watched failing without the share lock: the
-// append returned at once and stored the event.
+// The transaction below does what SessionStore.Transition does into a
+// terminal state — NO KEY UPDATE on the session, then the event counter, then
+// the state — and holds it. The append must wait for it and then refuse.
+// Watched failing with the counter lock removed from both sides: the append
+// did not wait, read the old state and stored the event.
 func TestATerminalTransitionInFlightBlocksTheAppendIntegration(t *testing.T) {
 	ownerPool := newPool(t)
 	appPool := newAppPool(t)
@@ -305,13 +305,16 @@ func TestATerminalTransitionInFlightBlocksTheAppendIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(context.Background(),
-		`SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE`, session.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(context.Background(),
-		`UPDATE sessions SET state = 'failed' WHERE id = $1`, session.ID); err != nil {
-		t.Fatal(err)
+	for _, statement := range []string{
+		`SELECT 1 FROM sessions WHERE id = $1 FOR NO KEY UPDATE`,
+		`INSERT INTO session_event_sequences (session_id, workspace_id, last_sequence)
+		 SELECT id, workspace_id, 0 FROM sessions WHERE id = $1
+		 ON CONFLICT (session_id) DO UPDATE SET last_sequence = session_event_sequences.last_sequence`,
+		`UPDATE sessions SET state = 'failed' WHERE id = $1`,
+	} {
+		if _, err := tx.Exec(context.Background(), statement, session.ID); err != nil {
+			t.Fatalf("transition: %v", err)
+		}
 	}
 
 	type result struct {
@@ -340,6 +343,94 @@ func TestATerminalTransitionInFlightBlocksTheAppendIntegration(t *testing.T) {
 	}
 }
 
+// TestATerminalTransitionIsNotStarvedByOutputIntegration is the second review
+// round's finding on PR #18, measured before it was fixed.
+//
+// The first fix took FOR SHARE on the session for every append. Under eight
+// writers appending as fast as they could, a transition's lock waited 2.98s —
+// the whole run: new share lockers kept jumping the waiting FOR UPDATE, and
+// every append's foreign-key check took FOR KEY SHARE, which FOR UPDATE also
+// conflicts with. A workflow could not reliably fail a session that was busy
+// producing output. Here the real terminal transition, through the service,
+// must finish promptly under the same load — and not one event may land after.
+func TestATerminalTransitionIsNotStarvedByOutputIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	fixture := seedSessionFixture(t, ownerPool, "Busy Session Workspace")
+	sessionStore := postgres.NewSessionStore(appPool)
+	session, err := fixture.createSession(t, postgres.NewSessionStore(ownerPool), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	events := postgres.NewEventStore(appPool)
+	tenant := postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID)
+	warm(t, appPool, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		refused  int
+		failures []error
+	)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				_, _, err := events.AppendEvent(tenant, eventFor(session, uuid.New()))
+				mu.Lock()
+				switch {
+				case errors.Is(err, application.ErrEventSessionTerminal):
+					refused++
+				case err != nil:
+					failures = append(failures, err)
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	time.Sleep(time.Second) // let the output build up
+
+	sessions := application.NewSessionService(sessionStore, postgres.NewTaskStore(appPool), postgres.NewAgentStore(appPool))
+	start := time.Now()
+	moved, err := sessions.TransitionAsSystem(tenant, fixture.workspace.ID, session.ID,
+		domain.SessionFailed, "test: failed under load")
+	waited := time.Since(start)
+	if err != nil {
+		cancel()
+		wg.Wait()
+		t.Fatalf("terminal transition under load: %v", err)
+	}
+	var lastBefore int64
+	if err := ownerPool.QueryRow(context.Background(),
+		`SELECT coalesce(max(sequence), 0) FROM session_events WHERE session_id = $1`, session.ID).Scan(&lastBefore); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // appends keep arriving after the end
+	cancel()
+	wg.Wait()
+
+	if len(failures) > 0 {
+		t.Fatalf("%d appends failed (deadlock?), first: %v", len(failures), failures[0])
+	}
+	if waited > time.Second {
+		t.Errorf("the terminal transition took %v under load; it must not queue behind the output", waited)
+	}
+	var after int
+	if err := ownerPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM session_events WHERE session_id = $1 AND sequence > $2`, session.ID, lastBefore).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != 0 {
+		t.Errorf("%d events landed after the session became %s", after, moved.State)
+	}
+	if refused == 0 {
+		t.Error("no append was refused after the end; the load stopped too early to prove anything")
+	}
+	t.Logf("terminal transition under load took %v; %d later appends refused", waited, refused)
+}
+
 // TestContentTheDatabaseRejectsIsNotTransientIntegration: bypassing the
 // decoder, a payload jsonb refuses must come back as a rejection — not a
 // failure the ingestor would retry to exhaustion.
@@ -358,5 +449,84 @@ func TestContentTheDatabaseRejectsIsNotTransientIntegration(t *testing.T) {
 		postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID), event)
 	if !errors.Is(err, application.ErrEventRejectedByStore) {
 		t.Errorf("AppendEvent with a NUL escape = %v, want ErrEventRejectedByStore", err)
+	}
+}
+
+// TestTheTableAgreesWithTheVersionContractIntegration: the database's CHECK is
+// the third enforcer of domain.SchemaVersionPattern, and must accept and
+// refuse what the other two do.
+func TestTheTableAgreesWithTheVersionContractIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	fixture := seedSessionFixture(t, ownerPool, "Version Contract Workspace")
+	session, err := fixture.createSession(t, postgres.NewSessionStore(ownerPool), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	store := postgres.NewEventStore(appPool)
+	tenant := postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID)
+
+	for version, accepted := range map[string]bool{"1.0": true, "1.10": true, "1.01": false, "1.1234567890": false} {
+		event := eventFor(session, uuid.New())
+		event.SchemaVersion = version
+		_, _, err := store.AppendEvent(tenant, event)
+		switch {
+		case accepted && err != nil:
+			t.Errorf("the table refused %q: %v", version, err)
+		case !accepted && !errors.Is(err, application.ErrEventRejectedByStore):
+			t.Errorf("the table took %q (err %v); it must refuse what the decoder refuses", version, err)
+		}
+	}
+}
+
+// TestATerminalTransitionWaitsForTheAppendInFlightIntegration is the other
+// direction, through the real transition code.
+//
+// An append holds the session's event counter — here, a transaction that has
+// taken it and not yet committed. A terminal transition through
+// SessionService must wait for it, so the event lands before the end rather
+// than after. The load test alone did not catch the transition's counter lock
+// being removed — the window is too narrow to hit by chance — so this pins it
+// deterministically. Watched failing with that lock removed: the transition
+// returned at once while the append was still in flight.
+func TestATerminalTransitionWaitsForTheAppendInFlightIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	fixture := seedSessionFixture(t, ownerPool, "Append In Flight Workspace")
+	session, err := fixture.createSession(t, postgres.NewSessionStore(ownerPool), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	appending, err := ownerPool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = appending.Rollback(context.Background()) }()
+	if _, err := appending.Exec(context.Background(),
+		`INSERT INTO session_event_sequences (session_id, workspace_id, last_sequence)
+		 SELECT id, workspace_id, 1 FROM sessions WHERE id = $1`, session.ID); err != nil {
+		t.Fatalf("hold the counter: %v", err)
+	}
+
+	sessions := application.NewSessionService(postgres.NewSessionStore(appPool),
+		postgres.NewTaskStore(appPool), postgres.NewAgentStore(appPool))
+	done := make(chan error, 1)
+	go func() {
+		_, err := sessions.TransitionAsSystem(postgres.WithTenantWorkspace(context.Background(), fixture.workspace.ID),
+			fixture.workspace.ID, session.ID, domain.SessionFailed, "test: failed while an append is in flight")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("the terminal transition did not wait for the append in flight (err=%v)", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := appending.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Errorf("the transition failed once the append committed: %v", err)
 	}
 }

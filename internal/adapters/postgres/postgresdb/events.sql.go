@@ -102,29 +102,27 @@ func (q *Queries) ListSessionEvents(ctx context.Context, arg ListSessionEventsPa
 	return items, nil
 }
 
-const lockSessionForEvent = `-- name: LockSessionForEvent :one
-SELECT state FROM sessions
-WHERE id = $1 AND workspace_id = $2
-FOR SHARE
+const lockSessionEventSequence = `-- name: LockSessionEventSequence :exec
+INSERT INTO session_event_sequences (session_id, workspace_id, last_sequence)
+VALUES ($1, $2, 0)
+ON CONFLICT (session_id) DO UPDATE
+    SET last_sequence = session_event_sequences.last_sequence
 `
 
-type LockSessionForEventParams struct {
-	ID          uuid.UUID
+type LockSessionEventSequenceParams struct {
+	SessionID   uuid.UUID
 	WorkspaceID uuid.UUID
 }
 
-// The session's state, read under a share lock inside the append transaction.
+// Taken by a transition into a terminal state, before it writes the state.
 //
-// A transition takes FOR UPDATE on this row, so the two serialise: an event
-// cannot be appended between a session's terminal transition and its commit,
-// and a terminal transition cannot slip in between this read and the
-// event's insert. Reading the state earlier, outside this transaction, is
-// the race that let a terminal session gain an event.
-func (q *Queries) LockSessionForEvent(ctx context.Context, arg LockSessionForEventParams) (string, error) {
-	row := q.db.QueryRow(ctx, lockSessionForEvent, arg.ID, arg.WorkspaceID)
-	var state string
-	err := row.Scan(&state)
-	return state, err
+// Creates the counter if the session has emitted nothing yet, so the lock
+// always has a row to take. Exclusive, like every append's increment, so the
+// two queue fairly: a terminal transition waits for at most the appends
+// already holding or queued for the row, never for an unbounded stream.
+func (q *Queries) LockSessionEventSequence(ctx context.Context, arg LockSessionEventSequenceParams) error {
+	_, err := q.db.Exec(ctx, lockSessionEventSequence, arg.SessionID, arg.WorkspaceID)
+	return err
 }
 
 const nextSessionEventSequence = `-- name: NextSessionEventSequence :one
@@ -207,4 +205,32 @@ func (q *Queries) SessionEventExists(ctx context.Context, arg SessionEventExists
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const sessionStateForEvent = `-- name: SessionStateForEvent :one
+SELECT state FROM sessions
+WHERE id = $1 AND workspace_id = $2
+`
+
+type SessionStateForEventParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+// The session's state, read inside the append transaction **after** the
+// counter row is locked — never under a lock on the session row itself.
+//
+// An earlier revision took FOR SHARE on the session here. Measured under
+// continuous output, it starved transitions: new share lockers kept jumping a
+// waiting FOR UPDATE, and a terminal transition waited the whole three-second
+// run. The counter row is the serialisation point instead (see
+// LockSessionEventSequence): a terminal transition locks it too, so either
+// the transition commits first and this read — a fresh snapshot, since the
+// lock was taken by an earlier statement — sees it, or the append commits
+// first and the transition waits for exactly that one append.
+func (q *Queries) SessionStateForEvent(ctx context.Context, arg SessionStateForEventParams) (string, error) {
+	row := q.db.QueryRow(ctx, sessionStateForEvent, arg.ID, arg.WorkspaceID)
+	var state string
+	err := row.Scan(&state)
+	return state, err
 }

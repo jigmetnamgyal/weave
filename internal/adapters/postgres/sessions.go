@@ -212,6 +212,19 @@ func (s *SessionStore) Transition(
 			return err
 		}
 
+		// Into a terminal state: take the event counter first, so no event
+		// can land after this commits (invariant 10). An append in flight
+		// holds it until it commits, and this waits for exactly that; the
+		// next append, arriving after, reads the terminal state and refuses.
+		// See LockSessionEventSequence.
+		if transition.NextState.Terminal() {
+			if err := q.LockSessionEventSequence(ctx, postgresdb.LockSessionEventSequenceParams{
+				SessionID: sessionID, WorkspaceID: workspaceID,
+			}); err != nil {
+				return fmt.Errorf("lock the session's event sequence: %w", err)
+			}
+		}
+
 		row, err := q.UpdateSessionState(ctx, postgresdb.UpdateSessionStateParams{
 			ID:          sessionID,
 			WorkspaceID: workspaceID,

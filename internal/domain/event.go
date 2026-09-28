@@ -36,6 +36,18 @@ const (
 	EventProviderFailed EventType = "provider.failed"
 )
 
+// SchemaVersionPattern is the one shape of `schema_version`, stated once.
+//
+// MAJOR.MINOR, no leading zeros, each part at most nine digits. The published
+// envelope schema carries this exact pattern — TestTheSchemaFileAndTheDecoder
+// AgreeOnVersions compares them — and migration 00011's CHECK enforces the
+// major-1 form of it. An earlier revision had three shapes: the schema file
+// allowed `"1.01"`, the table allowed it, and the decoder refused it, so
+// contract-valid events were quarantined. Before that, the decoder allowed
+// `"01.0"` and the table refused it, which the ingestor retried as transient.
+// Three enforcers of one rule drift unless one of them is the source.
+const SchemaVersionPattern = `^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$`
+
 // SupportedEventMajor is the only major schema version this consumer reads.
 const SupportedEventMajor = 1
 
@@ -151,10 +163,7 @@ type ProviderFailed struct {
 }
 
 var (
-	// No leading zeros and bounded, the same shape the database's CHECK
-	// accepts. `"01.0"` read as major 1 here and was then rejected by the
-	// table — which the ingestor took for a transient failure and retried.
-	schemaVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$`)
+	schemaVersionPattern = regexp.MustCompile(SchemaVersionPattern)
 	failureCodePattern   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 

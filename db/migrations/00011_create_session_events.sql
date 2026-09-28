@@ -16,6 +16,14 @@
 -- state transition locks: a busy session emitting output must not queue
 -- behind, or ahead of, its own workflow.
 --
+-- It is also the one point where appends and a *terminal* transition meet.
+-- Invariant 10 needs them ordered — no event may land after the session ends
+-- — and a transition into a terminal state locks this row before writing its
+-- state, while every append locks it before reading the state. Only terminal
+-- transitions take it, and the lock is exclusive on both sides, so they queue
+-- fairly. (A share lock on `sessions` was tried first and measured starving
+-- transitions under continuous output; see LockSessionEventSequence.)
+--
 -- The ingestor increments it and inserts the event in one transaction. A
 -- duplicate is detected by the insert's unique constraint, and the
 -- transaction is rolled back — which takes the increment with it. That is how
@@ -67,7 +75,10 @@ CREATE TABLE session_events (
         REFERENCES sessions (id, workspace_id) ON DELETE CASCADE,
     CONSTRAINT session_events_sequence_positive CHECK (sequence > 0),
     CONSTRAINT session_events_type_known CHECK (type IN ('message.created', 'provider.failed')),
-    CONSTRAINT session_events_schema_version_format CHECK (schema_version ~ '^1\.[0-9]+$'),
+    -- The major-1 form of domain.SchemaVersionPattern, and the same shape the
+    -- published envelope schema carries: no leading zeros, bounded. When the
+    -- three disagreed, contract-valid events were quarantined.
+    CONSTRAINT session_events_schema_version_format CHECK (schema_version ~ '^1\.(0|[1-9][0-9]{0,8})$'),
     CONSTRAINT session_events_payload_is_object CHECK (jsonb_typeof(payload) = 'object'),
     -- Belt and braces behind the ingestor's own limit: "payloads stay small".
     CONSTRAINT session_events_payload_size CHECK (pg_column_size(payload) <= 65536)

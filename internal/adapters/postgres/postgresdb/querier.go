@@ -170,17 +170,26 @@ type Querier interface {
 	// edits both read the same MAX(version) and one fails on the unique index —
 	// an error the caller can do nothing useful with.
 	LockAgentForUpdate(ctx context.Context, arg LockAgentForUpdateParams) (Agent, error)
-	// The session's state, read under a share lock inside the append transaction.
+	// Taken by a transition into a terminal state, before it writes the state.
 	//
-	// A transition takes FOR UPDATE on this row, so the two serialise: an event
-	// cannot be appended between a session's terminal transition and its commit,
-	// and a terminal transition cannot slip in between this read and the
-	// event's insert. Reading the state earlier, outside this transaction, is
-	// the race that let a terminal session gain an event.
-	LockSessionForEvent(ctx context.Context, arg LockSessionForEventParams) (string, error)
+	// Creates the counter if the session has emitted nothing yet, so the lock
+	// always has a row to take. Exclusive, like every append's increment, so the
+	// two queue fairly: a terminal transition waits for at most the appends
+	// already holding or queued for the row, never for an unbounded stream.
+	LockSessionEventSequence(ctx context.Context, arg LockSessionEventSequenceParams) error
 	// Taken before a state change. The version read here is the one the change is
 	// checked against, and holding the lock is what stops two transitions reading
 	// the same version and both believing they are current.
+	//
+	// NO KEY UPDATE rather than UPDATE, because nothing that takes this lock
+	// changes a key column. The difference matters since M5.3: every event
+	// appended for a session makes a foreign-key check that takes FOR KEY SHARE
+	// on this row, and plain FOR UPDATE conflicts with that — so under continuous
+	// output a transition queued behind an unbounded stream of appends, and a
+	// terminal transition holding this row while waiting for the event counter
+	// would deadlock with an append holding the counter while its FK check
+	// waited for this row. NO KEY UPDATE still serialises transitions and branch
+	// recording against each other, which is all it was ever for.
 	LockSessionForUpdate(ctx context.Context, arg LockSessionForUpdateParams) (Session, error)
 	// Read at the start of a patch, in the transaction that writes it.
 	//
@@ -282,6 +291,18 @@ type Querier interface {
 	// Whether an event is already stored, for a terminal session: a redelivery of
 	// an event stored before the session ended is a duplicate, not a refusal.
 	SessionEventExists(ctx context.Context, arg SessionEventExistsParams) (bool, error)
+	// The session's state, read inside the append transaction **after** the
+	// counter row is locked — never under a lock on the session row itself.
+	//
+	// An earlier revision took FOR SHARE on the session here. Measured under
+	// continuous output, it starved transitions: new share lockers kept jumping a
+	// waiting FOR UPDATE, and a terminal transition waited the whole three-second
+	// run. The counter row is the serialisation point instead (see
+	// LockSessionEventSequence): a terminal transition locks it too, so either
+	// the transition commits first and this read — a fresh snapshot, since the
+	// lock was taken by an earlier statement — sees it, or the append commits
+	// first and the transition waits for exactly that one append.
+	SessionStateForEvent(ctx context.Context, arg SessionStateForEventParams) (string, error)
 	// The pointer is the only mutable thing about a profile. Moving it changes
 	// what the next session will use and nothing about what past sessions did.
 	SetAgentCurrentVersion(ctx context.Context, arg SetAgentCurrentVersionParams) (Agent, error)

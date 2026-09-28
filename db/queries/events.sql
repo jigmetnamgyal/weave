@@ -35,17 +35,32 @@ SELECT * FROM session_events
 WHERE session_id = $1 AND workspace_id = $2
 ORDER BY sequence;
 
--- name: LockSessionForEvent :one
--- The session's state, read under a share lock inside the append transaction.
+-- name: SessionStateForEvent :one
+-- The session's state, read inside the append transaction **after** the
+-- counter row is locked — never under a lock on the session row itself.
 --
--- A transition takes FOR UPDATE on this row, so the two serialise: an event
--- cannot be appended between a session's terminal transition and its commit,
--- and a terminal transition cannot slip in between this read and the
--- event's insert. Reading the state earlier, outside this transaction, is
--- the race that let a terminal session gain an event.
+-- An earlier revision took FOR SHARE on the session here. Measured under
+-- continuous output, it starved transitions: new share lockers kept jumping a
+-- waiting FOR UPDATE, and a terminal transition waited the whole three-second
+-- run. The counter row is the serialisation point instead (see
+-- LockSessionEventSequence): a terminal transition locks it too, so either
+-- the transition commits first and this read — a fresh snapshot, since the
+-- lock was taken by an earlier statement — sees it, or the append commits
+-- first and the transition waits for exactly that one append.
 SELECT state FROM sessions
-WHERE id = $1 AND workspace_id = $2
-FOR SHARE;
+WHERE id = $1 AND workspace_id = $2;
+
+-- name: LockSessionEventSequence :exec
+-- Taken by a transition into a terminal state, before it writes the state.
+--
+-- Creates the counter if the session has emitted nothing yet, so the lock
+-- always has a row to take. Exclusive, like every append's increment, so the
+-- two queue fairly: a terminal transition waits for at most the appends
+-- already holding or queued for the row, never for an unbounded stream.
+INSERT INTO session_event_sequences (session_id, workspace_id, last_sequence)
+VALUES ($1, $2, 0)
+ON CONFLICT (session_id) DO UPDATE
+    SET last_sequence = session_event_sequences.last_sequence;
 
 -- name: SessionEventExists :one
 -- Whether an event is already stored, for a terminal session: a redelivery of

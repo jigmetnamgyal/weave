@@ -23,8 +23,8 @@
     },
     "schema_version": {
       "type": "string",
-      "pattern": "^[0-9]+\\.[0-9]+$",
-      "description": "MAJOR.MINOR of the event type's schema. An unknown major is quarantined; a newer minor is accepted and its unknown fields ignored."
+      "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$",
+      "description": "MAJOR.MINOR of the event type's schema, without leading zeros, each part at most nine digits. An unknown major is quarantined; a newer minor is accepted and its unknown fields ignored. The same pattern as domain.SchemaVersionPattern, checked by a test."
     },
     "type": {
       "type": "string",
@@ -36,14 +36,24 @@
       "format": "date-time",
       "description": "The producer's claim. Stored, never used for ordering."
     },
-    "producer": { "type": "string", "format": "uuid", "description": "The runner id." },
-    "workspace_id": { "type": "string", "format": "uuid" },
+    "producer": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The runner id."
+    },
+    "workspace_id": {
+      "type": "string",
+      "format": "uuid"
+    },
     "session_id": {
       "type": "string",
       "format": "uuid",
       "description": "The aggregate, and the ordering key."
     },
-    "correlation_id": { "type": "string", "format": "uuid" },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
     "payload": {
       "type": "object",
       "description": "Validated against the schema for type and major version."
