@@ -382,12 +382,22 @@ func (b *Backend) Provision(ctx context.Context, spec application.RunnerSpec) (s
 		return "", fmt.Errorf("vercelsandbox: start the runner: %w", err)
 	}
 
-	// A concurrent start may have won the marker; the command that holds it
-	// is the runner, whichever call started it.
-	if existing, found, err := b.findRunnerCommand(ctx, session); err == nil && found {
-		return handle{sandbox: name, session: session, command: existing}.String(), nil
+	// A concurrent start may have won the marker, so the command this call
+	// started is not necessarily the runner: the one holding the marker is.
+	// **Only that lookup decides the handle.** The first version fell back to
+	// this call's own command when the lookup failed — and if this call was
+	// the duplicate, that recorded a command that had exited 75 as the
+	// runner, and readiness then read a healthy session as lost (review of
+	// PR #24). Failing instead is safe: Provision is idempotent, and the
+	// retry finds the sandbox, the marker and the real runner.
+	existing, found, err := b.findRunnerCommand(ctx, session)
+	if err != nil {
+		return "", fmt.Errorf("vercelsandbox: find the started runner: %w", err)
 	}
-	return handle{sandbox: name, session: session, command: started.Command.ID}.String(), nil
+	if !found {
+		return "", fmt.Errorf("vercelsandbox: started the runner (command %s), but no start command holds the marker", started.Command.ID)
+	}
+	return handle{sandbox: name, session: session, command: existing}.String(), nil
 }
 
 // startScript starts the runner at most once, as the runner user, with the
@@ -817,12 +827,11 @@ func (b *Backend) List(ctx context.Context) ([]application.BackendRunner, error)
 // plan's session cap. Vercel's extension adds to the current timeout, so the
 // amount is computed from the expiry it reports. A sandbox that has stopped
 // or gone has nothing to extend.
-func (b *Backend) ExtendLease(ctx context.Context, raw string) error {
-	h, err := parseHandle(raw)
-	if err != nil {
-		return err
-	}
-	sandbox, err := b.getSandbox(ctx, h.sandbox)
+//
+// By runner id, so a sandbox whose runner is still being provisioned — no
+// handle recorded yet — is renewed too.
+func (b *Backend) ExtendLease(ctx context.Context, runnerID uuid.UUID) error {
+	sandbox, err := b.getSandbox(ctx, b.sandboxName(runnerID))
 	if errors.Is(err, errNotFound) {
 		return nil
 	}

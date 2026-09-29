@@ -321,3 +321,43 @@ func commandOutput(t *testing.T, b *Backend, session, command string) string {
 	}
 	return out.String()
 }
+
+// TestLiveALeaseExtendedByRunnerIDOutlivesItsFirstExpiry: renewal the way the
+// runner manager does it — by runner id, on a sandbox with no runner started,
+// as during provisioning (review of PR #24) — really moves Vercel's expiry,
+// and the sandbox is still running past the moment its first lease ended.
+func TestLiveALeaseExtendedByRunnerIDOutlivesItsFirstExpiry(t *testing.T) {
+	const lease = time.Minute
+	b := liveBackend(t, "live"+uuid.NewString()[:6], lease)
+	ctx := context.Background()
+	id, _ := sandbox(t, b, nil)
+	before, err := b.getSandbox(ctx, b.sandboxName(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstExpiry := time.UnixMilli(before.Sandbox.ExpiresAt)
+
+	time.Sleep(30 * time.Second)
+	if err := b.ExtendLease(ctx, id); err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	after, err := b.getSandbox(ctx, b.sandboxName(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newExpiry := time.UnixMilli(after.Sandbox.ExpiresAt)
+	t.Logf("lease: expiry moved by %s", newExpiry.Sub(firstExpiry).Round(time.Second))
+	if newExpiry.Sub(firstExpiry) < 20*time.Second {
+		t.Errorf("expiry moved by %s after an extension 30s in; want about 30s", newExpiry.Sub(firstExpiry))
+	}
+
+	time.Sleep(time.Until(firstExpiry.Add(15 * time.Second)))
+	now, err := b.getSandbox(ctx, b.sandboxName(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("lease: 15s past its first expiry the sandbox is %s", now.Sandbox.Status)
+	if now.Sandbox.Status != "running" {
+		t.Errorf("15s past its first expiry the extended sandbox is %s; want running", now.Sandbox.Status)
+	}
+}

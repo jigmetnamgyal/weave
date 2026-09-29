@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -597,67 +598,145 @@ func TestABackendRefusalIsNamedAsTheBackends(t *testing.T) {
 	}
 }
 
-// leasingBackend is a backend with leases (M5.4b), recording extensions.
+// leasingBackend is a backend with leases (M5.4b), recording extensions and
+// status reads, with a configurable cost for each.
 type leasingBackend struct {
 	*fakeBackend
-	extended []string
-	fail     bool
+	mu          sync.Mutex
+	extended    []uuid.UUID
+	statusReads int
+	fail        bool
+	// extendCost and statusCost stand in for API round trips; statusCost is
+	// Vercel's two-second wait on a running command, scaled down.
+	extendCost, statusCost time.Duration
+	inFlight, maxInFlight  int
 }
 
-func (b *leasingBackend) ExtendLease(_ context.Context, handle string) error {
-	b.extended = append(b.extended, handle)
+var _ application.RunnerLeaser = (*leasingBackend)(nil)
+
+func (b *leasingBackend) ExtendLease(_ context.Context, runnerID uuid.UUID) error {
+	b.mu.Lock()
+	b.extended = append(b.extended, runnerID)
+	b.inFlight++
+	b.maxInFlight = max(b.maxInFlight, b.inFlight)
+	b.mu.Unlock()
+	time.Sleep(b.extendCost)
+	b.mu.Lock()
+	b.inFlight--
+	b.mu.Unlock()
 	if b.fail {
 		return errors.New("vercel unavailable")
 	}
 	return nil
 }
 
-// TestTheReconcilerKeepsLiveRunnersLeased: every pass extends the lease of
-// each runner that should still be running — provisioning or running, of a
-// session that has not ended — and no other. A runner manager that stops
-// runs no pass, so its environments stop within one lease.
-func TestTheReconcilerKeepsLiveRunnersLeased(t *testing.T) {
+func (b *leasingBackend) Status(ctx context.Context, handle string) (application.RunnerStatus, error) {
+	b.mu.Lock()
+	b.statusReads++
+	b.mu.Unlock()
+	time.Sleep(b.statusCost)
+	return b.fakeBackend.Status(ctx, handle)
+}
+
+func leasingWorld(t *testing.T) (*runnerWorld, *leasingBackend, *application.RunnerService) {
 	w := newRunnerTestWorld(t)
 	backend := &leasingBackend{fakeBackend: w.backend}
 	service := application.NewRunnerService(w.store, fakeSessionReader{w}, backend, fakeMinter{},
 		fakeBrokerIssuer{}, "nats://broker.test:4222", fakeAgents{}, w.drain,
 		func(ctx context.Context, _ uuid.UUID) context.Context { return ctx }, "https://github.test",
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	add := func(state domain.RunnerState, handle string, session domain.SessionState) domain.Runner {
-		r := domain.Runner{ID: uuid.New(), SessionID: uuid.New(), WorkspaceID: w.session.WorkspaceID,
-			Backend: backend.Name(), State: state, Handle: handle, CreatedAt: time.Now()}
-		w.store.runners[r.ID] = r
-		if w.store.sessionStates == nil {
-			w.store.sessionStates = map[uuid.UUID]domain.SessionState{}
-		}
-		w.store.sessionStates[r.SessionID] = session
-		if handle != "" {
-			w.backend.envs[handle] = application.RunnerStatus{Exists: true, Running: true, Ready: true}
-		}
-		return r
+	if w.store.sessionStates == nil {
+		w.store.sessionStates = map[uuid.UUID]domain.SessionState{}
 	}
-	running := add(domain.RunnerRunning, "h-running", domain.SessionRunning)
-	provisioning := add(domain.RunnerProvisioning, "h-provisioning", domain.SessionProvisioning)
-	add(domain.RunnerProvisioning, "", domain.SessionProvisioning)      // no handle yet
-	add(domain.RunnerTerminating, "h-halted", domain.SessionRunning)    // halted, draining
-	ended := add(domain.RunnerRunning, "h-ended", domain.SessionFailed) // torn down instead
-	// Halted, and its session has moved on without ending: it reaches the
-	// lease step (the halted-runner skip is for running sessions only) and
-	// must not be kept alive — its teardown is being finished.
-	add(domain.RunnerTerminating, "h-moved-on", domain.SessionReviewReady)
-	backend.orphans = map[string]uuid.UUID{"h-running": running.ID, "h-provisioning": provisioning.ID,
-		"h-ended": ended.ID}
+	return w, backend, service
+}
 
-	backend.fail = true // a failing extension must not stop the pass
+func addRunner(w *runnerWorld, backend string, state domain.RunnerState, handle string, session domain.SessionState) domain.Runner {
+	r := domain.Runner{ID: uuid.New(), SessionID: uuid.New(), WorkspaceID: w.session.WorkspaceID,
+		Backend: backend, State: state, Handle: handle, CreatedAt: time.Now()}
+	w.store.runners[r.ID] = r
+	w.store.sessionStates[r.SessionID] = session
+	if handle != "" {
+		w.backend.envs[handle] = application.RunnerStatus{Exists: true, Running: true, Ready: true}
+	}
+	return r
+}
+
+// TestExtendLeasesKeepsExactlyTheLiveRunnersAlive: provisioning or running
+// runners of a live session, **with or without a handle** — the lease starts
+// at creation, before provisioning records one (review of PR #24) — and no
+// others. A failing extension does not stop the rest.
+func TestExtendLeasesKeepsExactlyTheLiveRunnersAlive(t *testing.T) {
+	w, backend, service := leasingWorld(t)
+	name := backend.Name()
+	running := addRunner(w, name, domain.RunnerRunning, "h-running", domain.SessionRunning)
+	provisioning := addRunner(w, name, domain.RunnerProvisioning, "h-provisioning", domain.SessionProvisioning)
+	noHandle := addRunner(w, name, domain.RunnerProvisioning, "", domain.SessionProvisioning)
+	addRunner(w, name, domain.RunnerTerminating, "h-halted", domain.SessionRunning)
+	addRunner(w, name, domain.RunnerTerminating, "h-moved-on", domain.SessionReviewReady)
+	addRunner(w, name, domain.RunnerRunning, "h-ended", domain.SessionFailed)
+	addRunner(w, "another-backend", domain.RunnerRunning, "h-foreign", domain.SessionRunning)
+
+	backend.fail = true
+	if _, err := service.ExtendLeases(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := map[uuid.UUID]bool{}
+	for _, id := range backend.extended {
+		got[id] = true
+	}
+	want := map[uuid.UUID]bool{running.ID: true, provisioning.ID: true, noHandle.ID: true}
+	if len(got) != len(want) || len(backend.extended) != len(want) {
+		t.Errorf("extended %d leases (%v); want exactly the running, the provisioning and the handle-less provisioning runner",
+			len(backend.extended), backend.extended)
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("runner %s was not extended", id)
+		}
+	}
+}
+
+// TestLeaseRenewalIsNotHeldUpByStatusReads is a review finding on PR #24:
+// extensions ran inside the reconcile pass, each after the previous runner's
+// status read — up to two seconds on Vercel — so the gap between two
+// extensions of one lease grew with the number of live runners, and around a
+// hundred and fifty of them it passed the five-minute lease. Scaled down: 160
+// running runners, a status read costing 20 ms and an extension 10 ms. The
+// lease pass must read no status at all, run extensions concurrently, and
+// finish in a fraction of the time the serial pass needed; and Reconcile must
+// no longer extend anything.
+func TestLeaseRenewalIsNotHeldUpByStatusReads(t *testing.T) {
+	w, backend, service := leasingWorld(t)
+	backend.extendCost, backend.statusCost = 10*time.Millisecond, 20*time.Millisecond
+	const runners = 160
+	for i := 0; i < runners; i++ {
+		addRunner(w, backend.Name(), domain.RunnerRunning, fmt.Sprintf("h-%d", i), domain.SessionRunning)
+	}
+
+	start := time.Now()
+	extended, err := service.ExtendLeases(context.Background())
+	elapsed := time.Since(start)
+	if err != nil || extended != runners {
+		t.Fatalf("extended %d, %v; want %d", extended, err, runners)
+	}
+	serial := runners * (backend.extendCost + backend.statusCost)
+	t.Logf("lease pass over %d runners: %s (the serial reconcile-bound pass: %s)", runners, elapsed.Round(time.Millisecond), serial)
+	if backend.statusReads != 0 {
+		t.Errorf("the lease pass read %d statuses; it must read none", backend.statusReads)
+	}
+	if backend.maxInFlight < 2 {
+		t.Errorf("at most %d extension in flight; they must run concurrently", backend.maxInFlight)
+	}
+	if elapsed > serial/4 {
+		t.Errorf("the lease pass took %s against a serial %s; renewal must not scale with status reads", elapsed, serial)
+	}
+
+	before := len(backend.extended)
 	if _, err := service.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(backend.extended)
-	if got := strings.Join(backend.extended, ","); got != "h-provisioning,h-running" {
-		t.Errorf("extended %q; want exactly the running and the provisioning runner's leases", got)
-	}
-	if w.store.runners[ended.ID].State.Live() {
-		t.Error("a failing extension stopped the pass: the ended session's runner was not torn down")
+	if len(backend.extended) != before {
+		t.Errorf("Reconcile extended %d leases; renewal belongs to ExtendLeases alone", len(backend.extended)-before)
 	}
 }

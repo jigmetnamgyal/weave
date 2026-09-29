@@ -30,12 +30,24 @@ LOG="${STATE}/cloudflared.log"
 PIDFILE="${STATE}/cloudflared.pid"
 HOSTFILE="${STATE}/host"
 
-# The local WebSocket listener, from .env if it is there.
+# The local WebSocket listener, where Compose publishes it: NATS_WEBSOCKET_PORT
+# on NATS_BIND. On Linux, .env.example has NATS_BIND set to the bridge address,
+# and the listener is then not on loopback at all — so the tunnel's origin
+# follows NATS_BIND, and only an unset or wildcard bind means loopback (review
+# of PR #24).
 if [ -f "${REPO_ROOT}/.env" ]; then
   # shellcheck disable=SC1091
   NATS_WEBSOCKET_PORT="$(set -a; . "${REPO_ROOT}/.env"; echo "${NATS_WEBSOCKET_PORT:-54280}")"
+  # shellcheck disable=SC1091
+  NATS_BIND="$(set -a; . "${REPO_ROOT}/.env"; echo "${NATS_BIND:-}")"
 fi
 PORT="${NATS_WEBSOCKET_PORT:-54280}"
+case "${NATS_BIND:-}" in
+  "" | 0.0.0.0 | "::" | "[::]") ORIGIN_HOST="127.0.0.1" ;;
+  *:*) ORIGIN_HOST="[${NATS_BIND#[}"; ORIGIN_HOST="${ORIGIN_HOST%]}]" ;;
+  *) ORIGIN_HOST="${NATS_BIND}" ;;
+esac
+ORIGIN="http://${ORIGIN_HOST}:${PORT}"
 
 stop() {
   if [ -f "${PIDFILE}" ] && kill -0 "$(cat "${PIDFILE}")" 2>/dev/null; then
@@ -51,7 +63,7 @@ start() {
   stop >/dev/null
   mkdir -p "${STATE}"
   : > "${LOG}"
-  cloudflared tunnel --no-autoupdate --url "http://localhost:${PORT}" > "${LOG}" 2>&1 &
+  cloudflared tunnel --no-autoupdate --url "${ORIGIN}" > "${LOG}" 2>&1 &
   echo $! > "${PIDFILE}"
 
   local host="" registered="" deadline=$((SECONDS + 60))
@@ -76,7 +88,7 @@ start() {
   done
 
   echo "${host}" > "${HOSTFILE}"
-  echo "Tunnel ready: wss://${host} -> ws://localhost:${PORT}"
+  echo "Tunnel ready: wss://${host} -> ${ORIGIN/http:/ws:}"
   echo "RUNNER_NATS_URL=wss://${host}"
 }
 

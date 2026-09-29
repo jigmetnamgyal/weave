@@ -56,6 +56,11 @@ type fakeVercel struct {
 	// rateLimitOnce answers the next request 429 with Retry-After.
 	rateLimitOnce bool
 	clock         int64
+	// concurrentStart makes another Provision's start reach the sandbox
+	// just before this one's, so this one is the duplicate.
+	concurrentStart bool
+	// failListAfterStart fails the command list once a start has run.
+	failListAfterStart bool
 	// echoStart refuses the runner's start command, echoing its body in the
 	// error message, as a hostile or buggy server might.
 	echoStart  bool
@@ -262,6 +267,10 @@ func (f *fakeVercel) serveSession(w http.ResponseWriter, r *http.Request, s *fak
 		s.timeout += req.Duration
 		writeJSON(w, http.StatusOK, map[string]any{"session": f.sandboxJSON(s)["session"]})
 	case len(rest) == 1 && rest[0] == "cmd" && r.Method == http.MethodGet:
+		if f.failListAfterStart && f.starts > 0 {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]string{"code": "internal"}})
+			return
+		}
 		var list []any
 		for i := len(s.commands) - 1; i >= 0; i-- { // newest first, as Vercel lists
 			list = append(list, commandJSON(s.commands[i])["command"])
@@ -274,6 +283,13 @@ func (f *fakeVercel) serveSession(w http.ResponseWriter, r *http.Request, s *fak
 		c := &fakeCommand{id: "cmd_" + uuid.NewString()[:8], name: req.Command, args: req.Args, env: req.Env,
 			sudo: req.Sudo, startedAt: f.clock}
 		zero, one, dup := 0, 1, startedDuplicateExit
+		if f.concurrentStart && len(req.Args) == 2 && req.Args[1] == startScript {
+			f.concurrentStart = false
+			f.clock++
+			f.starts++
+			s.commands = append(s.commands, &fakeCommand{id: "cmd_winner", name: "bash", args: req.Args,
+				sudo: true, startedAt: f.clock})
+		}
 		if f.echoStart && len(req.Args) == 2 && req.Args[1] == startScript {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"code": "bad_request", "message": string(body)}})
 			return
@@ -659,12 +675,14 @@ func TestListSeesOnlyThisScopesRunners(t *testing.T) {
 	}
 }
 
-// TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap.
+// TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap, by runner id — on a
+// sandbox whose runner has not even been started, since the lease runs from
+// creation and provisioning records a handle only at its end (review of
+// PR #24).
 func TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap(t *testing.T) {
 	backend, fake := newTestBackend(t)
 	spec := testSpec()
-	h, err := backend.Provision(context.Background(), spec)
-	if err != nil {
+	if _, err := backend.create(context.Background(), backend.sandboxName(spec.RunnerID), spec, networkPolicy{Mode: "deny-all"}); err != nil {
 		t.Fatal(err)
 	}
 	name := backend.sandboxName(spec.RunnerID)
@@ -672,7 +690,7 @@ func TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap(t *testing.T) {
 
 	// Three minutes in, the lease has two minutes left: extend by three.
 	backend.now = func() time.Time { return start.Add(3 * time.Minute) }
-	if err := backend.ExtendLease(context.Background(), h); err != nil {
+	if err := backend.ExtendLease(context.Background(), spec.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 	if fake.lastExtend != (3 * time.Minute).Milliseconds() {
@@ -682,7 +700,7 @@ func TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap(t *testing.T) {
 	// Near the 45-minute cap: extend only up to it.
 	backend.now = func() time.Time { return start.Add(42 * time.Minute) }
 	fake.sandboxes[name].timeout = (43 * time.Minute).Milliseconds()
-	if err := backend.ExtendLease(context.Background(), h); err != nil {
+	if err := backend.ExtendLease(context.Background(), spec.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 	if fake.lastExtend != (2*time.Minute).Milliseconds() || fake.sandboxes[name].timeout != (45*time.Minute).Milliseconds() {
@@ -690,13 +708,13 @@ func TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap(t *testing.T) {
 			time.Duration(fake.lastExtend)*time.Millisecond, time.Duration(fake.sandboxes[name].timeout)*time.Millisecond)
 	}
 	extends := fake.extends
-	if err := backend.ExtendLease(context.Background(), h); err != nil || fake.extends != extends {
+	if err := backend.ExtendLease(context.Background(), spec.RunnerID); err != nil || fake.extends != extends {
 		t.Errorf("at the cap: %v, %d extensions; want none", err, fake.extends-extends)
 	}
 
 	// Stopped: nothing to keep alive, and not an error.
 	fake.sandboxes[name].status = "stopped"
-	if err := backend.ExtendLease(context.Background(), h); err != nil || fake.extends != extends {
+	if err := backend.ExtendLease(context.Background(), spec.RunnerID); err != nil || fake.extends != extends {
 		t.Errorf("a stopped sandbox: %v, %d extensions", err, fake.extends-extends)
 	}
 }
@@ -886,5 +904,32 @@ func TestADuplicateStartIsNotTakenForTheRunner(t *testing.T) {
 	found, ok, err := backend.HandleFor(context.Background(), spec.RunnerID)
 	if err != nil || !ok || found != first {
 		t.Errorf("HandleFor = %q, %v, %v; want the real runner %q, not the duplicate", found, ok, err, first)
+	}
+}
+
+// TestALostStartRaceNeverRecordsTheDuplicate is a review finding on PR #24:
+// when another Provision's start wins the marker, this call's start exits 75.
+// If the lookup that follows fails, the first version recorded this call's
+// own command — the duplicate — as the runner, and readiness then read a
+// healthy session as lost. It must fail and let the idempotent retry find the
+// winner.
+func TestALostStartRaceNeverRecordsTheDuplicate(t *testing.T) {
+	backend, fake := newTestBackend(t)
+	fake.concurrentStart, fake.failListAfterStart = true, true
+	spec := testSpec()
+	if h, err := backend.Provision(context.Background(), spec); err == nil {
+		t.Fatalf("provision recorded %q after the lookup failed; want an error", h)
+	}
+
+	// The retry, with the list answering, finds the winner.
+	fake.mu.Lock()
+	fake.failListAfterStart = false
+	fake.mu.Unlock()
+	h, err := backend.Provision(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed, _ := parseHandle(h); parsed.command != "cmd_winner" {
+		t.Errorf("recorded %q as the runner; want the start that holds the marker", parsed.command)
 	}
 }

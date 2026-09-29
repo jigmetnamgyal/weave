@@ -117,6 +117,30 @@ func run() error {
 	}
 	defer temporalClient.Close()
 
+	// Leases on their own ticker, never inside a reconcile pass: a pass's
+	// status reads wait on running commands, and lease renewal must not grow
+	// with them (review of PR #24). Once now, too — a restarted runner
+	// manager's sandboxes may be close to the end of their lease. Started before
+	// startup reconciliation, which reads every runner's status and can be slow.
+	go func() {
+		renew := func() {
+			if _, err := runners.ExtendLeases(ctx); err != nil && ctx.Err() == nil {
+				logger.Warn("lease renewal failed", slog.String("error", err.Error()))
+			}
+		}
+		renew()
+		ticker := time.NewTicker(application.LeaseInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renew()
+			}
+		}
+	}()
+
 	// Before taking work: finish what a previous instance left behind.
 	if cleaned, err := runners.Reconcile(ctx); err != nil {
 		logger.Warn("startup reconciliation failed; will retry", slog.String("error", err.Error()))

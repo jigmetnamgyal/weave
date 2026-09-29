@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -174,11 +175,23 @@ type RunnerBackend interface {
 // its environments stop within one lease — teardown on lost heartbeat, from
 // the provider's side. Optional: the dev backend has no leases.
 type RunnerLeaser interface {
-	// ExtendLease pushes the environment's expiry to a lease from now,
-	// never past the backend's hard cap. An environment already stopped or
-	// gone is not an error: there is nothing left to keep alive.
-	ExtendLease(ctx context.Context, handle string) error
+	// ExtendLease pushes the runner's environment's expiry to a lease from
+	// now, never past the backend's hard cap. **By runner id**, not handle:
+	// the lease starts when the environment is created, before provisioning
+	// has recorded any handle, and must be renewable from then (review of
+	// PR #24). An environment already stopped or gone is not an error: there
+	// is nothing left to keep alive.
+	ExtendLease(ctx context.Context, runnerID uuid.UUID) error
 }
+
+// LeaseInterval is how often ExtendLeases runs. A tenth of the Vercel
+// backend's five-minute lease, so several passes can fail before one lapses.
+const LeaseInterval = 30 * time.Second
+
+// leaseWorkers bounds how many extensions run at once. A pass costs about
+// (live runners / leaseWorkers) × one API round trip: a thousand runners at
+// 100 ms is under 15 seconds, far inside a lease.
+const leaseWorkers = 8
 
 // RunnerToReconcile is a live runner seen across every workspace.
 type RunnerToReconcile struct {
@@ -712,23 +725,9 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 	// of the oldest, so a backlog of healthy old runners hid every newer one
 	// — including ended sessions and lost environments — and a full batch
 	// switched the orphan sweep off for good.
-	var (
-		live     []RunnerToReconcile
-		cursor   ReconcileCursor
-		complete bool
-	)
-	for page := 0; page < reconcileMaxPages; page++ {
-		batch, err := s.runners.ListToReconcile(ctx, ReconcileBatch, cursor)
-		if err != nil {
-			return 0, fmt.Errorf("list live runners: %w", err)
-		}
-		live = append(live, batch...)
-		if len(batch) < ReconcileBatch {
-			complete = true
-			break
-		}
-		last := batch[len(batch)-1].Runner
-		cursor = ReconcileCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	live, complete, err := s.listLive(ctx)
+	if err != nil {
+		return 0, err
 	}
 	cleaned := 0
 	known := make(map[uuid.UUID]bool, len(live))
@@ -771,7 +770,6 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 			// session ending resolves the second through case 1.
 			continue
 		}
-		s.extendLease(ctx, runner)
 		status, err := s.backend.Status(ctx, runner.Handle)
 		if err != nil {
 			continue
@@ -813,27 +811,99 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 	return cleaned, nil
 }
 
-// extendLease keeps a live runner's environment alive for another lease, on
-// a backend that has leases (M5.4b).
+// ExtendLeases keeps every live runner's environment alive for another
+// lease, on a backend that has leases (M5.4b). Run on its own ticker
+// (LeaseInterval), apart from Reconcile.
 //
-// Here, in the reconciler, because it already visits every live runner every
-// pass, and because the property wanted follows for free: a runner manager
-// that is down runs no pass and extends nothing, so its environments stop
-// within one lease. Only a runner that should still be running is extended —
-// provisioning or running, of a session that has not ended (case 1 has
-// already torn those down). A terminating runner's environment is being
-// destroyed on purpose. A failure is logged, never fatal to the pass: one
-// sandbox's API error must not stop the others being reconciled, and a lease
-// has several passes' slack.
-func (s *RunnerService) extendLease(ctx context.Context, runner domain.Runner) {
+// **Apart, because Reconcile is slow by design and a lease is not.** The
+// first version extended each lease inside the reconcile pass, just before
+// that runner's status check — and a status check on Vercel waits up to two
+// seconds on a running command. A pass grew by that for every live runner,
+// the gap between two extensions of the same lease grew with it, and at a
+// hundred and fifty runners one pass outlasted the five-minute lease: healthy
+// sandboxes late in the pass would have stopped (review of PR #24). This pass
+// makes no status calls at all, and extends with bounded concurrency.
+//
+// Which runners: this backend's, provisioning or running, of a session that
+// has not ended. **With or without a handle** — a sandbox's lease starts at
+// its creation, and provisioning records the handle only after uploading,
+// installing and starting the runner, and across retries; a lease left
+// unrenewed through that would stop a sandbox a healthy workflow is still
+// provisioning. Terminating runners are being destroyed on purpose, and a
+// halted runner's environment is already gone.
+//
+// Failures are logged per runner, never fatal: a lease has several passes'
+// slack. It returns how many leases were extended.
+func (s *RunnerService) ExtendLeases(ctx context.Context) (int, error) {
 	leaser, ok := s.backend.(RunnerLeaser)
-	if !ok || (runner.State != domain.RunnerProvisioning && runner.State != domain.RunnerRunning) {
-		return
+	if !ok {
+		return 0, nil
 	}
-	if err := leaser.ExtendLease(ctx, runner.Handle); err != nil {
-		s.logger.WarnContext(ctx, "reconcile: could not extend a runner's lease",
-			slog.String("runner_id", runner.ID.String()), slog.String("error", err.Error()))
+	live, _, err := s.listLive(ctx)
+	if err != nil {
+		return 0, err
 	}
+	due := make(chan domain.Runner)
+	var (
+		mu       sync.Mutex
+		extended int
+		wg       sync.WaitGroup
+	)
+	for range leaseWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for runner := range due {
+				if err := leaser.ExtendLease(ctx, runner.ID); err != nil {
+					s.logger.WarnContext(ctx, "could not extend a runner's lease",
+						slog.String("runner_id", runner.ID.String()), slog.String("error", err.Error()))
+					continue
+				}
+				mu.Lock()
+				extended++
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, item := range live {
+		runner := item.Runner
+		if runner.Backend != s.backend.Name() || item.SessionState.Terminal() ||
+			(runner.State != domain.RunnerProvisioning && runner.State != domain.RunnerRunning) {
+			continue
+		}
+		select {
+		case due <- runner:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	close(due)
+	wg.Wait()
+	return extended, ctx.Err()
+}
+
+// listLive reads every live runner across every workspace, a page at a time,
+// and reports whether the set is complete (false only past reconcileMaxPages).
+func (s *RunnerService) listLive(ctx context.Context) ([]RunnerToReconcile, bool, error) {
+	var (
+		live   []RunnerToReconcile
+		cursor ReconcileCursor
+	)
+	for page := 0; page < reconcileMaxPages; page++ {
+		batch, err := s.runners.ListToReconcile(ctx, ReconcileBatch, cursor)
+		if err != nil {
+			return nil, false, fmt.Errorf("list live runners: %w", err)
+		}
+		live = append(live, batch...)
+		if len(batch) < ReconcileBatch {
+			return live, true, nil
+		}
+		last := batch[len(batch)-1].Runner
+		cursor = ReconcileCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+	return live, false, nil
 }
 
 // RunnerFailure is why a session's runner could not serve it, as a stable
