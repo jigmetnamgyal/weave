@@ -39,6 +39,13 @@ const (
 	// it must — publish its own subject — or did what it must not — publish
 	// another session's. It refuses to become ready rather than fail later.
 	RunnerExitBrokerRefused = 5
+	// RunnerExitProviderFailed: the provider ran and reported failure.
+	RunnerExitProviderFailed = 6
+	// RunnerExitProviderUnavailable: no adapter for the session's provider,
+	// or the adapter refused the model.
+	RunnerExitProviderUnavailable = 7
+	// RunnerExitPublishFailed: an event could not be confirmed by the stream.
+	RunnerExitPublishFailed = 8
 )
 
 // RunnerSpec is everything an environment needs at start. Delivered at start,
@@ -61,6 +68,10 @@ type RunnerSpec struct {
 	// NATS is the runner's own broker credential (M5.5a): publish to its
 	// session's subject only. A secret, delivered like GitToken.
 	NATS RunnerCredentials
+	// Provider and Model select the adapter the runner runs (M5.5b), read
+	// from the session's pinned agent version.
+	Provider domain.Provider
+	Model    string
 }
 
 // RunnerCredentials is a runner's NATS identity.
@@ -180,6 +191,46 @@ type RunnerSessionReader interface {
 	Get(ctx context.Context, sessionID, workspaceID uuid.UUID) (domain.Session, error)
 }
 
+// RunnerAgentReader reads the agent version a session pinned, which says which
+// provider adapter its runner runs.
+type RunnerAgentReader interface {
+	GetVersion(ctx context.Context, versionID, workspaceID uuid.UUID) (domain.AgentVersion, error)
+}
+
+// EventDrain reports how many of a session's events the stream still holds —
+// published and confirmed, not yet stored or quarantined by the ingestor.
+type EventDrain interface {
+	Pending(ctx context.Context, sessionID uuid.UUID) (uint64, error)
+}
+
+// Bounds on a session's run, and the invariant between them and the stream.
+//
+// The drain's proof — "the stream holds nothing for this session, so every
+// event it confirmed was stored or quarantined" — holds only if no event can
+// expire out of the stream before the drain ends: a zero count after the
+// stream's retention would read a deletion as an ingestion. So the whole life
+// of an event in the stream — at most provisioning, the run, and the drain —
+// must sit well inside the stream's maximum age. TestTheDrainCannotOutliveTheStream
+// checks the real constants, so changing any one of them breaks the build
+// rather than the proof.
+const (
+	// SessionMaxRunTime bounds how long a provider may run before the session
+	// is expired. Well inside the runner's twelve-hour broker credential.
+	SessionMaxRunTime = 8 * time.Hour
+	// DrainTimeout bounds how long a finished session waits for its events to
+	// be ingested. Past it the session fails, naming undrained events, rather
+	// than ending as though its history were complete.
+	DrainTimeout = 10 * time.Minute
+)
+
+// ErrEventsNotDrained: the stream still held the session's events when the
+// drain's bound was reached — the ingestor down, or behind. Terminal for the
+// session: its history cannot be vouched for.
+var ErrEventsNotDrained = errors.New("the session's events were not ingested in time")
+
+// ErrRunTimeExceeded: the provider was still running at SessionMaxRunTime.
+var ErrRunTimeExceeded = errors.New("the session's provider ran past its maximum run time")
+
 // RunnerService provisions, watches and destroys session environments.
 type RunnerService struct {
 	runners  RunnerStore
@@ -190,6 +241,8 @@ type RunnerService struct {
 	// broker as runners reach it.
 	nats    RunnerCredentialIssuer
 	natsURL string
+	agents  RunnerAgentReader
+	drain   EventDrain
 	bind    TenantBinder
 	// gitBase is where repositories are cloned from: https://github.com in
 	// production, a local git server in tests.
@@ -205,13 +258,16 @@ func NewRunnerService(
 	creds CloneCredentialMinter,
 	nats RunnerCredentialIssuer,
 	natsURL string,
+	agents RunnerAgentReader,
+	drain EventDrain,
 	bind TenantBinder,
 	gitBase string,
 	logger *slog.Logger,
 ) *RunnerService {
 	return &RunnerService{
 		runners: runners, sessions: sessions, backend: backend, creds: creds,
-		nats: nats, natsURL: natsURL, bind: bind, gitBase: gitBase, logger: logger,
+		nats: nats, natsURL: natsURL, agents: agents, drain: drain,
+		bind: bind, gitBase: gitBase, logger: logger,
 	}
 }
 
@@ -266,6 +322,11 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 		return s.runners.SetHandle(ctx, runner.ID, workspaceID, handle)
 	}
 
+	version, err := s.agents.GetVersion(ctx, session.AgentVersionID, workspaceID)
+	if err != nil {
+		return domain.Runner{}, fmt.Errorf("read the session's agent version: %w", err)
+	}
+
 	creds, err := s.creds.CloneCredentialsAsSystem(ctx, workspaceID, session.RepositoryID)
 	if err != nil {
 		return domain.Runner{}, err
@@ -286,6 +347,8 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 		GitToken:    creds.Token,
 		NATSURL:     s.natsURL,
 		NATS:        natsCreds,
+		Provider:    version.Provider,
+		Model:       version.Model,
 	})
 	if err != nil {
 		return domain.Runner{}, fmt.Errorf("provision runner: %w", err)
@@ -347,6 +410,17 @@ func (s *RunnerService) AwaitReady(
 			return running, err
 		case !status.Exists:
 			return domain.Runner{}, ErrRunnerLost
+		case !status.Running && (status.ExitCode == 0 || status.ExitCode == RunnerExitProviderFailed):
+			// A fast provider can finish before a health check ever reports
+			// healthy. These two exits prove readiness anyway: the runner
+			// starts its provider only after the checkout and the broker
+			// credential are verified, so reaching the provider's end at all
+			// means both checks passed.
+			running, err := s.runners.MarkRunning(ctx, runner.ID, workspaceID)
+			if errors.Is(err, domain.ErrRunnerNotFound) {
+				return runner, nil
+			}
+			return running, err
 		case !status.Running:
 			switch status.ExitCode {
 			case RunnerExitCheckoutMismatch:
@@ -370,6 +444,102 @@ func (s *RunnerService) AwaitReady(
 				return domain.Runner{}, fmt.Errorf("%w: %w", ErrRunnerNotReady, ctx.Err())
 			}
 			return domain.Runner{}, fmt.Errorf("await runner readiness: %w", ctx.Err())
+		case <-time.After(poll):
+		}
+	}
+}
+
+// AwaitExit waits for the session's runner to stop, and returns its exit code.
+//
+// The exit is read from the backend, never from the runner — the control
+// plane's rule since M5.4a. ctx bounds the wait at the session's maximum run
+// time; reaching it is ErrRunTimeExceeded, and a cancellation is returned as
+// is so it stays retryable.
+func (s *RunnerService) AwaitExit(
+	ctx context.Context,
+	workspaceID, sessionID uuid.UUID,
+	poll time.Duration,
+	heartbeat func(),
+) (int, error) {
+	runner, err := s.runners.LiveForSession(ctx, sessionID, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	for {
+		status, err := s.backend.Status(ctx, runner.Handle)
+		if err != nil {
+			return 0, fmt.Errorf("read runner status: %w", err)
+		}
+		if !status.Exists {
+			return 0, ErrRunnerLost
+		}
+		if !status.Running {
+			return status.ExitCode, nil
+		}
+		heartbeat()
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return 0, fmt.Errorf("%w: %w", ErrRunTimeExceeded, ctx.Err())
+			}
+			return 0, fmt.Errorf("await runner exit: %w", ctx.Err())
+		case <-time.After(poll):
+		}
+	}
+}
+
+// Halt stops the session's runner without ending it: marked terminating, and
+// its environment destroyed.
+//
+// Deliberately short of Teardown. A terminating runner's events are still
+// accepted by the ingestor (M5.4a's rule), so anything it published and the
+// stream confirmed is stored during the drain that follows — not quarantined
+// as `runner_not_bound`, which is what would happen if the runner were ended
+// first. The environment is gone either way: ADR-013 keeps no source past the
+// provider's end.
+func (s *RunnerService) Halt(ctx context.Context, workspaceID, sessionID uuid.UUID) error {
+	runner, err := s.runners.LiveForSession(ctx, sessionID, workspaceID)
+	if errors.Is(err, domain.ErrRunnerNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := s.runners.MarkTerminating(ctx, runner.ID, workspaceID); err != nil &&
+		!errors.Is(err, domain.ErrRunnerNotFound) {
+		return fmt.Errorf("mark runner terminating: %w", err)
+	}
+	if err := s.backend.Destroy(ctx, runner.ID, runner.Handle); err != nil {
+		return fmt.Errorf("destroy runner: %w", err)
+	}
+	return nil
+}
+
+// AwaitDrain waits until the stream holds none of the session's events.
+//
+// The count is the stream's, not the runner's: with work-queue retention an
+// unacknowledged message is one the ingestor has not finished with. Zero proves
+// every confirmed event was stored or quarantined — given the runner waited
+// for every PubAck, the ingestor acknowledges only after its write commits,
+// and no event can have expired first (see SessionMaxRunTime).
+//
+// Reaching ctx's deadline is ErrEventsNotDrained.
+func (s *RunnerService) AwaitDrain(ctx context.Context, sessionID uuid.UUID, poll time.Duration, heartbeat func()) error {
+	for {
+		pending, err := s.drain.Pending(ctx, sessionID)
+		if err == nil && pending == 0 {
+			return nil
+		}
+		if err != nil {
+			s.logger.WarnContext(ctx, "drain: could not read the stream", slog.String("error", err.Error()))
+		}
+		heartbeat()
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("%w: %w", ErrEventsNotDrained, ctx.Err())
+			}
+			return fmt.Errorf("await drain: %w", ctx.Err())
 		case <-time.After(poll):
 		}
 	}
@@ -446,9 +616,10 @@ const reconcileMaxPages = 200
 //
 //  1. **The session has ended** but its runner is live — a workflow that
 //     died before tearing down. Torn down.
-//  2. **The environment is gone or stopped** while the runner is recorded
-//     live — lost heartbeat, in the dev backend's terms. Torn down as
-//     failed.
+//  2. **The environment is gone** while the runner is recorded live — lost,
+//     in the dev backend's terms. Torn down as failed. A *stopped*
+//     environment is not lost: since M5.5b it is a finished provider waiting
+//     for the workflow to drain its events.
 //  3. **An environment exists that no live runner names** — the manager
 //     died after the backend created it and before anything recorded
 //     otherwise, or a runner ended with its destroy half-done. Destroyed.
@@ -519,7 +690,13 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 		if err != nil {
 			continue
 		}
-		lost := !status.Exists || (runner.State == domain.RunnerRunning && !status.Running)
+		// Only a *vanished* environment is lost. A stopped one is how a
+		// finished provider looks between its exit and the workflow halting
+		// it (M5.5b); ending it here would have the ingestor refuse the events
+		// still draining as runner_not_bound — the loss the drain exists to
+		// prevent. The workflow always halts and ends it; a session that ends
+		// without that is cleaned up by the first case above.
+		lost := !status.Exists
 		if runner.State == domain.RunnerTerminating || lost {
 			reason := "the runner's environment stopped"
 			failed := true
@@ -559,12 +736,15 @@ type RunnerFailure string
 
 // The runner causes a session can fail with.
 const (
-	RunnerFailureUnavailable      RunnerFailure = "runner_unavailable"
-	RunnerFailureLost             RunnerFailure = "runner_lost"
-	RunnerFailureNotReady         RunnerFailure = "runner_not_ready"
-	RunnerFailureCheckoutMismatch RunnerFailure = "checkout_mismatch"
-	RunnerFailureNoBranch         RunnerFailure = "no_branch"
-	RunnerFailureBrokerRefused    RunnerFailure = "broker_refused"
+	RunnerFailureUnavailable         RunnerFailure = "runner_unavailable"
+	RunnerFailureLost                RunnerFailure = "runner_lost"
+	RunnerFailureNotReady            RunnerFailure = "runner_not_ready"
+	RunnerFailureCheckoutMismatch    RunnerFailure = "checkout_mismatch"
+	RunnerFailureNoBranch            RunnerFailure = "no_branch"
+	RunnerFailureBrokerRefused       RunnerFailure = "broker_refused"
+	RunnerFailureProviderUnavailable RunnerFailure = "provider_unavailable"
+	RunnerFailureEventsUnconfirmed   RunnerFailure = "events_unconfirmed"
+	RunnerFailureEventsNotDrained    RunnerFailure = "events_not_drained"
 	// RunnerFailureNoProvider is how every session ends until M5.5: the
 	// runner came up with a verified checkout, and there is no provider
 	// adapter to run in it yet.
@@ -606,6 +786,12 @@ func SessionFailureReason(cause string) string {
 		return "the session has no recorded branch commit to check out"
 	case RunnerFailureBrokerRefused:
 		return "the session's runner could not confirm its event broker credential"
+	case RunnerFailureProviderUnavailable:
+		return "the session's runner has no adapter for its agent's provider or model"
+	case RunnerFailureEventsUnconfirmed:
+		return "the session's runner could not get its events confirmed by the event stream"
+	case RunnerFailureEventsNotDrained:
+		return "the session's events were not ingested in time, so its history cannot be vouched for"
 	case RunnerFailureNoProvider:
 		return "the runner is ready with a verified checkout, but no provider adapter exists yet to run this session"
 	}

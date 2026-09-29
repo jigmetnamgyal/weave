@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.5a merged; M5.5b (the fake provider) next; M4.3's browser walk still outstanding
+- Status: M5.5b in progress; M4.3's browser walk still outstanding
 
 ## Current Goal
 
@@ -56,7 +56,9 @@ Make a session actually run: drain the outbox, start a durable workflow, cut a b
 
 ## In Progress
 
-Nothing in progress. M5.5a merged as 95f783b (PR #20) after three review rounds; its decisions are under Session Notes and ADR-014. M5.4a merged as 33d065a (PR #19) after two review rounds and fourteen findings; its decisions are under Session Notes, and the gates it hands to M5.4b, M5.5 and M6 are under Open Questions. M5.3 merged as e334249 (PR #18) after two review rounds; its five decisions are under Session Notes, and the runner-binding gate it hands to M5.4 is under Open Questions. M5.2 merged as 29bbba1 (PR #17) after two review rounds; the four decisions it was required to record are under Session Notes and the review rounds are in the Verification Record. M5.1 merged as aa59c70 (PR #16); the five decisions it was required to record are in the Verification Record below. M4.3's signed-in browser walk is still outstanding and still needs a GitHub sign-in only the operator can perform — and M3.0's verification has never been recorded either, which the same session would close.
+**Unit M5.5b — The fake provider** (`context/features-specs/19-fake-provider.md`): the runner-side `CodingAgent` contract with a deterministic fake, events flowing from a runner into history for the first time, and sessions ending on their own.
+
+M5.5a merged as 95f783b (PR #20) after three review rounds; its decisions are under Session Notes and ADR-014. M5.4a merged as 33d065a (PR #19) after two review rounds and fourteen findings; its decisions are under Session Notes, and the gates it hands to M5.4b, M5.5 and M6 are under Open Questions. M5.3 merged as e334249 (PR #18) after two review rounds; its five decisions are under Session Notes, and the runner-binding gate it hands to M5.4 is under Open Questions. M5.2 merged as 29bbba1 (PR #17) after two review rounds; the four decisions it was required to record are under Session Notes and the review rounds are in the Verification Record. M5.1 merged as aa59c70 (PR #16); the five decisions it was required to record are in the Verification Record below. M4.3's signed-in browser walk is still outstanding and still needs a GitHub sign-in only the operator can perform — and M3.0's verification has never been recorded either, which the same session would close.
 
 ## Next Up
 

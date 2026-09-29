@@ -46,6 +46,11 @@ type Config struct {
 	// RunnerNATSURL is the broker as a runner reaches it — from inside a
 	// container, not from this host.
 	RunnerNATSURL string
+	// NATSURL and NATSCreds are this process's own connection (M5.5b), used
+	// only for the drain check: its identity may read the event stream's
+	// information and nothing else (ADR-014).
+	NATSURL   string
+	NATSCreds string
 }
 
 // Load reads the environment, reporting every missing value at once.
@@ -84,6 +89,13 @@ func Load() (Config, error) {
 		}
 	}
 	cfg.RunnerNATSURL = get("RUNNER_NATS_URL", runnerReachable(get("NATS_URL", "")))
+	cfg.NATSURL = get("NATS_URL", "")
+	if cfg.AppEnv != "" {
+		if cfg.NATSCreds, err = natsauth.ResolvePath(cfg.AppEnv, get("RUNNER_MANAGER_NATS_CREDS", ""),
+			string(natsauth.IdentityRunnerManager)+".creds"); err != nil {
+			return Config{}, fmt.Errorf("RUNNER_MANAGER_NATS_CREDS: %w", err)
+		}
+	}
 
 	var missing []string
 	for key, value := range map[string]string{
@@ -91,6 +103,7 @@ func Load() (Config, error) {
 		"REDIS_URL": cfg.RedisURL, "GITHUB_APP_ID": cfg.GitHubAppID,
 		"GITHUB_APP_PRIVATE_KEY_PATH":   cfg.GitHubAppPrivateKeyPath,
 		"RUNNER_NATS_URL (or NATS_URL)": cfg.RunnerNATSURL,
+		"NATS_URL":                      cfg.NATSURL,
 	} {
 		if value == "" {
 			missing = append(missing, key)

@@ -133,3 +133,111 @@ func classifyRunnerError(err error) error {
 func (a *SessionActivities) MarkRunning(ctx context.Context, input SessionWorkflowInput) error {
 	return a.transition(ctx, input, domain.SessionRunning, "the session's runner is ready with a verified checkout")
 }
+
+// Activity names for the provider's run (M5.5b). The first three run in the
+// runner manager, which holds the backend and the drain; CompleteSession runs
+// in the workflow worker, which holds the session.
+const (
+	ActivityAwaitRunnerExit   = "AwaitRunnerExit"
+	ActivityHaltRunner        = "HaltRunner"
+	ActivityDrainRunnerEvents = "DrainRunnerEvents"
+	ActivityCompleteSession   = "CompleteSession"
+)
+
+// RunnerExit is how the runner's run ended, as the backend reported it.
+type RunnerExit struct {
+	ExitCode int  `json:"exit_code"`
+	Expired  bool `json:"expired"`
+}
+
+// DrainResult says whether the session's events were all ingested in time.
+type DrainResult struct {
+	Drained bool `json:"drained"`
+}
+
+// CompleteInput is everything the workflow observed about the run.
+type CompleteInput struct {
+	WorkspaceID string `json:"workspace_id"`
+	SessionID   string `json:"session_id"`
+	ExitCode    int    `json:"exit_code"`
+	Expired     bool   `json:"expired"`
+	Undrained   bool   `json:"undrained"`
+}
+
+// runnerLostExit stands for "the runner could not be observed to exit".
+const runnerLostExit = -1
+
+// AwaitRunnerExit waits for the runner to stop, bounded by the session's
+// maximum run time, heartbeating as it waits. Reaching the bound is an
+// outcome — the session expires — not an activity failure.
+func (a *RunnerActivities) AwaitRunnerExit(ctx context.Context, input SessionWorkflowInput) (RunnerExit, error) {
+	workspaceID, sessionID, err := parseIdentifiers(input)
+	if err != nil {
+		return RunnerExit{}, err
+	}
+	runCtx, cancel := context.WithTimeout(postgresTenant(ctx, workspaceID), application.SessionMaxRunTime)
+	defer cancel()
+	code, err := a.runners.AwaitExit(runCtx, workspaceID, sessionID, time.Second,
+		func() { activity.RecordHeartbeat(ctx) })
+	switch {
+	case err == nil:
+		return RunnerExit{ExitCode: code}, nil
+	case errors.Is(err, application.ErrRunTimeExceeded):
+		return RunnerExit{Expired: true}, nil
+	case errors.Is(err, application.ErrRunnerLost), errors.Is(err, domain.ErrRunnerNotFound):
+		return RunnerExit{ExitCode: runnerLostExit}, nil
+	default:
+		return RunnerExit{}, err
+	}
+}
+
+// HaltRunner stops the runner without ending it, so its last events are still
+// accepted while they drain. Idempotent.
+func (a *RunnerActivities) HaltRunner(ctx context.Context, input SessionWorkflowInput) error {
+	workspaceID, sessionID, err := parseIdentifiers(input)
+	if err != nil {
+		return err
+	}
+	return a.runners.Halt(postgresTenant(ctx, workspaceID), workspaceID, sessionID)
+}
+
+// DrainRunnerEvents waits, bounded, until the stream holds none of the
+// session's events. Reaching the bound is an outcome, not an activity failure.
+func (a *RunnerActivities) DrainRunnerEvents(ctx context.Context, input SessionWorkflowInput) (DrainResult, error) {
+	_, sessionID, err := parseIdentifiers(input)
+	if err != nil {
+		return DrainResult{}, err
+	}
+	drainCtx, cancel := context.WithTimeout(ctx, application.DrainTimeout)
+	defer cancel()
+	err = a.runners.AwaitDrain(drainCtx, sessionID, 500*time.Millisecond, func() { activity.RecordHeartbeat(ctx) })
+	switch {
+	case err == nil:
+		return DrainResult{Drained: true}, nil
+	case errors.Is(err, application.ErrEventsNotDrained):
+		return DrainResult{Drained: false}, nil
+	default:
+		return DrainResult{}, err
+	}
+}
+
+// CompleteSession ends the session as its run leaves it. Runs in the workflow
+// worker, after the drain.
+func (a *SessionActivities) CompleteSession(ctx context.Context, input CompleteInput) error {
+	workspaceID, sessionID, err := parseIdentifiers(SessionWorkflowInput{
+		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = a.outcomes.Complete(postgresTenant(ctx, workspaceID), workspaceID, sessionID, application.RunOutcome{
+		ExitCode: input.ExitCode, Expired: input.Expired, Undrained: input.Undrained,
+	})
+	if errors.Is(err, application.ErrSessionNotFound) {
+		return temporal.NewNonRetryableApplicationError("the session no longer exists", ErrorTypeNotFound, err)
+	}
+	if errors.Is(err, domain.ErrTransitionNotAllowed) {
+		return temporal.NewNonRetryableApplicationError("the session cannot end this way", ErrorTypeTransitionNotAllowed, err)
+	}
+	return err
+}

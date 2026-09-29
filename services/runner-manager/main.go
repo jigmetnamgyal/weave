@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/activity"
 	temporalclient "go.temporal.io/sdk/client"
@@ -91,8 +93,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Its own broker connection, under an identity that may read the event
+	// stream's information and nothing else — what the drain needs.
+	natsConn, err := nats.Connect(cfg.NATSURL, nats.Name("weave-runner-manager"),
+		nats.UserCredentials(cfg.NATSCreds), nats.MaxReconnects(-1), nats.ReconnectWait(time.Second))
+	if err != nil {
+		return fmt.Errorf("connect to nats: %w", err)
+	}
+	defer natsConn.Close()
+	js, err := jetstream.New(natsConn)
+	if err != nil {
+		return fmt.Errorf("open jetstream: %w", err)
+	}
+	drain := eventstream.NewDrain(js, eventstream.DefaultConfig(), eventstream.StreamMaxAge)
+
 	runners := application.NewRunnerService(postgres.NewRunnerStore(appPool), postgres.NewSessionStore(appPool),
-		backend, installations, issuer, cfg.RunnerNATSURL, postgres.WithTenantWorkspace, cfg.GitBaseURL, logger)
+		backend, installations, issuer, cfg.RunnerNATSURL, postgres.NewAgentStore(appPool), drain,
+		postgres.WithTenantWorkspace, cfg.GitBaseURL, logger)
 
 	temporalClient, err := temporalclient.Dial(temporalclient.Options{HostPort: cfg.TemporalHostPort, Logger: logger})
 	if err != nil {
@@ -114,6 +131,12 @@ func run() error {
 		activity.RegisterOptions{Name: weavetemporal.ActivityProvisionRunner})
 	w.RegisterActivityWithOptions(activities.TeardownRunner,
 		activity.RegisterOptions{Name: weavetemporal.ActivityTeardownRunner})
+	w.RegisterActivityWithOptions(activities.AwaitRunnerExit,
+		activity.RegisterOptions{Name: weavetemporal.ActivityAwaitRunnerExit})
+	w.RegisterActivityWithOptions(activities.HaltRunner,
+		activity.RegisterOptions{Name: weavetemporal.ActivityHaltRunner})
+	w.RegisterActivityWithOptions(activities.DrainRunnerEvents,
+		activity.RegisterOptions{Name: weavetemporal.ActivityDrainRunnerEvents})
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("start runner worker: %w", err)
 	}

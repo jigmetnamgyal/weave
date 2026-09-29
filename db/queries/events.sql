@@ -69,3 +69,13 @@ SELECT EXISTS (
     SELECT 1 FROM session_events
     WHERE session_id = $1 AND runner_id = $2 AND event_id = $3
 );
+
+-- name: SessionProviderFailure :one
+-- The first provider.failed a session's history holds, if any. Read after the
+-- drain, so the history is complete. The code is a validated stable identifier
+-- (domain.DecodeEvent); the provider's message text is never read here.
+SELECT (payload->>'code')::text AS code
+FROM session_events
+WHERE session_id = $1 AND workspace_id = $2 AND type = 'provider.failed'
+ORDER BY sequence
+LIMIT 1;

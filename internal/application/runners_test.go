@@ -19,6 +19,7 @@ import (
 // runnerWorld is RunnerService over a fake backend and store that record
 // every call, in order — the orderings are part of what is being tested.
 type runnerWorld struct {
+	drain   *fakeDrain
 	calls   []string
 	backend *fakeBackend
 	store   *fakeRunnerStore
@@ -35,8 +36,9 @@ func newRunnerTestWorld(t *testing.T) *runnerWorld {
 	}
 	w.backend = &fakeBackend{w: w, envs: map[string]application.RunnerStatus{}}
 	w.store = &fakeRunnerStore{w: w, runners: map[uuid.UUID]domain.Runner{}}
+	w.drain = &fakeDrain{}
 	w.service = application.NewRunnerService(w.store, fakeSessionReader{w}, w.backend, fakeMinter{},
-		fakeBrokerIssuer{}, "nats://broker.test:4222",
+		fakeBrokerIssuer{}, "nats://broker.test:4222", fakeAgents{}, w.drain,
 		func(ctx context.Context, _ uuid.UUID) context.Context { return ctx }, "https://github.test",
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return w
@@ -194,6 +196,28 @@ func (f fakeSessionReader) Get(_ context.Context, id, workspace uuid.UUID) (doma
 		return domain.Session{}, application.ErrSessionNotFound
 	}
 	return f.w.session, nil
+}
+
+type fakeAgents struct{}
+
+func (fakeAgents) GetVersion(context.Context, uuid.UUID, uuid.UUID) (domain.AgentVersion, error) {
+	return domain.AgentVersion{Provider: domain.ProviderFake, Model: "deterministic-v1"}, nil
+}
+
+// fakeDrain reports a pending count that falls to zero after a set number of
+// reads, or never.
+type fakeDrain struct {
+	pendingReads int
+	never        bool
+	reads        int
+}
+
+func (d *fakeDrain) Pending(context.Context, uuid.UUID) (uint64, error) {
+	d.reads++
+	if d.never || d.reads <= d.pendingReads {
+		return 3, nil
+	}
+	return 0, nil
 }
 
 type fakeBrokerIssuer struct{}
@@ -384,5 +408,91 @@ func TestAForeignRowDoesNotShieldOurEnvironment(t *testing.T) {
 	}
 	if !w.store.runners[id].State.Live() {
 		t.Error("the foreign backend's row was judged by this backend")
+	}
+}
+
+// TestAFastProviderIsNotMistakenForALostRunner: the fake finishes in
+// milliseconds, before a health check reports healthy. Its exit proves it was
+// ready — the runner starts the provider only after both verifications — so
+// readiness must read it as ready, not lost.
+func TestAFastProviderIsNotMistakenForALostRunner(t *testing.T) {
+	for _, code := range []int{0, application.RunnerExitProviderFailed} {
+		w := newRunnerTestWorld(t)
+		runner, _ := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+		w.backend.envs[runner.Handle] = application.RunnerStatus{Exists: true, Running: false, ExitCode: code}
+		got, err := w.service.AwaitReady(context.Background(), w.session.WorkspaceID, runner, time.Millisecond, func() {})
+		if err != nil || got.State != domain.RunnerRunning {
+			t.Errorf("exit %d before readiness was observed = (%v, %v), want running", code, got.State, err)
+		}
+	}
+	// Any other early exit is still lost.
+	w := newRunnerTestWorld(t)
+	runner, _ := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+	w.backend.envs[runner.Handle] = application.RunnerStatus{Exists: true, ExitCode: application.RunnerExitCloneFailed}
+	if _, err := w.service.AwaitReady(context.Background(), w.session.WorkspaceID, runner, time.Millisecond, func() {}); !errors.Is(err, application.ErrRunnerLost) {
+		t.Errorf("a clone failure = %v, want lost", err)
+	}
+}
+
+func TestTheSpecPassesTheAgentsProviderAndModel(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	if _, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if w.backend.lastSpec.Provider != domain.ProviderFake || w.backend.lastSpec.Model != "deterministic-v1" {
+		t.Errorf("spec = %s/%s, want the pinned agent version's", w.backend.lastSpec.Provider, w.backend.lastSpec.Model)
+	}
+}
+
+func TestTheDrainWaitsForZeroAndGivesUpAtItsBound(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	w.drain.pendingReads = 3
+	if err := w.service.AwaitDrain(context.Background(), w.session.ID, time.Millisecond, func() {}); err != nil {
+		t.Errorf("drain = %v, want success once the count reached zero", err)
+	}
+	if w.drain.reads < 4 {
+		t.Errorf("read %d times, want it to wait for zero", w.drain.reads)
+	}
+
+	w.drain.never = true
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := w.service.AwaitDrain(ctx, w.session.ID, time.Millisecond, func() {}); !errors.Is(err, application.ErrEventsNotDrained) {
+		t.Errorf("drain at its bound = %v, want ErrEventsNotDrained", err)
+	}
+}
+
+// TestHaltKeepsTheRunnerLive: halted is terminating, not ended, so the events
+// still draining are accepted rather than refused as runner_not_bound.
+func TestHaltKeepsTheRunnerLive(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	runner, _ := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+	if err := w.service.Halt(context.Background(), w.session.WorkspaceID, w.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.store.runners[runner.ID].State; got != domain.RunnerTerminating {
+		t.Errorf("halted runner = %s, want terminating", got)
+	}
+	if _, exists := w.backend.envs[runner.Handle]; exists {
+		t.Error("halt left the environment standing")
+	}
+}
+
+// TestAStoppedRunnerIsTheWorkflowsNotTheReconcilers: a finished provider's
+// container is stopped between its exit and the workflow halting it. Ending
+// it then would have its draining events refused as runner_not_bound. Only a
+// vanished environment is lost.
+func TestAStoppedRunnerIsTheWorkflowsNotTheReconcilers(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	w.session.State = domain.SessionRunning
+	runner, _ := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+	w.store.runners[runner.ID] = func() domain.Runner { r := w.store.runners[runner.ID]; r.State = domain.RunnerRunning; return r }()
+	w.backend.envs[runner.Handle] = application.RunnerStatus{Exists: true, Running: false, ExitCode: 0}
+
+	if _, err := w.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.store.runners[runner.ID].State; got != domain.RunnerRunning {
+		t.Errorf("a stopped runner of a running session was reconciled to %s; it is the workflow's to end", got)
 	}
 }

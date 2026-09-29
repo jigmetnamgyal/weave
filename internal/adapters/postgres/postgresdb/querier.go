@@ -314,6 +314,10 @@ type Querier interface {
 	// Whether an event is already stored, for a terminal session: a redelivery of
 	// an event stored before the session ended is a duplicate, not a refusal.
 	SessionEventExists(ctx context.Context, arg SessionEventExistsParams) (bool, error)
+	// The first provider.failed a session's history holds, if any. Read after the
+	// drain, so the history is complete. The code is a validated stable identifier
+	// (domain.DecodeEvent); the provider's message text is never read here.
+	SessionProviderFailure(ctx context.Context, arg SessionProviderFailureParams) (string, error)
 	// The session's state, read inside the append transaction **after** the
 	// counter row is locked — never under a lock on the session row itself.
 	//

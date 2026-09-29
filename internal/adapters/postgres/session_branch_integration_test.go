@@ -30,7 +30,8 @@ func TestTheWorkflowCutsTheSessionBranchIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	waitForState(t, h.pool, fixture.ctx, session.ID, fixture.workspace.ID, "failed")
+	// Since M5.5b a granted session runs the fake provider to review_ready.
+	waitForState(t, h.pool, fixture.ctx, session.ID, fixture.workspace.ID, "review_ready")
 
 	if got := h.github.created(session.BranchName); got != 1 {
 		t.Errorf("GitHub created %s %d times, want 1", session.BranchName, got)
@@ -44,11 +45,10 @@ func TestTheWorkflowCutsTheSessionBranchIntegration(t *testing.T) {
 		t.Errorf("recorded branch SHA = %q, want the base commit %q", after.BranchSHA, h.commit)
 	}
 
-	// It still fails — since M5.4a, because there is no provider — and says
-	// so, rather than blaming the branch that was in fact made.
+	// It ends where the provider leaves it — since M5.5b, ready for review.
 	reason := lastReason(t, h.pool, session.ID)
-	if !strings.Contains(reason, "no provider adapter") {
-		t.Errorf("final reason = %q, want the missing provider named", reason)
+	if !strings.Contains(reason, "fake provider finished") {
+		t.Errorf("final reason = %q, want the fake provider's finish named", reason)
 	}
 
 	// The creation is audited, and attributed to nobody.
@@ -109,7 +109,7 @@ func branchActivities(t *testing.T, appPool *pgxpool.Pool, github *fakeGitHubSer
 	store := postgres.NewSessionStore(appPool)
 	sessions := application.NewSessionService(store, postgres.NewTaskStore(appPool), postgres.NewAgentStore(appPool))
 	return weavetemporal.NewSessionActivities(sessions,
-		application.NewSessionBranchService(store, installationServiceFor(t, appPool, github)))
+		application.NewSessionBranchService(store, installationServiceFor(t, appPool, github)), nil)
 }
 
 // provisioningSession creates a session and moves it to provisioning, as the
