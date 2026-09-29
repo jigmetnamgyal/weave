@@ -7,6 +7,8 @@
 package config
 
 import (
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
+
 	"fmt"
 	"os"
 	"strings"
@@ -35,6 +37,15 @@ type Config struct {
 	// RunnerScope labels this manager's runners, so two managers — a
 	// developer's and a test's — never reconcile each other's away.
 	RunnerScope string
+
+	// NATSSigningKey and NATSAccount mint each runner's broker credential
+	// (M5.5a, ADR-014). The signing key is a secret, read from a path; this
+	// is the only process that holds one.
+	NATSSigningKey string
+	NATSAccount    string
+	// RunnerNATSURL is the broker as a runner reaches it — from inside a
+	// container, not from this host.
+	RunnerNATSURL string
 }
 
 // Load reads the environment, reporting every missing value at once.
@@ -63,11 +74,23 @@ func Load() (Config, error) {
 		RunnerScope:             get("RUNNER_SCOPE", "dev"),
 	}
 
+	var err error
+	if cfg.AppEnv != "" {
+		if cfg.NATSSigningKey, err = natsauth.ResolvePath(cfg.AppEnv, get("RUNNER_NATS_SIGNING_KEY", ""), natsauth.RunnerSigningFile); err != nil {
+			return Config{}, fmt.Errorf("RUNNER_NATS_SIGNING_KEY: %w", err)
+		}
+		if cfg.NATSAccount, err = natsauth.ResolvePath(cfg.AppEnv, get("RUNNER_NATS_ACCOUNT", ""), natsauth.AccountPublicFile); err != nil {
+			return Config{}, fmt.Errorf("RUNNER_NATS_ACCOUNT: %w", err)
+		}
+	}
+	cfg.RunnerNATSURL = get("RUNNER_NATS_URL", runnerReachable(get("NATS_URL", "")))
+
 	var missing []string
 	for key, value := range map[string]string{
 		"APP_ENV": cfg.AppEnv, "APP_DATABASE_URL": cfg.AppDatabaseURL, "TEMPORAL_HOST_PORT": cfg.TemporalHostPort,
 		"REDIS_URL": cfg.RedisURL, "GITHUB_APP_ID": cfg.GitHubAppID,
-		"GITHUB_APP_PRIVATE_KEY_PATH": cfg.GitHubAppPrivateKeyPath,
+		"GITHUB_APP_PRIVATE_KEY_PATH":   cfg.GitHubAppPrivateKeyPath,
+		"RUNNER_NATS_URL (or NATS_URL)": cfg.RunnerNATSURL,
 	} {
 		if value == "" {
 			missing = append(missing, key)
@@ -77,4 +100,22 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
 	}
 	return cfg, nil
+}
+
+// runnerReachable turns the host's NATS URL into one a local container can
+// reach: a runner's "localhost" is its own sandbox, not the host.
+//
+// host.docker.internal reaches the host's loopback on Docker Desktop (macOS,
+// Windows). On Linux it is the bridge gateway, which a loopback-published
+// port does not answer; there RUNNER_NATS_URL must be set explicitly, with
+// NATS published on the bridge — see .env.example. A runner that cannot reach
+// the broker does not become ready (broker_refused), so the misconfiguration
+// is loud rather than silent.
+func runnerReachable(hostURL string) string {
+	for _, local := range []string{"localhost", "127.0.0.1"} {
+		if strings.Contains(hostURL, "://"+local+":") {
+			return strings.Replace(hostURL, "://"+local+":", "://host.docker.internal:", 1)
+		}
+	}
+	return hostURL
 }

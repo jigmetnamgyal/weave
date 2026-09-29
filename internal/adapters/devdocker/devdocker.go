@@ -169,6 +169,10 @@ func (b *Backend) Provision(ctx context.Context, spec application.RunnerSpec) (s
 			"WEAVE_BRANCH=" + spec.Branch,
 			"WEAVE_COMMIT=" + spec.Commit,
 			"WEAVE_GIT_TOKEN=" + spec.GitToken,
+			"WEAVE_NATS_URL=" + spec.NATSURL,
+			"WEAVE_NATS_CREDS=" + spec.NATS.Creds,
+			"WEAVE_EVENT_SUBJECT=" + spec.NATS.Subject,
+			"WEAVE_NATS_INBOX=" + spec.NATS.InboxPrefix,
 			"HOME=/tmp",
 		},
 		// Readiness is the runner's own check that its checkout completed.

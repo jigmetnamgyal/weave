@@ -62,12 +62,31 @@ services:
     image: nats:2.10.24-alpine
     restart: unless-stopped
     # -js enables JetStream; -m exposes the monitoring endpoint used below.
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    # -c loads the generated operator configuration (M5.5a, ADR-014), which
+    # turns authentication on: an unauthenticated connection is refused. The
+    # file holds public JWTs only; the seeds stay on the host. `make up`
+    # generates it with services/nats-setup when it is missing.
+    #
+    # -sd points at a storage directory of its own for operator mode. A volume
+    # from before M5.5a holds a stream created in the unauthenticated default
+    # account ($G), which does not exist in operator mode: NATS cannot recover
+    # it and reports unhealthy, so an upgraded stack would not start. A fresh
+    # directory starts clean without anyone deleting a volume. What is left in
+    # /data/jetstream is un-ingested development events only — the session
+    # history lives in PostgreSQL — and is ignored, not destroyed.
+    command: ["-js", "-sd", "/data/operator", "-m", "8222", "-c", "/etc/nats/weave.conf"]
     ports:
-      - "127.0.0.1:${NATS_PORT:-54222}:4222"
+      # Bound to loopback by default. Runner containers reach it through
+      # host.docker.internal, which Docker Desktop (macOS, Windows) routes to
+      # the host's loopback. On Linux it resolves to the bridge gateway
+      # instead, which a loopback-only port does not answer — set NATS_BIND
+      # to the bridge address (typically 172.17.0.1) and RUNNER_NATS_URL to
+      # match. See .env.example.
+      - "${NATS_BIND:-127.0.0.1}:${NATS_PORT:-54222}:4222"
       - "127.0.0.1:${NATS_MONITORING_PORT:-58222}:8222"
     volumes:
       - nats-data:/data
+      - ./nats/generated/server.conf:/etc/nats/weave.conf:ro
     healthcheck:
       # The monitoring endpoint enabled by -m above; /healthz reports readiness
       # including JetStream. The image has no curl, but busybox wget is present.

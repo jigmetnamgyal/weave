@@ -61,6 +61,7 @@ func run() error {
 	// to connect at startup is fatal.
 	conn, err := nats.Connect(cfg.NATSURL,
 		nats.Name("weave-ingestor"),
+		nats.UserCredentials(cfg.NATSCreds),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(time.Second),
 	)

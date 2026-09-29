@@ -23,6 +23,9 @@ var (
 	// ErrRunnerCheckoutMismatch: the checkout was not at the recorded commit.
 	// The runner refuses to proceed rather than work on unknown code.
 	ErrRunnerCheckoutMismatch = errors.New("the runner's checkout is not at the session's recorded commit")
+	// ErrRunnerBrokerRefused: the runner's broker credential failed its own
+	// check at start.
+	ErrRunnerBrokerRefused = errors.New("the runner's event broker credential did not work as scoped")
 	// ErrRunnerNotReady: readiness did not arrive within the allowed time.
 	ErrRunnerNotReady = errors.New("the runner did not become ready in time")
 )
@@ -32,6 +35,10 @@ var (
 const (
 	RunnerExitCloneFailed      = 2
 	RunnerExitCheckoutMismatch = 3
+	// RunnerExitBrokerRefused: the runner's broker credential did not do what
+	// it must — publish its own subject — or did what it must not — publish
+	// another session's. It refuses to become ready rather than fail later.
+	RunnerExitBrokerRefused = 5
 )
 
 // RunnerSpec is everything an environment needs at start. Delivered at start,
@@ -49,6 +56,28 @@ type RunnerSpec struct {
 	// GitToken is a short-lived installation token scoped to this one
 	// repository with contents:read. Never logged, never persisted.
 	GitToken string
+	// NATSURL is the event broker as the runner reaches it.
+	NATSURL string
+	// NATS is the runner's own broker credential (M5.5a): publish to its
+	// session's subject only. A secret, delivered like GitToken.
+	NATS RunnerCredentials
+}
+
+// RunnerCredentials is a runner's NATS identity.
+type RunnerCredentials struct {
+	// Creds is the decorated JWT and seed, in the form NATS clients read. A
+	// secret: never logged, never persisted.
+	Creds string
+	// Subject is the one subject it may publish to.
+	Subject string
+	// InboxPrefix is the one reply inbox it may subscribe under.
+	InboxPrefix string
+	ExpiresAt   time.Time
+}
+
+// RunnerCredentialIssuer mints a runner's NATS credential at provisioning.
+type RunnerCredentialIssuer interface {
+	IssueRunner(runnerID, sessionID uuid.UUID) (RunnerCredentials, error)
 }
 
 // RunnerStatus is what a backend reports about an environment.
@@ -157,7 +186,11 @@ type RunnerService struct {
 	sessions RunnerSessionReader
 	backend  RunnerBackend
 	creds    CloneCredentialMinter
-	bind     TenantBinder
+	// nats issues each runner its broker credential, and natsURL is the
+	// broker as runners reach it.
+	nats    RunnerCredentialIssuer
+	natsURL string
+	bind    TenantBinder
 	// gitBase is where repositories are cloned from: https://github.com in
 	// production, a local git server in tests.
 	gitBase string
@@ -170,13 +203,15 @@ func NewRunnerService(
 	sessions RunnerSessionReader,
 	backend RunnerBackend,
 	creds CloneCredentialMinter,
+	nats RunnerCredentialIssuer,
+	natsURL string,
 	bind TenantBinder,
 	gitBase string,
 	logger *slog.Logger,
 ) *RunnerService {
 	return &RunnerService{
 		runners: runners, sessions: sessions, backend: backend, creds: creds,
-		bind: bind, gitBase: gitBase, logger: logger,
+		nats: nats, natsURL: natsURL, bind: bind, gitBase: gitBase, logger: logger,
 	}
 }
 
@@ -235,6 +270,12 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 	if err != nil {
 		return domain.Runner{}, err
 	}
+	// Minted per runner, at the moment it is needed, and never stored: the
+	// runner holds the only copy, and it expires on its own (ADR-014).
+	natsCreds, err := s.nats.IssueRunner(runner.ID, sessionID)
+	if err != nil {
+		return domain.Runner{}, fmt.Errorf("issue runner broker credential: %w", err)
+	}
 	handle, err := s.backend.Provision(ctx, RunnerSpec{
 		RunnerID:    runner.ID,
 		SessionID:   sessionID,
@@ -243,6 +284,8 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 		Branch:      session.BranchName,
 		Commit:      session.BranchSHA,
 		GitToken:    creds.Token,
+		NATSURL:     s.natsURL,
+		NATS:        natsCreds,
 	})
 	if err != nil {
 		return domain.Runner{}, fmt.Errorf("provision runner: %w", err)
@@ -305,8 +348,11 @@ func (s *RunnerService) AwaitReady(
 		case !status.Exists:
 			return domain.Runner{}, ErrRunnerLost
 		case !status.Running:
-			if status.ExitCode == RunnerExitCheckoutMismatch {
+			switch status.ExitCode {
+			case RunnerExitCheckoutMismatch:
 				return domain.Runner{}, ErrRunnerCheckoutMismatch
+			case RunnerExitBrokerRefused:
+				return domain.Runner{}, ErrRunnerBrokerRefused
 			}
 			return domain.Runner{}, fmt.Errorf("%w: exit code %d", ErrRunnerLost, status.ExitCode)
 		}
@@ -518,6 +564,7 @@ const (
 	RunnerFailureNotReady         RunnerFailure = "runner_not_ready"
 	RunnerFailureCheckoutMismatch RunnerFailure = "checkout_mismatch"
 	RunnerFailureNoBranch         RunnerFailure = "no_branch"
+	RunnerFailureBrokerRefused    RunnerFailure = "broker_refused"
 	// RunnerFailureNoProvider is how every session ends until M5.5: the
 	// runner came up with a verified checkout, and there is no provider
 	// adapter to run in it yet.
@@ -536,6 +583,8 @@ func ClassifyRunnerFailure(err error) (RunnerFailure, bool) {
 		return RunnerFailureNotReady, true
 	case errors.Is(err, ErrRunnerNoBranch):
 		return RunnerFailureNoBranch, true
+	case errors.Is(err, ErrRunnerBrokerRefused):
+		return RunnerFailureBrokerRefused, true
 	default:
 		return "", false
 	}
@@ -555,6 +604,8 @@ func SessionFailureReason(cause string) string {
 		return "the runner's checkout was not at the session's recorded commit, so it refused to continue"
 	case RunnerFailureNoBranch:
 		return "the session has no recorded branch commit to check out"
+	case RunnerFailureBrokerRefused:
+		return "the session's runner could not confirm its event broker credential"
 	case RunnerFailureNoProvider:
 		return "the runner is ready with a verified checkout, but no provider adapter exists yet to run this session"
 	}

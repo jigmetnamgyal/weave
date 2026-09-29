@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/eventstream"
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/internal/domain"
@@ -48,7 +50,7 @@ func newIngestionHarness(t *testing.T) *ingestionHarness {
 	if url == "" {
 		t.Skip("TEST_NATS_URL is not set; run `make test-integration`")
 	}
-	conn, err := nats.Connect(url)
+	conn, err := nats.Connect(url, testNATSAuth()...)
 	if err != nil {
 		t.Fatalf("connect to nats: %v", err)
 	}
@@ -102,6 +104,51 @@ func (h *ingestionHarness) run(t *testing.T, store application.EventStore) (stop
 	}
 	t.Cleanup(stop)
 	return stop
+}
+
+// testNATSAuth connects as the tests identity when the server has
+// authentication on (M5.5a) — never as a service identity, so a leaked test
+// credential is never a production one.
+func testNATSAuth() []nats.Option {
+	if dir := os.Getenv("TEST_NATS_AUTH_DIR"); dir != "" {
+		return []nats.Option{nats.UserCredentials(filepath.Join(dir, "tests.creds"))}
+	}
+	return nil
+}
+
+// runnerBroker gives a runner test a real, authenticated broker: a stream of
+// the test's own covering the runner's subject, an issuer that mints runner
+// credentials for it, and the broker's address as a container reaches it.
+// Without the stream a runner's start-up check would, correctly, refuse to
+// call itself ready.
+func runnerBroker(t *testing.T) (*natsauth.Issuer, string) {
+	t.Helper()
+	url, dir := os.Getenv("TEST_NATS_URL"), os.Getenv("TEST_NATS_AUTH_DIR")
+	if url == "" || dir == "" {
+		t.Skip("TEST_NATS_URL and TEST_NATS_AUTH_DIR are not set; run `make test-integration`")
+	}
+	conn, err := nats.Connect(url, testNATSAuth()...)
+	if err != nil {
+		t.Fatalf("connect to nats: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	js, _ := jetstream.New(conn)
+	id := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	cfg := eventstream.Config{Stream: "TEST_RUNNER_" + id, SubjectPrefix: "weavetest" + id + ".session",
+		Consumer: "unused", AckWait: time.Second, ExhaustAfter: 1}
+	if err := eventstream.EnsureStream(context.Background(), js, cfg); err != nil {
+		t.Fatalf("runner stream: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteStream(context.Background(), cfg.Stream) })
+
+	issuer, err := natsauth.LoadIssuer(filepath.Join(dir, natsauth.RunnerSigningFile),
+		filepath.Join(dir, natsauth.AccountPublicFile), cfg.SubjectPrefix)
+	if err != nil {
+		t.Fatalf("load issuer: %v", err)
+	}
+	fromContainer := strings.Replace(strings.Replace(url, "://localhost:", "://host.docker.internal:", 1),
+		"://127.0.0.1:", "://host.docker.internal:", 1)
+	return issuer, fromContainer
 }
 
 // session seeds a running session to publish events for.

@@ -45,6 +45,12 @@ echo
 echo "Starting local dependencies"
 # --wait blocks until every service with a healthcheck reports healthy, so the
 # API never starts against a half-ready stack.
+# NATS runs with authentication on (M5.5a), from an operator configuration
+# the compose file mounts. Generated before Compose starts, because this
+# script does not go through `make up` — and a missing file is not a clean
+# error: Docker creates a *directory* in its place and NATS fails to start.
+go run "${REPO_ROOT}/services/nats-setup" -out "${REPO_ROOT}/infra/nats/generated"
+
 docker compose --file "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up --detach --wait
 
 echo

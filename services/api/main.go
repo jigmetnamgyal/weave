@@ -108,6 +108,7 @@ func run() error {
 	// RetryOnFailedConnect keeps startup non-blocking when NATS is not up yet.
 	natsConn, err := nats.Connect(cfg.NATSURL,
 		nats.Name(cfg.OTelServiceName),
+		nats.UserCredentials(cfg.NATSCreds),
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(time.Second),
