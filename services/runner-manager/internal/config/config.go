@@ -104,6 +104,13 @@ func Load() (Config, error) {
 
 // runnerReachable turns the host's NATS URL into one a local container can
 // reach: a runner's "localhost" is its own sandbox, not the host.
+//
+// host.docker.internal reaches the host's loopback on Docker Desktop (macOS,
+// Windows). On Linux it is the bridge gateway, which a loopback-published
+// port does not answer; there RUNNER_NATS_URL must be set explicitly, with
+// NATS published on the bridge — see .env.example. A runner that cannot reach
+// the broker does not become ready (broker_refused), so the misconfiguration
+// is loud rather than silent.
 func runnerReachable(hostURL string) string {
 	for _, local := range []string{"localhost", "127.0.0.1"} {
 		if strings.Contains(hostURL, "://"+local+":") {

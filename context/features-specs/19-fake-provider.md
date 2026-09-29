@@ -100,11 +100,24 @@ session ends. Two things now refuse them:
 
 So **the workflow must not tear down or end the session until the runner's
 events have been ingested.** The mechanism has to rest on something the
-runner cannot fake. The stream uses work-queue retention, so an unacknowledged
-message is one the ingestor has not finished with, and the stream can report
-message counts per subject. Once the runner has exited, a count of zero on
-`weave.session.<id>.events` means everything it published has been stored or
-quarantined. Wait for that, bounded, before teardown.
+runner cannot fake, and a zero count proves the drain only if two orderings
+hold — state both, and test both:
+
+- **The runner waits for a successful `PubAck` for every event before it
+  exits.** An event the runner sent but the stream never confirmed is not in
+  the stream to be counted; a runner that exits on a fire-and-forget publish
+  makes a zero count meaningless.
+- **The ingestor acknowledges an event only after its session-event or
+  quarantine write commits, and retries instead of acknowledging when that
+  write fails.** M5.3 built it this way, and its review round tightened it
+  (unlimited redelivery; ack only once stored or quarantined) — this unit
+  depends on it and must not weaken it.
+
+With both, the stream's work-queue retention means an unacknowledged message
+is one the ingestor has not finished with, and the stream can report message
+counts per subject. Once the runner has exited, a count of zero on
+`weave.session.<id>.events` proves that every event the stream confirmed was
+stored or quarantined. Wait for that, bounded, before teardown.
 
 Decide what happens when the bound is reached with messages still pending —
 the ingestor is down, say. Neither failing the session nor ending it silently

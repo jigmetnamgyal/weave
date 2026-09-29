@@ -2,6 +2,8 @@ package natsauth_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +115,41 @@ func TestTheAPIHoldsNoSubjectPermissions(t *testing.T) {
 		if strings.HasPrefix(subject, "weave.") {
 			t.Errorf("the ingestor may publish %s; it reads events and never writes them", subject)
 		}
+	}
+}
+
+// TestAnInterruptedSetupIsRegeneratedNotTrusted is a review finding on PR #20.
+// The first version wrote server.conf first and treated its existence as a
+// complete setup, so a run stopped before the credentials left a setup no
+// re-run would repair.
+func TestAnInterruptedSetupIsRegeneratedNotTrusted(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "generated")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// What an interrupted run used to leave: the server config and nothing else.
+	if err := os.WriteFile(filepath.Join(dir, natsauth.ServerConfigFile), []byte("operator: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if natsauth.Complete(dir) {
+		t.Fatal("a setup holding only server.conf was taken as complete")
+	}
+
+	if _, err := natsauth.Generate(dir); err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	if !natsauth.Complete(dir) {
+		t.Error("a fresh setup is not complete")
+	}
+	entries, _ := os.ReadDir(root)
+	for _, entry := range entries {
+		if entry.Name() != "generated" {
+			t.Errorf("generation left %q behind; it must be all or nothing", entry.Name())
+		}
+	}
+	info, err := os.Stat(filepath.Join(dir, natsauth.RunnerSigningFile))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("the signing key is %v (%v); it must be owner-only", info.Mode().Perm(), err)
 	}
 }

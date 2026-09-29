@@ -68,7 +68,13 @@ services:
     # generates it with services/nats-setup when it is missing.
     command: ["-js", "-sd", "/data", "-m", "8222", "-c", "/etc/nats/weave.conf"]
     ports:
-      - "127.0.0.1:${NATS_PORT:-54222}:4222"
+      # Bound to loopback by default. Runner containers reach it through
+      # host.docker.internal, which Docker Desktop (macOS, Windows) routes to
+      # the host's loopback. On Linux it resolves to the bridge gateway
+      # instead, which a loopback-only port does not answer — set NATS_BIND
+      # to the bridge address (typically 172.17.0.1) and RUNNER_NATS_URL to
+      # match. See .env.example.
+      - "${NATS_BIND:-127.0.0.1}:${NATS_PORT:-54222}:4222"
       - "127.0.0.1:${NATS_MONITORING_PORT:-58222}:8222"
     volumes:
       - nats-data:/data

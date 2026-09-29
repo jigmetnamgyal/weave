@@ -15,7 +15,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
 )
@@ -25,7 +24,9 @@ func main() {
 	force := flag.Bool("force", false, "regenerate even if a setup exists")
 	flag.Parse()
 
-	if _, err := os.Stat(filepath.Join(*out, natsauth.ServerConfigFile)); err == nil && !*force {
+	// The complete set, not one file: a setup interrupted partway is
+	// regenerated rather than trusted.
+	if natsauth.Complete(*out) && !*force {
 		fmt.Printf("NATS credentials already exist in %s\n", *out)
 		return
 	}
