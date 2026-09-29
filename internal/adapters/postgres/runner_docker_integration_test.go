@@ -191,13 +191,14 @@ func newRunnerWorldWith(t *testing.T, name string, override func(*natsauth.Issue
 		t.Fatalf("record branch: %v", err)
 	}
 
-	brokerIssuer, natsURL := runnerBroker(t)
-	var issuer application.RunnerCredentialIssuer = brokerIssuer
+	broker := runnerBroker(t)
+	var issuer application.RunnerCredentialIssuer = broker.issuer
 	if override != nil {
-		issuer = override(brokerIssuer)
+		issuer = override(broker.issuer)
 	}
 	service := application.NewRunnerService(postgres.NewRunnerStore(appPool), postgres.NewSessionStore(appPool),
-		backend, installationServiceFor(t, appPool, github), issuer, natsURL, postgres.WithTenantWorkspace, gitBase,
+		backend, installationServiceFor(t, appPool, github), issuer, broker.natsURL,
+		postgres.NewAgentStore(appPool), broker.drain(), postgres.WithTenantWorkspace, gitBase,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return &runnerWorld{ownerPool: ownerPool, appPool: appPool, fixture: fixture, session: session,
 		commit: commit, backend: backend, service: service, tenant: tenant}
@@ -218,12 +219,6 @@ func (w *runnerWorld) ready(t *testing.T) domain.Runner {
 	return runner
 }
 
-func dockerExec(t *testing.T, container string, args ...string) (string, error) {
-	t.Helper()
-	out, err := exec.Command("docker", append([]string{"exec", container}, args...)...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
-}
-
 func dockerExists(t *testing.T, kind, name string) bool {
 	t.Helper()
 	return exec.Command("docker", kind, "inspect", name).Run() == nil
@@ -240,35 +235,40 @@ func TestARunnerChecksOutExactlyTheRecordedCommitIntegration(t *testing.T) {
 	if runner.State != domain.RunnerRunning || runner.Handle == "" {
 		t.Fatalf("runner = %+v, want running with a handle", runner)
 	}
-	head, err := dockerExec(t, runner.Handle, "git", "-C", "/workspace/repo", "rev-parse", "HEAD")
-	if err != nil || head != w.commit {
-		t.Errorf("HEAD = %q (%v), want the recorded commit %s", head, err, w.commit)
+
+	// Since M5.5b the runner runs its provider and exits, so the checkout is
+	// read from its workspace volume, which survives until teardown — by a
+	// throwaway container mounting it read-only.
+	readRepo := func(args ...string) string {
+		t.Helper()
+		cmd := append([]string{"run", "--rm", "--entrypoint", "git", "-v", runner.Handle + ":/workspace:ro",
+			"weave-runner:dev", "-c", "safe.directory=*", "-C", "/workspace/repo"}, args...)
+		out, err := exec.Command("docker", cmd...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("read the checkout: %v %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
 	}
-	branch, _ := dockerExec(t, runner.Handle, "git", "-C", "/workspace/repo", "branch", "--show-current")
-	if branch != w.session.BranchName {
+	if head := readRepo("rev-parse", "HEAD"); head != w.commit {
+		t.Errorf("HEAD = %q, want the recorded commit %s", head, w.commit)
+	}
+	if branch := readRepo("branch", "--show-current"); branch != w.session.BranchName {
 		t.Errorf("branch = %q, want the session branch %q", branch, w.session.BranchName)
 	}
 
-	// The hardening the backend promises, observed rather than assumed.
-	if uid, _ := dockerExec(t, runner.Handle, "id", "-u"); uid != "10001" {
-		t.Errorf("runs as uid %q, want 10001", uid)
+	// The hardening the backend applies, read from the container's
+	// configuration, which Docker enforces.
+	inspect, err := exec.Command("docker", "inspect", "--format",
+		"{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.CapDrop}}|{{.HostConfig.SecurityOpt}}|{{.HostConfig.Privileged}}|{{len .HostConfig.Binds}}",
+		runner.Handle).Output()
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
 	}
-	if _, err := dockerExec(t, runner.Handle, "touch", "/usr/local/bin/x"); err == nil {
-		t.Error("the root filesystem is writable")
+	if got := strings.TrimSpace(string(inspect)); got != "10001:10001|true|[ALL]|[no-new-privileges:true]|false|0" {
+		t.Errorf("hardening = %s", got)
 	}
-	if caps, _ := dockerExec(t, runner.Handle, "grep", "CapEff", "/proc/self/status"); !strings.HasSuffix(caps, "0000000000000000") {
-		t.Errorf("effective capabilities = %q, want none", caps)
-	}
-	// Both secrets were delivered and then removed from the process
-	// environment: the git token (M5.4a) and the broker credential (M5.5a).
-	env, _ := dockerExec(t, runner.Handle, "cat", "/proc/1/environ")
-	if strings.Contains(env, "WEAVE_GIT_TOKEN=ghs") {
-		t.Error("the git token is still in the runner's environment")
-	}
-	if strings.Contains(env, "WEAVE_NATS_CREDS=") || strings.Contains(env, "NATS USER JWT") ||
-		strings.Contains(env, "USER NKEY SEED") {
-		t.Error("the broker credential is still in the runner's environment")
-	}
+	// That the runner became ready at all proves its secrets were scrubbed:
+	// it checks its own /proc/self/environ and refuses readiness otherwise.
 
 	if err := w.service.Teardown(w.tenant, w.fixture.workspace.ID, w.session.ID, false, ""); err != nil {
 		t.Fatalf("teardown: %v", err)
@@ -439,7 +439,7 @@ func TestAnotherScopesManagerLeavesTheseRunnersAloneIntegration(t *testing.T) {
 		t.Fatalf("two scopes share the backend name %q", other.Name())
 	}
 	elsewhere := application.NewRunnerService(postgres.NewRunnerStore(w.appPool), postgres.NewSessionStore(w.appPool),
-		other, nil, nil, "", postgres.WithTenantWorkspace, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		other, nil, nil, "", nil, nil, postgres.WithTenantWorkspace, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := elsewhere.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile from another scope: %v", err)
 	}

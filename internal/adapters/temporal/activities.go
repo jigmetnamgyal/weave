@@ -30,14 +30,16 @@ const (
 type SessionActivities struct {
 	sessions *application.SessionService
 	branches *application.SessionBranchService
+	outcomes *application.SessionOutcomeService
 }
 
 // NewSessionActivities wires the activities.
 func NewSessionActivities(
 	sessions *application.SessionService,
 	branches *application.SessionBranchService,
+	outcomes *application.SessionOutcomeService,
 ) *SessionActivities {
-	return &SessionActivities{sessions: sessions, branches: branches}
+	return &SessionActivities{sessions: sessions, branches: branches, outcomes: outcomes}
 }
 
 // FailSessionInput ends a session with a cause the workflow chose.

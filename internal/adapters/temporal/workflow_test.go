@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
@@ -27,6 +28,12 @@ type run struct {
 	recordErr    error
 	provisionErr error
 	runningErr   error
+	exit         weavetemporal.RunnerExit
+	exitErr      error
+	haltErr      error
+	drained      bool
+	// cancelDuringRun cancels the workflow while it waits for the runner.
+	cancelDuringRun bool
 
 	steps          []string
 	cutAttempts    int
@@ -34,11 +41,13 @@ type run struct {
 	recorded       []weavetemporal.RecordBranchInput
 	failCauses     []string
 	teardowns      []weavetemporal.TeardownInput
+	completed      []weavetemporal.CompleteInput
+	deadlines      []time.Time
 }
 
 func newRun() *run {
 	var suite testsuite.WorkflowTestSuite
-	return &run{env: suite.NewTestWorkflowEnvironment()}
+	return &run{env: suite.NewTestWorkflowEnvironment(), drained: true}
 }
 
 func (r *run) execute(t *testing.T) {
@@ -107,6 +116,42 @@ func (r *run) execute(t *testing.T) {
 		},
 		activityOptions(weavetemporal.ActivityFailUnprovisionable))
 	r.env.RegisterActivityWithOptions(
+		func(_ context.Context, input weavetemporal.AwaitExitInput) (weavetemporal.RunnerExit, error) {
+			r.deadlines = append(r.deadlines, input.Deadline)
+			if r.cancelDuringRun {
+				r.env.CancelWorkflow()
+				return weavetemporal.RunnerExit{}, context.Canceled
+			}
+			if r.exitErr != nil {
+				return weavetemporal.RunnerExit{}, r.exitErr
+			}
+			r.steps = append(r.steps, "exit")
+			return r.exit, nil
+		},
+		activityOptions(weavetemporal.ActivityAwaitRunnerExit))
+	r.env.RegisterActivityWithOptions(
+		func(context.Context, weavetemporal.SessionWorkflowInput) error {
+			if r.haltErr != nil {
+				return temporal.NewNonRetryableApplicationError("halt", "Test", r.haltErr)
+			}
+			r.steps = append(r.steps, "halt")
+			return nil
+		},
+		activityOptions(weavetemporal.ActivityHaltRunner))
+	r.env.RegisterActivityWithOptions(
+		func(context.Context, weavetemporal.SessionWorkflowInput) (weavetemporal.DrainResult, error) {
+			r.steps = append(r.steps, "drain")
+			return weavetemporal.DrainResult{Drained: r.drained}, nil
+		},
+		activityOptions(weavetemporal.ActivityDrainRunnerEvents))
+	r.env.RegisterActivityWithOptions(
+		func(_ context.Context, input weavetemporal.CompleteInput) error {
+			r.steps = append(r.steps, "complete")
+			r.completed = append(r.completed, input)
+			return nil
+		},
+		activityOptions(weavetemporal.ActivityCompleteSession))
+	r.env.RegisterActivityWithOptions(
 		func(_ context.Context, input weavetemporal.FailSessionInput) error {
 			r.steps = append(r.steps, "failed:"+input.Cause)
 			r.failCauses = append(r.failCauses, input.Cause)
@@ -140,11 +185,9 @@ func TestSessionWorkflowEndsSomewhereLegal(t *testing.T) {
 	if err := r.env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	// Version 3: the branch, a runner with a verified checkout, the first
-	// `running` any session has reached — then, with no provider yet, the
-	// runner torn down and the session failed saying so.
-	want := "provisioning → cut → record → runner → running → teardown → failed:" +
-		string(application.RunnerFailureNoProvider)
+	// Version 4: the branch, a runner with a verified checkout, running, the
+	// provider's run — then halt, drain, teardown, and only then the end.
+	want := "provisioning → cut → record → runner → running → exit → halt → drain → teardown → complete"
 	if got := r.route(); got != want {
 		t.Errorf("route = %s\nwant    %s", got, want)
 	}
@@ -152,7 +195,70 @@ func TestSessionWorkflowEndsSomewhereLegal(t *testing.T) {
 		t.Errorf("recorded %+v, want the cut branch", r.recorded)
 	}
 	if len(r.teardowns) != 1 || r.teardowns[0].Failed {
-		t.Errorf("teardowns = %+v, want one ordinary teardown — the runner did its job", r.teardowns)
+		t.Errorf("teardowns = %+v, want one ordinary teardown after a clean run", r.teardowns)
+	}
+	if c := r.completed; len(c) != 1 || c[0].ExitCode != 0 || c[0].Expired || c[0].Undrained {
+		t.Errorf("completed with %+v, want a clean exit, drained", c)
+	}
+}
+
+// TestWhatTheWorkflowObservesReachesTheOutcome: each way a run can end is
+// carried to CompleteSession, and the runner is torn down as failed for all of
+// them — halted and drained first every time.
+func TestWhatTheWorkflowObservesReachesTheOutcome(t *testing.T) {
+	cases := map[string]struct {
+		arrange func(*run)
+		want    weavetemporal.CompleteInput
+	}{
+		"provider failed": {func(r *run) { r.exit = weavetemporal.RunnerExit{ExitCode: 6} },
+			weavetemporal.CompleteInput{ExitCode: 6}},
+		"ran too long": {func(r *run) { r.exit = weavetemporal.RunnerExit{Expired: true} },
+			weavetemporal.CompleteInput{Expired: true}},
+		"not drained": {func(r *run) { r.drained = false },
+			weavetemporal.CompleteInput{Undrained: true}},
+		"exit not observed": {func(r *run) { r.exitErr = errors.New("backend unreachable") },
+			weavetemporal.CompleteInput{ExitCode: -1}},
+		// Not halted, the runner may still be publishing: an empty stream
+		// proves nothing, so the run is not vouched for.
+		"not halted": {func(r *run) { r.haltErr = errors.New("backend unreachable") },
+			weavetemporal.CompleteInput{Undrained: true}},
+		// Cancelled mid-run: still halted, drained, torn down — and ended,
+		// on a disconnected context, rather than left running.
+		"cancelled": {func(r *run) { r.cancelDuringRun = true },
+			weavetemporal.CompleteInput{ExitCode: -1, Interrupted: true}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := newRun()
+			tc.arrange(r)
+			r.execute(t)
+			if len(r.completed) != 1 {
+				t.Fatalf("route %s: completed %d times", r.route(), len(r.completed))
+			}
+			got := r.completed[0]
+			if got.ExitCode != tc.want.ExitCode || got.Expired != tc.want.Expired ||
+				got.Undrained != tc.want.Undrained || got.Interrupted != tc.want.Interrupted {
+				t.Errorf("completed with %+v, want %+v", got, tc.want)
+			}
+			if len(r.teardowns) != 1 || !r.teardowns[0].Failed {
+				t.Errorf("teardowns = %+v, want one, as failed", r.teardowns)
+			}
+			if !strings.HasSuffix(r.route(), "drain → teardown → complete") {
+				t.Errorf("route = %s; the end must be halt, drain, teardown, complete, in that order", r.route())
+			}
+		})
+	}
+}
+
+// TestAVersionThreeExecutionEndsWithoutAProvider: executions that recorded
+// version 3 before M5.5b finish as they started — no provider run.
+func TestAVersionThreeExecutionEndsWithoutAProvider(t *testing.T) {
+	r := newRun()
+	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(4)).Return(workflow.Version(3))
+	r.execute(t)
+	want := "provisioning → cut → record → runner → running → teardown → failed:" + string(application.RunnerFailureNoProvider)
+	if got := r.route(); got != want {
+		t.Errorf("route = %s\nwant    %s", got, want)
 	}
 }
 
@@ -318,7 +424,7 @@ func TestASessionThatMovedOnIsNotFailed(t *testing.T) {
 // non-deterministically.
 func TestAVersionOneExecutionTakesNoBranchStep(t *testing.T) {
 	r := newRun()
-	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(3)).
+	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(4)).
 		Return(workflow.Version(1))
 	r.execute(t)
 
@@ -334,7 +440,7 @@ func TestAVersionOneExecutionTakesNoBranchStep(t *testing.T) {
 // 2 before M5.4a finish without a runner, as they started.
 func TestAVersionTwoExecutionTakesNoRunnerStep(t *testing.T) {
 	r := newRun()
-	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(3)).
+	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(4)).
 		Return(workflow.Version(2))
 	r.execute(t)
 
@@ -354,4 +460,26 @@ var errRefused = errors.New("the session cannot become provisioning")
 // running workflow is not stranded by a rename.
 func activityOptions(name string) activity.RegisterOptions {
 	return activity.RegisterOptions{Name: name}
+}
+
+// TestARetriedWaitKeepsTheRunDeadline: the maximum run is fixed once, by the
+// workflow. An attempt retried hours in — after a runner-manager restart —
+// must not start a fresh eight hours, which could outlive the runner's
+// broker credential.
+func TestARetriedWaitKeepsTheRunDeadline(t *testing.T) {
+	r := newRun()
+	r.exitErr = errors.New("runner manager restarted")
+	r.execute(t)
+	if len(r.deadlines) < 2 {
+		t.Fatalf("%d attempts; the case needs retries", len(r.deadlines))
+	}
+	first := r.deadlines[0]
+	if want := r.env.Now().Add(application.SessionMaxRunTime); first.After(want) {
+		t.Errorf("deadline %s is beyond one maximum run from the start", first)
+	}
+	for i, d := range r.deadlines {
+		if !d.Equal(first) {
+			t.Errorf("attempt %d had deadline %s, attempt 1 had %s; retries must share it", i+1, d, first)
+		}
+	}
 }

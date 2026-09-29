@@ -116,12 +116,44 @@ func testNATSAuth() []nats.Option {
 	return nil
 }
 
-// runnerBroker gives a runner test a real, authenticated broker: a stream of
+// testBroker is a real, authenticated broker for a runner test: a stream of
 // the test's own covering the runner's subject, an issuer that mints runner
-// credentials for it, and the broker's address as a container reaches it.
-// Without the stream a runner's start-up check would, correctly, refuse to
-// call itself ready.
-func runnerBroker(t *testing.T) (*natsauth.Issuer, string) {
+// credentials for it, the broker's address as a container reaches it, and a
+// tests-identity JetStream handle for the drain and for an ingestor.
+type testBroker struct {
+	issuer  *natsauth.Issuer
+	natsURL string
+	cfg     eventstream.Config
+	js      jetstream.JetStream
+}
+
+// drain is the drain check over this broker's stream.
+func (b testBroker) drain() *eventstream.Drain {
+	return eventstream.NewDrain(b.js, b.cfg, eventstream.StreamMaxAge)
+}
+
+// ingest runs a real ingestor over this broker's stream until the test ends,
+// storing through store — which a test may slow down, so that ingestion lags
+// the runner and the drain has something to wait for.
+func (b testBroker) ingest(t *testing.T, store application.EventStore) {
+	t.Helper()
+	ingestor := application.NewIngestor(store, postgres.WithTenantWorkspace, b.cfg.SubjectPrefix,
+		time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	consumer, err := eventstream.NewConsumer(context.Background(), b.js, b.cfg, ingestor,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("ingestor consumer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = consumer.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+// runnerBroker gives a runner test a real, authenticated broker. Without the
+// stream a runner's start-up check would, correctly, refuse to call itself
+// ready.
+func runnerBroker(t *testing.T) testBroker {
 	t.Helper()
 	url, dir := os.Getenv("TEST_NATS_URL"), os.Getenv("TEST_NATS_AUTH_DIR")
 	if url == "" || dir == "" {
@@ -135,7 +167,7 @@ func runnerBroker(t *testing.T) (*natsauth.Issuer, string) {
 	js, _ := jetstream.New(conn)
 	id := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	cfg := eventstream.Config{Stream: "TEST_RUNNER_" + id, SubjectPrefix: "weavetest" + id + ".session",
-		Consumer: "unused", AckWait: time.Second, ExhaustAfter: 1}
+		Consumer: "test-ingestor", AckWait: 5 * time.Second, ExhaustAfter: 5}
 	if err := eventstream.EnsureStream(context.Background(), js, cfg); err != nil {
 		t.Fatalf("runner stream: %v", err)
 	}
@@ -148,7 +180,7 @@ func runnerBroker(t *testing.T) (*natsauth.Issuer, string) {
 	}
 	fromContainer := strings.Replace(strings.Replace(url, "://localhost:", "://host.docker.internal:", 1),
 		"://127.0.0.1:", "://host.docker.internal:", 1)
-	return issuer, fromContainer
+	return testBroker{issuer: issuer, natsURL: fromContainer, cfg: cfg, js: js}
 }
 
 // session seeds a running session to publish events for.

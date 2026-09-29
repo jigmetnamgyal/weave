@@ -16,6 +16,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/jigmetnamgyal/weave/internal/application"
@@ -54,6 +55,12 @@ func DefaultConfig() Config {
 	}
 }
 
+// StreamMaxAge is how long an unacknowledged event survives in the stream.
+// Exported because M5.5b's drain proof depends on it: a session's events must
+// not be able to expire before its drain ends (see
+// application.SessionMaxRunTime).
+const StreamMaxAge = 72 * time.Hour
+
 // Stream limits. Retention is operational, per the architecture:
 // session_events is the permanent history, and the stream only has to hold
 // what has not been ingested yet.
@@ -63,7 +70,7 @@ const (
 	// longer than this — three days is far past any outage this system is
 	// meant to ride out, and alerting on ingestion lag (M9) is what keeps it
 	// from being reached silently.
-	streamMaxAge = 72 * time.Hour
+	streamMaxAge = StreamMaxAge
 	// streamMaxBytes bounds the backlog. With DiscardNew, reaching it makes
 	// publishing fail — loud, at the producer — rather than evicting the
 	// oldest un-ingested events, which would be silent.
@@ -285,4 +292,48 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 func retryDelay(delivered uint64) time.Duration {
 	delay := time.Second << min(delivered-1, 5)
 	return min(delay, 30*time.Second)
+}
+
+// ErrRetentionTooShort means the stream's maximum age is shorter than the
+// drain's proof needs, so a zero count could be a deletion rather than an
+// ingestion. The drain refuses to report success on it.
+var ErrRetentionTooShort = errors.New("the event stream's retention is too short for the drain to be trusted")
+
+// Drain reports how many of a session's events the stream still holds.
+//
+// Implements application.EventDrain. Read with the runner manager's identity,
+// whose allow-list is exactly this: the stream's information (ADR-014).
+type Drain struct {
+	js     jetstream.JetStream
+	cfg    Config
+	minAge time.Duration
+}
+
+// NewDrain wires a drain check for the stream in cfg. minAge is the shortest
+// retention the drain will trust — the stream's own configured age in
+// production.
+func NewDrain(js jetstream.JetStream, cfg Config, minAge time.Duration) *Drain {
+	return &Drain{js: js, cfg: cfg, minAge: minAge}
+}
+
+// Pending returns the number of the session's messages the stream holds.
+//
+// With work-queue retention an acknowledged message is removed, so what is
+// left is what the ingestor has not finished with. The stream's retention is
+// checked on every read, not assumed from startup: a stream shortened by hand
+// since then would let a count reach zero by deletion.
+func (d *Drain) Pending(ctx context.Context, sessionID uuid.UUID) (uint64, error) {
+	subject := domain.EventSubject(d.cfg.SubjectPrefix, sessionID)
+	stream, err := d.js.Stream(ctx, d.cfg.Stream)
+	if err != nil {
+		return 0, fmt.Errorf("read event stream: %w", err)
+	}
+	info, err := stream.Info(ctx, jetstream.WithSubjectFilter(subject))
+	if err != nil {
+		return 0, fmt.Errorf("read event stream subjects: %w", err)
+	}
+	if info.Config.MaxAge > 0 && info.Config.MaxAge < d.minAge {
+		return 0, fmt.Errorf("%w: %s, need at least %s", ErrRetentionTooShort, info.Config.MaxAge, d.minAge)
+	}
+	return info.State.Subjects[subject], nil
 }

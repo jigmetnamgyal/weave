@@ -165,6 +165,9 @@ func (b *Backend) Provision(ctx context.Context, spec application.RunnerSpec) (s
 		"Env": []string{
 			"WEAVE_RUNNER_ID=" + spec.RunnerID.String(),
 			"WEAVE_SESSION_ID=" + spec.SessionID.String(),
+			"WEAVE_WORKSPACE_ID=" + spec.WorkspaceID.String(),
+			"WEAVE_AGENT_PROVIDER=" + string(spec.Provider),
+			"WEAVE_AGENT_MODEL=" + spec.Model,
 			"WEAVE_CLONE_URL=" + spec.CloneURL,
 			"WEAVE_BRANCH=" + spec.Branch,
 			"WEAVE_COMMIT=" + spec.Commit,

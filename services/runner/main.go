@@ -2,9 +2,9 @@
 //
 // It checks out the session's branch at exactly the commit the control plane
 // recorded (M5.4a), connects to the event broker with a credential scoped to
-// its own session and proves that scope holds (M5.5a), reports ready, and
-// waits to be torn down. It emits no session events yet — events come from a
-// provider, which is M5.5b.
+// its own session and proves that scope holds (M5.5a), reports ready, then runs
+// the session's provider adapter and publishes what it produces (M5.5b). It
+// exits when the provider finishes, with a code saying how.
 //
 // It runs as an unprivileged user on a read-only root filesystem with every
 // capability dropped. It trusts nothing in the repository: `git fetch` and
@@ -31,6 +31,9 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/jigmetnamgyal/weave/internal/domain"
+	"github.com/jigmetnamgyal/weave/services/runner/agent"
 )
 
 const (
@@ -44,6 +47,20 @@ const (
 	exitCheckoutMismatch = 3
 	exitMisconfigured    = 4
 	exitBrokerRefused    = 5
+	// exitProviderFailed: the provider ran and reported failure
+	// (a provider.failed event was published and confirmed).
+	exitProviderFailed = 6
+	// exitProviderUnavailable: the runner has no adapter for the session's
+	// provider, or the adapter refused the model.
+	exitProviderUnavailable = 7
+	// exitPublishFailed: an event could not be confirmed by the stream. The
+	// runner stops rather than exit 0 with events the control plane will
+	// never see — the drain's proof depends on every event being confirmed.
+	exitPublishFailed = 8
+	// exitInterrupted: the runner was signalled to stop while the provider
+	// was still running. Its event channel closes early, so without this the
+	// loop would end as though the provider had finished.
+	exitInterrupted = 9
 )
 
 // secretEnv are the variables that carry secrets at start. scrubSecrets moves
@@ -77,6 +94,15 @@ func run() int {
 		return code
 	}
 
+	// The scrub is checked, not assumed: M5.4a found os.Unsetenv leaving the
+	// git token in /proc/<pid>/environ, and a runner whose secrets are still
+	// readable there by anything it starts must not become ready. A runtime
+	// check rather than only a test, so it holds in production too.
+	if err := verifyScrubbed(); err != nil {
+		fmt.Fprintf(os.Stderr, "weave-runner: %v\n", err)
+		return exitMisconfigured
+	}
+
 	conn, err := connectBroker(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "weave-runner: event broker: %v\n", err)
@@ -91,10 +117,126 @@ func run() int {
 	}
 	fmt.Fprintln(os.Stderr, "weave-runner: checkout verified; broker credential verified; ready")
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGTERM, os.Interrupt)
-	<-stop
+	// The provider runs only after both verifications. That ordering is what
+	// lets the control plane read an exit of 0 or exitProviderFailed as proof
+	// the runner was ready, even when a fast provider finishes before a health
+	// check ever reports healthy.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	return runProvider(ctx, cfg, conn)
+}
+
+// runProvider runs the session's adapter to completion and publishes each
+// event it produces, in order, **waiting for the stream to confirm each one**
+// before the next and before exiting.
+//
+// Confirmation is the first of the two orderings M5.5b's drain rests on: an
+// event the runner sent but the stream never confirmed is not in the stream to
+// be counted, so a runner exiting on a fire-and-forget publish would make "the
+// stream holds nothing for this session" meaningless.
+func runProvider(ctx context.Context, cfg config, conn *nats.Conn) int {
+	adapter, err := agent.New(domain.Provider(cfg.provider))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "weave-runner: %v\n", err)
+		return exitProviderUnavailable
+	}
+	defer func() { _ = adapter.Close(context.Background()) }()
+
+	// Consulted, not assumed: nothing here calls an operation the adapter
+	// declared it cannot do. SendInstruction, Pause and Resume have no caller
+	// until M6 and M7, which will read these first.
+	caps, err := adapter.Capabilities(ctx)
+	if err != nil {
+		return exitProviderUnavailable
+	}
+	fmt.Fprintf(os.Stderr, "weave-runner: provider %s capabilities %+v\n", cfg.provider, caps)
+
+	events, err := adapter.Start(ctx, agent.StartRequest{
+		SessionID: uuid.MustParse(cfg.sessionID), Model: cfg.model, Workdir: checkoutDir,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "weave-runner: start provider: %v\n", err)
+		return exitProviderUnavailable
+	}
+
+	js, err := jetstream.New(conn)
+	if err != nil {
+		return exitPublishFailed
+	}
+	correlation := uuid.New()
+	return relay(ctx, events, func(event agent.ProviderEvent) error {
+		return publish(ctx, js, cfg, correlation, event)
+	}, func() { _ = adapter.Cancel(context.Background()) })
+}
+
+// relay publishes each of the provider's events in order and decides the
+// exit code. Separate from runProvider so it can be exercised without a
+// broker.
+//
+// **The channel closing is not proof the provider finished**: a signal
+// cancels ctx, the adapter stops and closes its channel early, and without
+// the check after the loop that would exit 0 — read by the control plane as
+// a finished run, ending a half-run session review_ready.
+func relay(ctx context.Context, events <-chan agent.ProviderEvent, send func(agent.ProviderEvent) error, cancel func()) int {
+	failed := false
+	for event := range events {
+		if err := send(event); err != nil {
+			fmt.Fprintf(os.Stderr, "weave-runner: publish %s: %v\n", event.Type, err)
+			cancel()
+			return exitPublishFailed
+		}
+		if event.Type == domain.EventProviderFailed {
+			failed = true
+		}
+	}
+	if ctx.Err() != nil {
+		fmt.Fprintln(os.Stderr, "weave-runner: interrupted before the provider finished")
+		return exitInterrupted
+	}
+	if failed {
+		return exitProviderFailed
+	}
 	return 0
+}
+
+// publish sends one event in the M5.3 envelope and waits for the stream's
+// confirmation, retrying a transient failure a few times.
+//
+// Nats-Msg-Id is the event id, so a retried publish the stream already took is
+// absorbed there; past its window the ingestor's unique key absorbs it.
+func publish(ctx context.Context, js jetstream.JetStream, cfg config, correlation uuid.UUID, event agent.ProviderEvent) error {
+	payload, err := json.Marshal(event.Payload)
+	if err != nil {
+		return err
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+	envelope, err := json.Marshal(domain.EventEnvelope{
+		EventID: id, SchemaVersion: "1.0", Type: event.Type, OccurredAt: time.Now().UTC(),
+		Producer: uuid.MustParse(cfg.runnerID), WorkspaceID: uuid.MustParse(cfg.workspaceID),
+		SessionID: uuid.MustParse(cfg.sessionID), CorrelationID: correlation, Payload: payload,
+	})
+	if err != nil {
+		return err
+	}
+
+	var last error
+	for attempt := 0; attempt < 5; attempt++ {
+		pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, last = js.Publish(pubCtx, cfg.subject, envelope, jetstream.WithMsgID(id.String()))
+		cancel()
+		if last == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+		}
+	}
+	return last
 }
 
 type secrets struct {
@@ -103,14 +245,18 @@ type secrets struct {
 }
 
 type config struct {
-	sessionID string
-	cloneURL  string
-	branch    string
-	commit    string
-	natsURL   string
-	subject   string
-	inbox     string
-	secrets   secrets
+	runnerID    string
+	workspaceID string
+	provider    string
+	model       string
+	sessionID   string
+	cloneURL    string
+	branch      string
+	commit      string
+	natsURL     string
+	subject     string
+	inbox       string
+	secrets     secrets
 }
 
 // secretsFDEnv names the inherited descriptor the secrets arrive on after
@@ -176,6 +322,32 @@ func scrubSecrets() error {
 	return syscall.Exec(self, os.Args, env)
 }
 
+// verifyScrubbed reads this process's initial environment, as the kernel holds
+// it, and refuses if any secret is still there.
+//
+// On Linux that is /proc/self/environ. Where it does not exist (a developer's
+// macOS build of the runner) there is nothing to read and nothing to leak.
+func verifyScrubbed() error {
+	environ, err := os.ReadFile("/proc/self/environ")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read own environment: %w", err)
+	}
+	for _, entry := range strings.Split(string(environ), "\x00") {
+		for _, name := range secretEnv {
+			if strings.HasPrefix(entry, name+"=") {
+				return fmt.Errorf("%s is still in the process environment; refusing to become ready", name)
+			}
+		}
+		if strings.Contains(entry, "NATS USER JWT") || strings.Contains(entry, "NKEY SEED") {
+			return errors.New("a broker credential is still in the process environment; refusing to become ready")
+		}
+	}
+	return nil
+}
+
 // readSecrets takes the secrets from the descriptor scrubSecrets left open.
 func readSecrets() secrets {
 	raw := os.Getenv(secretsFDEnv)
@@ -201,18 +373,24 @@ func readSecrets() secrets {
 // readConfig takes what the control plane delivered at start.
 func readConfig() (config, error) {
 	cfg := config{
-		sessionID: os.Getenv("WEAVE_SESSION_ID"),
-		cloneURL:  os.Getenv("WEAVE_CLONE_URL"),
-		branch:    os.Getenv("WEAVE_BRANCH"),
-		commit:    os.Getenv("WEAVE_COMMIT"),
-		natsURL:   os.Getenv("WEAVE_NATS_URL"),
-		subject:   os.Getenv("WEAVE_EVENT_SUBJECT"),
-		inbox:     os.Getenv("WEAVE_NATS_INBOX"),
-		secrets:   readSecrets(),
+		runnerID:    os.Getenv("WEAVE_RUNNER_ID"),
+		workspaceID: os.Getenv("WEAVE_WORKSPACE_ID"),
+		provider:    os.Getenv("WEAVE_AGENT_PROVIDER"),
+		model:       os.Getenv("WEAVE_AGENT_MODEL"),
+		sessionID:   os.Getenv("WEAVE_SESSION_ID"),
+		cloneURL:    os.Getenv("WEAVE_CLONE_URL"),
+		branch:      os.Getenv("WEAVE_BRANCH"),
+		commit:      os.Getenv("WEAVE_COMMIT"),
+		natsURL:     os.Getenv("WEAVE_NATS_URL"),
+		subject:     os.Getenv("WEAVE_EVENT_SUBJECT"),
+		inbox:       os.Getenv("WEAVE_NATS_INBOX"),
+		secrets:     readSecrets(),
 	}
 
 	var missing []string
 	for name, value := range map[string]string{
+		"WEAVE_RUNNER_ID": cfg.runnerID, "WEAVE_WORKSPACE_ID": cfg.workspaceID,
+		"WEAVE_AGENT_PROVIDER": cfg.provider, "WEAVE_AGENT_MODEL": cfg.model,
 		"WEAVE_SESSION_ID": cfg.sessionID, "WEAVE_CLONE_URL": cfg.cloneURL, "WEAVE_BRANCH": cfg.branch,
 		"WEAVE_COMMIT": cfg.commit, "WEAVE_NATS_URL": cfg.natsURL, "WEAVE_EVENT_SUBJECT": cfg.subject,
 		"WEAVE_NATS_INBOX": cfg.inbox, "WEAVE_NATS_CREDS": cfg.secrets.NATSCreds,
@@ -229,6 +407,11 @@ func readConfig() (config, error) {
 	}
 	if !strings.Contains(cfg.subject, cfg.sessionID) {
 		return config{}, errors.New("WEAVE_EVENT_SUBJECT does not name this session")
+	}
+	for name, id := range map[string]string{"WEAVE_RUNNER_ID": cfg.runnerID, "WEAVE_WORKSPACE_ID": cfg.workspaceID, "WEAVE_SESSION_ID": cfg.sessionID} {
+		if _, err := uuid.Parse(id); err != nil {
+			return config{}, fmt.Errorf("%s is not a uuid", name)
+		}
 	}
 	return cfg, nil
 }

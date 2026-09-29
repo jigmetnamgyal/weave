@@ -242,3 +242,24 @@ func rejectedContent(err error) bool {
 func nullUUID(id uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: id != uuid.Nil}
 }
+
+// ProviderFailure returns the code of the first provider.failed event in a
+// session's history, if there is one.
+func (s *EventStore) ProviderFailure(ctx context.Context, sessionID, workspaceID uuid.UUID) (string, bool, error) {
+	var code string
+	found := false
+	err := inTenantTx(ctx, s.pool, func(q *postgresdb.Queries) error {
+		got, err := q.SessionProviderFailure(ctx, postgresdb.SessionProviderFailureParams{
+			SessionID: sessionID, WorkspaceID: workspaceID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read provider failure: %w", err)
+		}
+		code, found = got, true
+		return nil
+	})
+	return code, found, err
+}

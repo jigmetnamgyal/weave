@@ -30,9 +30,12 @@ RETURNING *;
 
 -- name: MarkRunnerTerminating :one
 -- Taken before the backend is asked to destroy anything, so a crash mid-
--- teardown leaves a runner the reconciler knows to finish.
+-- teardown leaves a runner the reconciler knows to finish. updated_at marks
+-- only the move into terminating: the reconciler bounds how long it leaves a
+-- halted runner by it, and a retried teardown must not restart that clock.
 UPDATE runners
-SET state = 'terminating', updated_at = now()
+SET state = 'terminating',
+    updated_at = CASE WHEN state = 'terminating' THEN updated_at ELSE now() END
 WHERE id = $1 AND workspace_id = $2 AND state IN ('provisioning', 'running', 'terminating')
 RETURNING *;
 

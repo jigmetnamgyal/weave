@@ -207,6 +207,29 @@ func (q *Queries) SessionEventExists(ctx context.Context, arg SessionEventExists
 	return exists, err
 }
 
+const sessionProviderFailure = `-- name: SessionProviderFailure :one
+SELECT (payload->>'code')::text AS code
+FROM session_events
+WHERE session_id = $1 AND workspace_id = $2 AND type = 'provider.failed'
+ORDER BY sequence
+LIMIT 1
+`
+
+type SessionProviderFailureParams struct {
+	SessionID   uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+// The first provider.failed a session's history holds, if any. Read after the
+// drain, so the history is complete. The code is a validated stable identifier
+// (domain.DecodeEvent); the provider's message text is never read here.
+func (q *Queries) SessionProviderFailure(ctx context.Context, arg SessionProviderFailureParams) (string, error) {
+	row := q.db.QueryRow(ctx, sessionProviderFailure, arg.SessionID, arg.WorkspaceID)
+	var code string
+	err := row.Scan(&code)
+	return code, err
+}
+
 const sessionStateForEvent = `-- name: SessionStateForEvent :one
 SELECT state FROM sessions
 WHERE id = $1 AND workspace_id = $2

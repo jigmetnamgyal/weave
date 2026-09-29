@@ -112,6 +112,10 @@ const (
 	// versionRunnerStep is M5.4a: provisioning, the branch, a runner with a
 	// verified checkout, running, then failure — there is no provider yet.
 	versionRunnerStep workflow.Version = 3
+	// versionProviderStep is M5.5b: the provider runs, the runner is halted,
+	// its events drained, the runner torn down, and the session ended by how
+	// the run went — review_ready, failed or expired.
+	versionProviderStep workflow.Version = 4
 )
 
 // SessionWorkflow takes a queued session as far as this milestone can.
@@ -133,7 +137,7 @@ func SessionWorkflow(ctx workflow.Context, input SessionWorkflowInput) error {
 	// `context/code-standards.md` requires. An execution that recorded
 	// version 1 finishes on the path it started — no branch step — and every
 	// new one takes version 2.
-	version := workflow.GetVersion(ctx, sessionWorkflowChange, workflow.DefaultVersion, versionRunnerStep)
+	version := workflow.GetVersion(ctx, sessionWorkflowChange, workflow.DefaultVersion, versionProviderStep)
 
 	logger.Info("provisioning a session", "session_id", input.SessionID)
 
@@ -163,7 +167,7 @@ func SessionWorkflow(ctx workflow.Context, input SessionWorkflowInput) error {
 	}
 
 	if version >= versionRunnerStep {
-		return runSession(ctx, input)
+		return runSession(ctx, input, version)
 	}
 
 	// Versions 1 and 2 end here: no runner. The session fails with a
@@ -272,7 +276,7 @@ func teardownActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
 // With no provider adapter (M5.5), a ready runner has nothing to run: it is
 // torn down and the session fails naming that, rather than sitting in
 // `running` with nothing that will ever move it.
-func runSession(ctx workflow.Context, input SessionWorkflowInput) error {
+func runSession(ctx workflow.Context, input SessionWorkflowInput, version workflow.Version) error {
 	logger := workflow.GetLogger(ctx)
 	teardown := func(failed bool, cause string) error {
 		cleanup, cancel := workflow.NewDisconnectedContext(ctx)
@@ -310,11 +314,15 @@ func runSession(ctx workflow.Context, input SessionWorkflowInput) error {
 	}
 	logger.Info("the session is running", "session_id", input.SessionID, "runner_id", runner.RunnerID)
 
-	// No provider adapter yet. The runner is torn down in the ordinary way —
-	// it did its job — and the session fails saying why. The session is
-	// failed even if teardown did not complete: the reconciler tears down
-	// runners of *ended* sessions, so leaving this one in `running` would
-	// leave its runner with nothing that will ever remove it.
+	if version >= versionProviderStep {
+		return finishRun(ctx, input, teardown)
+	}
+
+	// Version 3: no provider adapter yet. The runner is torn down in the
+	// ordinary way — it did its job — and the session fails saying why. The
+	// session is failed even if teardown did not complete: the reconciler
+	// tears down runners of *ended* sessions, so leaving this one in
+	// `running` would leave its runner with nothing that will ever remove it.
 	_ = teardown(false, string(application.RunnerFailureNoProvider))
 	return workflow.ExecuteActivity(ctx, ActivityFailSession, FailSessionInput{
 		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
@@ -339,4 +347,100 @@ func runnerFailureCause(err error) (string, bool) {
 		}
 	}
 	return string(application.RunnerFailureUnavailable), true
+}
+
+// runExitActivityOptions govern waiting for the provider, which may run for
+// hours: bounded by the session's maximum run time inside the activity, a
+// heartbeat so a dead runner manager is noticed, and a retry that finds the
+// same runner.
+func runExitActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		TaskQueue:           RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
+		StartToCloseTimeout: application.SessionMaxRunTime + 5*time.Minute,
+		HeartbeatTimeout:    time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 30 * time.Second,
+			MaximumAttempts: 5,
+		},
+	}
+}
+
+// DrainScheduleToClose bounds halting, and separately draining, across every
+// retry: a retried drain must not restart its ten minutes indefinitely, and
+// the reconciler's HaltedRunnerGrace must outlast both (held by a test).
+const DrainScheduleToClose = application.DrainTimeout + 5*time.Minute
+
+// drainActivityOptions govern halting and draining: short, heartbeating, and
+// retried, since both are idempotent.
+func drainActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		TaskQueue:              RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
+		ScheduleToCloseTimeout: DrainScheduleToClose,
+		StartToCloseTimeout:    application.DrainTimeout + 2*time.Minute,
+		HeartbeatTimeout:       time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 30 * time.Second,
+			MaximumAttempts: 5,
+		},
+	}
+}
+
+// finishRun is version 4's end of a session: the provider has started.
+//
+//	exit (or maximum run time) → halt → drain → teardown → complete
+//
+// **The order is the fix for the race M5.3 and M5.4a left here.** A runner's
+// last events may still be in the stream when it exits. Halting marks it
+// terminating — its events still accepted — and destroys its environment;
+// the drain then waits until the stream holds nothing for the session, so
+// every event the stream confirmed is stored; only then is the runner ended
+// and the session given a final state. Ending either one first would have the
+// ingestor refuse those events as `runner_not_bound` or `session_terminal`.
+// Loosening those refusals instead is not the fix: they are M5.3's gate and
+// invariant 10.
+func finishRun(ctx workflow.Context, input SessionWorkflowInput, teardown func(bool, string) error) error {
+	logger := workflow.GetLogger(ctx)
+
+	// The deadline is fixed here, once, and recorded in history: a retried
+	// wait keeps it rather than starting a fresh maximum run.
+	var exit RunnerExit
+	runCtx := workflow.WithActivityOptions(ctx, runExitActivityOptions(ctx))
+	if err := workflow.ExecuteActivity(runCtx, ActivityAwaitRunnerExit, AwaitExitInput{
+		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
+		Deadline: workflow.Now(ctx).Add(application.SessionMaxRunTime),
+	}).Get(ctx, &exit); err != nil {
+		logger.Warn("the runner's exit could not be observed", "session_id", input.SessionID, "error", err.Error())
+		exit = RunnerExit{ExitCode: runnerLostExit}
+	}
+	interrupted := ctx.Err() != nil
+
+	// Disconnected, so a cancelled workflow still halts, drains, tears down
+	// and ends the session — a session left in running with its runner gone
+	// is one nothing would ever move.
+	cleanup, cancel := workflow.NewDisconnectedContext(ctx)
+	defer cancel()
+	drainCtx := workflow.WithActivityOptions(cleanup, drainActivityOptions(ctx))
+	halted := true
+	if err := workflow.ExecuteActivity(drainCtx, ActivityHaltRunner, input).Get(cleanup, nil); err != nil {
+		// Not halted, the runner may still be publishing, so an empty stream
+		// proves nothing: the run cannot be vouched for.
+		logger.Error("the runner could not be halted; its history cannot be vouched for",
+			"session_id", input.SessionID, "error", err.Error())
+		halted = false
+	}
+	var drain DrainResult
+	if err := workflow.ExecuteActivity(drainCtx, ActivityDrainRunnerEvents, input).Get(cleanup, &drain); err != nil {
+		logger.Error("the drain could not complete", "session_id", input.SessionID, "error", err.Error())
+		drain.Drained = false
+	}
+	undrained := !halted || !drain.Drained
+
+	failed := interrupted || exit.Expired || exit.ExitCode != 0 || undrained
+	_ = teardown(failed, "")
+
+	completeCtx := workflow.WithActivityOptions(cleanup, workflow.GetActivityOptions(ctx))
+	return workflow.ExecuteActivity(completeCtx, ActivityCompleteSession, CompleteInput{
+		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
+		ExitCode: exit.ExitCode, Expired: exit.Expired, Undrained: undrained, Interrupted: interrupted,
+	}).Get(cleanup, nil)
 }

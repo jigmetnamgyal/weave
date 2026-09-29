@@ -121,7 +121,9 @@ func run() error {
 	)
 	branches := application.NewSessionBranchService(sessionStore, installations)
 
-	activities := weavetemporal.NewSessionActivities(sessions, branches)
+	outcomes := application.NewSessionOutcomeService(sessions, sessionStore,
+		postgres.NewAgentStore(appPool), postgres.NewEventStore(appPool))
+	activities := weavetemporal.NewSessionActivities(sessions, branches, outcomes)
 
 	w := worker.New(temporalClient, weavetemporal.TaskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(weavetemporal.SessionWorkflow, workflowOptions())
@@ -137,6 +139,8 @@ func run() error {
 		activityOptions(weavetemporal.ActivityFailSession))
 	w.RegisterActivityWithOptions(activities.MarkRunning,
 		activityOptions(weavetemporal.ActivityMarkRunning))
+	w.RegisterActivityWithOptions(activities.CompleteSession,
+		activityOptions(weavetemporal.ActivityCompleteSession))
 
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("start temporal worker: %w", err)

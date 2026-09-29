@@ -185,7 +185,8 @@ func (q *Queries) MarkRunnerRunning(ctx context.Context, arg MarkRunnerRunningPa
 
 const markRunnerTerminating = `-- name: MarkRunnerTerminating :one
 UPDATE runners
-SET state = 'terminating', updated_at = now()
+SET state = 'terminating',
+    updated_at = CASE WHEN state = 'terminating' THEN updated_at ELSE now() END
 WHERE id = $1 AND workspace_id = $2 AND state IN ('provisioning', 'running', 'terminating')
 RETURNING id, session_id, workspace_id, backend, backend_handle, state, failure_reason, created_at, ready_at, terminated_at, updated_at
 `
@@ -196,7 +197,9 @@ type MarkRunnerTerminatingParams struct {
 }
 
 // Taken before the backend is asked to destroy anything, so a crash mid-
-// teardown leaves a runner the reconciler knows to finish.
+// teardown leaves a runner the reconciler knows to finish. updated_at marks
+// only the move into terminating: the reconciler bounds how long it leaves a
+// halted runner by it, and a retried teardown must not restart that clock.
 func (q *Queries) MarkRunnerTerminating(ctx context.Context, arg MarkRunnerTerminatingParams) (Runner, error) {
 	row := q.db.QueryRow(ctx, markRunnerTerminating, arg.ID, arg.WorkspaceID)
 	var i Runner
