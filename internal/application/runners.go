@@ -82,9 +82,12 @@ type RunnerBackend interface {
 	Name() string
 	Provision(ctx context.Context, spec RunnerSpec) (handle string, err error)
 	Status(ctx context.Context, handle string) (RunnerStatus, error)
-	// Destroy removes the environment and every writable volume it had —
-	// ADR-013 retains no source after teardown.
-	Destroy(ctx context.Context, handle string) error
+	// Destroy removes everything the backend holds for a runner — the
+	// environment and every writable volume — ADR-013 retains no source after
+	// teardown. By runner id, with the handle as a hint when one was recorded:
+	// a provision that failed partway may have left storage before any
+	// handle existed, and teardown must remove that too.
+	Destroy(ctx context.Context, runnerID uuid.UUID, handle string) error
 	// HandleFor finds a runner's environment by runner id, for a runner whose
 	// handle was never recorded because the process died in between.
 	HandleFor(ctx context.Context, runnerID uuid.UUID) (handle string, found bool, err error)
@@ -357,20 +360,13 @@ func (s *RunnerService) teardown(ctx context.Context, runner domain.Runner, fail
 		return fmt.Errorf("mark runner terminating: %w", err)
 	}
 
-	handle := runner.Handle
-	if handle == "" {
-		found, ok, err := s.backend.HandleFor(ctx, runner.ID)
-		if err != nil {
-			return fmt.Errorf("look for the runner's environment: %w", err)
-		}
-		if ok {
-			handle = found
-		}
-	}
-	if handle != "" {
-		if err := s.backend.Destroy(ctx, handle); err != nil {
-			return fmt.Errorf("destroy runner: %w", err)
-		}
+	// Always, even with no handle recorded. The previous revision destroyed
+	// only when it could find a handle, and HandleFor answers only for a
+	// runnable environment — so a provision that created the workspace volume
+	// and then failed left that volume behind at teardown, holding what
+	// ADR-013 says is gone, until some later orphan sweep.
+	if err := s.backend.Destroy(ctx, runner.ID, runner.Handle); err != nil {
+		return fmt.Errorf("destroy runner: %w", err)
 	}
 
 	state := domain.RunnerTerminated
@@ -447,10 +443,15 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 	known := make(map[uuid.UUID]bool, len(live))
 	for _, item := range live {
 		runner := item.Runner
-		known[runner.ID] = true
 		if runner.Backend != s.backend.Name() {
-			continue // another backend's runner; not ours to judge
+			// Another backend's runner; not ours to judge. Nor is it "known"
+			// to this backend: an environment in *our* listing that only a
+			// foreign row names is one no runner of ours accounts for, and
+			// counting it known would shield it from the orphan sweep for as
+			// long as that row stayed live.
+			continue
 		}
+		known[runner.ID] = true
 		tenant := s.bind(ctx, runner.WorkspaceID)
 
 		if item.SessionState.Terminal() {
@@ -492,7 +493,7 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 			if known[environment.RunnerID] {
 				continue
 			}
-			if err := s.backend.Destroy(ctx, environment.Handle); err != nil {
+			if err := s.backend.Destroy(ctx, environment.RunnerID, environment.Handle); err != nil {
 				s.logger.WarnContext(ctx, "reconcile: could not destroy an orphaned environment",
 					slog.String("runner_id", environment.RunnerID.String()), slog.String("error", err.Error()))
 				continue

@@ -230,9 +230,12 @@ func (b *Backend) Status(ctx context.Context, handle string) (application.Runner
 	}, nil
 }
 
-// Destroy removes the container and its workspace volume. Either already gone
-// is success.
-func (b *Backend) Destroy(ctx context.Context, handle string) error {
+// Destroy removes the runner's container and its workspace volume, by runner
+// id. Either already gone is success. The handle is not needed — both names
+// derive from the runner id — which is what lets teardown remove a volume a
+// failed provision left before any handle was recorded.
+func (b *Backend) Destroy(ctx context.Context, runnerID uuid.UUID, _ string) error {
+	handle := b.name(runnerID)
 	if _, err := b.call(ctx, http.MethodDelete, "/containers/"+url.PathEscape(handle)+"?force=true",
 		nil, http.StatusNoContent); err != nil && !errors.Is(err, errNotFound) {
 		return fmt.Errorf("devdocker: remove runner container: %w", err)

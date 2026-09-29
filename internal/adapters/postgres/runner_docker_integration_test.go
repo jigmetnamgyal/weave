@@ -118,7 +118,7 @@ func dockerBackend(t *testing.T) *devdocker.Backend {
 	t.Cleanup(func() {
 		environments, _ := backend.List(context.Background())
 		for _, e := range environments {
-			_ = backend.Destroy(context.Background(), e.Handle)
+			_ = backend.Destroy(context.Background(), e.RunnerID, e.Handle)
 		}
 	})
 	return backend
@@ -455,5 +455,37 @@ func TestALeftoverVolumeDoesNotPassForARunnerIntegration(t *testing.T) {
 	ready := w.ready(t)
 	if ready.ID != runner.ID || ready.State != domain.RunnerRunning {
 		t.Errorf("the retried provision = %+v, want the same runner, running", ready)
+	}
+}
+
+// TestTeardownRemovesAVolumeLeftBeforeAnyHandleIntegration is a review
+// finding on PR #19, and a regression the previous round's fix introduced:
+// once HandleFor stopped answering for a lone volume, teardown found no handle
+// and skipped Destroy, leaving the workspace volume behind when the session
+// ended. Teardown now destroys by runner id.
+func TestTeardownRemovesAVolumeLeftBeforeAnyHandleIntegration(t *testing.T) {
+	w := newRunnerWorld(t, "Lone Volume Teardown Workspace")
+	runner, err := postgres.NewRunnerStore(w.appPool).Create(w.tenant, domain.Runner{
+		ID: uuid.New(), SessionID: w.session.ID, WorkspaceID: w.fixture.workspace.ID,
+		Backend: w.backend.Name(), State: domain.RunnerProvisioning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "weave-runner-" + strings.TrimPrefix(w.backend.Name(), "dev-docker-") + "-" + runner.ID.String()
+	// Labelled as the backend labels its own, so a failing run's cleanup
+	// finds and removes it.
+	scope := strings.TrimPrefix(w.backend.Name(), "dev-docker-")
+	if out, err := exec.Command("docker", "volume", "create",
+		"--label", "dev.weave.managed=true", "--label", "dev.weave.scope="+scope,
+		"--label", "dev.weave.runner-id="+runner.ID.String(), name).CombinedOutput(); err != nil {
+		t.Fatalf("leave a volume behind: %v %s", err, out)
+	}
+
+	if err := w.service.Teardown(w.tenant, w.fixture.workspace.ID, w.session.ID, true, ""); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	if dockerExists(t, "volume", name) {
+		t.Error("teardown left the workspace volume a failed provision created; ADR-013 retains no source")
 	}
 }

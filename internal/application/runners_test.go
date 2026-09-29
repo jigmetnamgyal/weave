@@ -221,9 +221,17 @@ func (b *fakeBackend) Provision(_ context.Context, spec application.RunnerSpec) 
 func (b *fakeBackend) Status(_ context.Context, handle string) (application.RunnerStatus, error) {
 	return b.envs[handle], nil
 }
-func (b *fakeBackend) Destroy(_ context.Context, handle string) error {
+func (b *fakeBackend) Destroy(_ context.Context, runnerID uuid.UUID, handle string) error {
 	b.w.log("backend.destroy")
 	delete(b.envs, handle)
+	delete(b.envs, "env-"+runnerID.String())
+	if b.orphans != nil {
+		for h, id := range b.orphans {
+			if id == runnerID {
+				delete(b.envs, h)
+			}
+		}
+	}
 	return nil
 }
 func (b *fakeBackend) HandleFor(_ context.Context, id uuid.UUID) (string, bool, error) {
@@ -345,5 +353,28 @@ func TestACancelledWaitIsNotAVerdictOnTheRunner(t *testing.T) {
 	_, err = w.service.AwaitReady(expired, w.session.WorkspaceID, runner, time.Millisecond, func() {})
 	if cause, terminal := application.ClassifyRunnerFailure(err); !terminal || cause != application.RunnerFailureNotReady {
 		t.Errorf("an expired wait = %v (%q, terminal %v), want runner_not_ready", err, cause, terminal)
+	}
+}
+
+// TestAForeignRowDoesNotShieldOurEnvironment is a review finding on PR #19:
+// a live row under another backend's name used to count as "known", so an
+// environment in this backend's listing with the same runner id escaped the
+// orphan sweep for as long as that row stayed live.
+func TestAForeignRowDoesNotShieldOurEnvironment(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	id := uuid.New()
+	w.store.runners[id] = domain.Runner{ID: id, SessionID: uuid.New(), WorkspaceID: w.session.WorkspaceID,
+		Backend: "someone-else", State: domain.RunnerRunning, Handle: "theirs"}
+	w.backend.envs["ours"] = application.RunnerStatus{Exists: true, Running: true}
+	w.backend.orphans = map[string]uuid.UUID{"ours": id}
+
+	if _, err := w.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := w.backend.envs["ours"]; exists {
+		t.Error("an environment only a foreign backend's row names escaped the orphan sweep")
+	}
+	if !w.store.runners[id].State.Live() {
+		t.Error("the foreign backend's row was judged by this backend")
 	}
 }

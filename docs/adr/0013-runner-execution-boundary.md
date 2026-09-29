@@ -120,9 +120,11 @@ applies to that workspace's sessions only.
   public registry reports per-package download counts, so an agent induced to
   fetch attacker-owned packages — `leak-a`, `leak-b`, in an order or a count —
   signals out a few bits per request through numbers anyone can read. It is
-  low-bandwidth, noisy (counts include mirrors and bots), and cannot carry a
-  file, but it is real, and the first version of this ADR wrongly said
-  registries expose nothing. **Control, required with the egress proxy
+  low-bandwidth and noisy — counts include mirrors and bots, and update with a
+  delay — but not bounded: repeated requests can move data in chunks, so a
+  small file is slow to exfiltrate this way, not impossible. The first version
+  of this ADR wrongly said registries expose nothing, and the second wrongly
+  said the channel could not carry a file. **Control, required with the egress proxy
   (M5.4b), before M6:** the proxy logs every registry request with its
   package path per session, so a session fetching packages no manifest in its
   repository names is visible and alertable. **Revisit** — with a pull-through
