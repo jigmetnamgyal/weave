@@ -23,9 +23,14 @@ import (
 // sit inside the stream's maximum age with a wide margin — a day — for an
 // ingestor outage of that length to still show up as undrained rather than as
 // drained.
+//
+// Since M5.4b the life counted is MaxRunnerLifetime — every provisioning
+// attempt, marking the session running, the run, halt and drain, and a
+// scheduling margin — not a single RunnerReadyTimeout: more conservative, and
+// the same bound a sandbox's session cap is held to.
 func TestTheDrainCannotOutliveTheStream(t *testing.T) {
 	const margin = 24 * time.Hour
-	life := weavetemporal.RunnerReadyTimeout + application.SessionMaxRunTime + application.DrainTimeout
+	life := weavetemporal.MaxRunnerLifetime()
 	if life+margin >= eventstream.StreamMaxAge {
 		t.Errorf("an event can live %s in the stream, plus a %s margin, against a stream maximum age of %s: "+
 			"a drain could read an expired event as an ingested one", life, margin, eventstream.StreamMaxAge)
@@ -34,8 +39,12 @@ func TestTheDrainCannotOutliveTheStream(t *testing.T) {
 
 // TestTheBrokerCredentialOutlivesTheRun: a runner's credential must still be
 // valid when its provider publishes its last event.
+//
+// The credential is minted once, with the environment, and reused by a
+// retried Provision, so its clock runs from the first provisioning attempt.
+// It must outlive the longest the environment holding it can live.
 func TestTheBrokerCredentialOutlivesTheRun(t *testing.T) {
-	need := weavetemporal.RunnerReadyTimeout + application.SessionMaxRunTime
+	need := weavetemporal.MaxRunnerLifetime()
 	if need >= natsauth.RunnerCredentialLifetime {
 		t.Errorf("a run may need the broker for %s, but its credential lives %s", need, natsauth.RunnerCredentialLifetime)
 	}
