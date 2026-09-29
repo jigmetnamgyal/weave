@@ -365,13 +365,19 @@ func runExitActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
 	}
 }
 
+// DrainScheduleToClose bounds halting, and separately draining, across every
+// retry: a retried drain must not restart its ten minutes indefinitely, and
+// the reconciler's HaltedRunnerGrace must outlast both (held by a test).
+const DrainScheduleToClose = application.DrainTimeout + 5*time.Minute
+
 // drainActivityOptions govern halting and draining: short, heartbeating, and
 // retried, since both are idempotent.
 func drainActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
 	return workflow.ActivityOptions{
-		TaskQueue:           RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
-		StartToCloseTimeout: application.DrainTimeout + 2*time.Minute,
-		HeartbeatTimeout:    time.Minute,
+		TaskQueue:              RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
+		ScheduleToCloseTimeout: DrainScheduleToClose,
+		StartToCloseTimeout:    application.DrainTimeout + 2*time.Minute,
+		HeartbeatTimeout:       time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 30 * time.Second,
 			MaximumAttempts: 5,

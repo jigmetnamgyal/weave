@@ -53,3 +53,15 @@ func TestAWaitPastItsDeadlineExpiresAtOnce(t *testing.T) {
 		t.Errorf("exit = %+v, %v; want expired", exit, err)
 	}
 }
+
+// TestTheReconcilerOutwaitsALiveDrain: the reconciler finishes a halted
+// runner of a running session only after HaltedRunnerGrace, taking its
+// workflow to be gone. A live workflow's halt and drain, every retry
+// included, must fit well inside that, or the reconciler would end a runner
+// whose events are still draining and they would be refused.
+func TestTheReconcilerOutwaitsALiveDrain(t *testing.T) {
+	if spent := 2 * weavetemporal.DrainScheduleToClose; spent+15*time.Minute > application.HaltedRunnerGrace {
+		t.Errorf("halt and drain may take %s; the reconciler's grace of %s must exceed that by at least 15m",
+			spent, application.HaltedRunnerGrace)
+	}
+}

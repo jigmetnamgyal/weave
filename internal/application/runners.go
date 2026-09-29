@@ -142,7 +142,18 @@ type RunnerBackend interface {
 type RunnerToReconcile struct {
 	Runner       domain.Runner
 	SessionState domain.SessionState
+	// StateSince is when the runner last changed state — for a terminating
+	// runner, when it was halted.
+	StateSince time.Time
 }
+
+// HaltedRunnerGrace is how long the reconciler leaves a halted runner of a
+// running session to its workflow's drain. Past it, the workflow is taken to
+// be gone — terminated between halting and ending — and the reconciler
+// finishes the teardown, so a failed destroy cannot leave an environment
+// forever. It must exceed everything a live workflow can spend halting and
+// draining, which a test holds against the activities' own bounds.
+const HaltedRunnerGrace = time.Hour
 
 // ReconcileCursor pages through live runners. The zero value is the first
 // page.
@@ -626,7 +637,8 @@ const reconcileMaxPages = 200
 //     for the workflow to drain its events. Nor is a *terminating* runner of
 //     a running session: its workflow halted it and is draining its events.
 //     It is left alone until the session moves on — review_ready is not
-//     terminal, so that is when it is finished here, not at case 1.
+//     terminal, so that is when it is finished here, not at case 1 — or for
+//     at most HaltedRunnerGrace, should its workflow be gone.
 //  3. **An environment exists that no live runner names** — the manager
 //     died after the backend created it and before anything recorded
 //     otherwise, or a runner ended with its destroy half-done. Destroyed.
@@ -687,13 +699,15 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 			continue
 		}
 
-		if runner.State == domain.RunnerTerminating && item.SessionState == domain.SessionRunning {
+		if runner.State == domain.RunnerTerminating && item.SessionState == domain.SessionRunning &&
+			time.Since(item.StateSince) < HaltedRunnerGrace {
 			// Halted by its workflow and draining (M5.5b): its environment is
 			// already gone by design, and its events must still be accepted
 			// until the drain finishes. Ending it here — every 30 seconds,
 			// against a drain of up to ten minutes — would refuse them as
 			// runner_not_bound. The workflow ends it and then the session;
-			// once the session has moved on, the case below finishes it.
+			// once the session has moved on — or past the grace, if its
+			// workflow never comes back — the case below finishes it.
 			continue
 		}
 		if runner.Handle == "" {

@@ -229,7 +229,9 @@ type Querier interface {
 	MarkInstallationDeleted(ctx context.Context, arg MarkInstallationDeletedParams) error
 	MarkRunnerRunning(ctx context.Context, arg MarkRunnerRunningParams) (Runner, error)
 	// Taken before the backend is asked to destroy anything, so a crash mid-
-	// teardown leaves a runner the reconciler knows to finish.
+	// teardown leaves a runner the reconciler knows to finish. updated_at marks
+	// only the move into terminating: the reconciler bounds how long it leaves a
+	// halted runner by it, and a retried teardown must not restart that clock.
 	MarkRunnerTerminating(ctx context.Context, arg MarkRunnerTerminatingParams) (Runner, error)
 	// Read under the agent's row lock by the caller, so two concurrent edits
 	// cannot both compute the same next number and collide on the unique index.

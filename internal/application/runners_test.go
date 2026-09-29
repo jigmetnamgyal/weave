@@ -283,8 +283,9 @@ func (b *fakeBackend) List(context.Context) ([]application.BackendRunner, error)
 }
 
 type fakeRunnerStore struct {
-	w       *runnerWorld
-	runners map[uuid.UUID]domain.Runner
+	stateSince map[uuid.UUID]time.Time
+	w          *runnerWorld
+	runners    map[uuid.UUID]domain.Runner
 	// sessionStates overrides the world's session state per runner session.
 	sessionStates map[uuid.UUID]domain.SessionState
 }
@@ -356,7 +357,11 @@ func (s *fakeRunnerStore) ListToReconcile(_ context.Context, limit int, after ap
 		if override, ok := s.sessionStates[r.SessionID]; ok {
 			state = override
 		}
-		out = append(out, application.RunnerToReconcile{Runner: r, SessionState: state})
+		since := time.Now()
+		if at, ok := s.stateSince[r.ID]; ok {
+			since = at
+		}
+		out = append(out, application.RunnerToReconcile{Runner: r, SessionState: state, StateSince: since})
 		if len(out) == limit {
 			break
 		}
@@ -529,5 +534,31 @@ func TestAHaltedRunnerIsLeftToDrain(t *testing.T) {
 	}
 	if got := w.store.runners[runner.ID].State; got == domain.RunnerTerminating || got == domain.RunnerRunning {
 		t.Errorf("after the session ended the runner is still %s", got)
+	}
+}
+
+// TestAnAbandonedHaltedRunnerIsFinishedAfterTheGrace: a workflow terminated
+// between halting and ending leaves its runner terminating and its session
+// running. Past the grace the reconciler finishes the teardown — so a halt
+// whose destroy failed does not leave its environment forever.
+func TestAnAbandonedHaltedRunnerIsFinishedAfterTheGrace(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	runner, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.session.State = domain.SessionRunning
+	// Halted, but the destroy never happened: the environment still stands.
+	w.store.runners[runner.ID] = func() domain.Runner { r := w.store.runners[runner.ID]; r.State = domain.RunnerTerminating; return r }()
+	w.store.stateSince = map[uuid.UUID]time.Time{runner.ID: time.Now().Add(-application.HaltedRunnerGrace - time.Minute)}
+
+	if _, err := w.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.store.runners[runner.ID].State; got != domain.RunnerTerminated {
+		t.Errorf("an abandoned halted runner = %s, want terminated", got)
+	}
+	if _, exists := w.backend.envs[runner.Handle]; exists {
+		t.Error("its environment was left standing")
 	}
 }

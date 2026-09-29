@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -115,7 +116,7 @@ func (s *RunnerStore) ListToReconcile(
 		afterCreated = pgtype.Timestamptz{Time: after.CreatedAt, Valid: true}
 		afterID = pgtype.UUID{Bytes: after.ID, Valid: true}
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, session_id, workspace_id, backend, backend_handle, state, session_state, created_at
+	rows, err := s.pool.Query(ctx, `SELECT id, session_id, workspace_id, backend, backend_handle, state, session_state, created_at, updated_at
 		FROM weave_runners_to_reconcile($1, $2, $3)`, limit, afterCreated, afterID)
 	if err != nil {
 		return nil, fmt.Errorf("list runners to reconcile: %w", err)
@@ -129,16 +130,19 @@ func (s *RunnerStore) ListToReconcile(
 			handle       *string
 			state        string
 			sessionState string
+			updatedAt    time.Time
 		)
 		if err := rows.Scan(&runner.ID, &runner.SessionID, &runner.WorkspaceID, &runner.Backend,
-			&handle, &state, &sessionState, &runner.CreatedAt); err != nil {
+			&handle, &state, &sessionState, &runner.CreatedAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan runner to reconcile: %w", err)
 		}
 		if handle != nil {
 			runner.Handle = *handle
 		}
 		runner.State = domain.RunnerState(state)
-		out = append(out, application.RunnerToReconcile{Runner: runner, SessionState: domain.SessionState(sessionState)})
+		out = append(out, application.RunnerToReconcile{
+			Runner: runner, SessionState: domain.SessionState(sessionState), StateSince: updatedAt,
+		})
 	}
 	return out, rows.Err()
 }
