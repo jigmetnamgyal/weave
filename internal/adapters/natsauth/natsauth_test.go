@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,5 +152,57 @@ func TestAnInterruptedSetupIsRegeneratedNotTrusted(t *testing.T) {
 	info, err := os.Stat(filepath.Join(dir, natsauth.RunnerSigningFile))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Errorf("the signing key is %v (%v); it must be owner-only", info.Mode().Perm(), err)
+	}
+}
+
+// TestConcurrentSetupsGenerateOnce is a review finding on PR #20: `make up` and
+// `make dev` started together could each see no setup, each generate, and the
+// second replace the first's keys after NATS had loaded them. Under the lock,
+// exactly one generates and every caller ends with the same key set.
+func TestConcurrentSetupsGenerateOnce(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "generated")
+	const callers = 8
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		generated int
+		failures  []error
+		start     = make(chan struct{})
+	)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			did, err := natsauth.EnsureSetup(dir, false)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failures = append(failures, err)
+			} else if did {
+				generated++
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(failures) > 0 {
+		t.Fatalf("%d setups failed, first: %v", len(failures), failures[0])
+	}
+	if generated != 1 {
+		t.Errorf("%d concurrent setups generated keys, want exactly 1", generated)
+	}
+	account, err := os.ReadFile(filepath.Join(dir, natsauth.AccountPublicFile))
+	if err != nil || len(strings.TrimSpace(string(account))) == 0 {
+		t.Fatalf("no account key after setup: %v", err)
+	}
+	// A later call finds the complete setup and leaves it alone.
+	if did, err := natsauth.EnsureSetup(dir, false); err != nil || did {
+		t.Errorf("a setup over a complete one = (%v, %v), want left alone", did, err)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, natsauth.AccountPublicFile))
+	if string(after) != string(account) {
+		t.Error("the account key changed after the setup was complete")
 	}
 }

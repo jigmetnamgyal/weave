@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -278,6 +279,41 @@ func Generate(dir string) (Setup, error) {
 		return Setup{}, err
 	}
 	return Setup{Dir: dir}, nil
+}
+
+// EnsureSetup generates a setup in dir unless a complete one is already there,
+// or always when force is set — and does so under an exclusive lock, so two
+// processes starting at once cannot both generate.
+//
+// The lock is what makes the check-then-generate safe. Without it, `make up`
+// and `make dev` started together could each see no setup, each generate one,
+// and the second replace the first's keys after NATS had already loaded them —
+// leaving the broker on one account and every client on another. Under the
+// lock the second finds the first's complete setup and uses it.
+func EnsureSetup(dir string, force bool) (generated bool, err error) {
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return false, err
+	}
+	lock, err := os.OpenFile(filepath.Join(parent, "."+filepath.Base(dir)+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Close() }()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return false, fmt.Errorf("lock %s: %w", dir, err)
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+
+	// Checked again under the lock: another process may have finished while
+	// this one waited.
+	if !force && Complete(dir) {
+		return false, nil
+	}
+	if _, err := Generate(dir); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Complete reports whether dir holds every file a setup needs. A setup

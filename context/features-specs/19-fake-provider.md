@@ -119,6 +119,22 @@ counts per subject. Once the runner has exited, a count of zero on
 `weave.session.<id>.events` proves that every event the stream confirmed was
 stored or quarantined. Wait for that, bounded, before teardown.
 
+**A third condition: no event may expire out of the stream first.** The
+stream drops unacknowledged messages after its maximum age (72 hours, M5.3).
+If ingestion were down that long, the count would reach zero because the
+events were *deleted*, and the drain would read a loss as a success. The proof
+holds only while an event cannot outlive the stream's retention before the
+drain wait ends:
+
+- state it as an invariant — the session's maximum run time plus the drain
+  wait's bound is strictly less than the stream's maximum age, with margin —
+  and **enforce it with a test** over the actual constants, so a later change
+  to any one of them fails the build rather than silently breaking the proof;
+- and say what the workflow does if the invariant ever cannot hold (a stream
+  reconfigured shorter by hand, say): the drain must not report success on a
+  count it cannot trust. M5.3's `EnsureStream` already refuses a drifted
+  stream at startup; say whether that is sufficient.
+
 Decide what happens when the bound is reached with messages still pending —
 the ingestor is down, say. Neither failing the session nor ending it silently
 is obviously right. Record the choice.

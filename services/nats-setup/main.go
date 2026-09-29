@@ -24,15 +24,17 @@ func main() {
 	force := flag.Bool("force", false, "regenerate even if a setup exists")
 	flag.Parse()
 
-	// The complete set, not one file: a setup interrupted partway is
-	// regenerated rather than trusted.
-	if natsauth.Complete(*out) && !*force {
-		fmt.Printf("NATS credentials already exist in %s\n", *out)
-		return
-	}
-	if _, err := natsauth.Generate(*out); err != nil {
+	// Under a lock, and checking the complete file set rather than one
+	// file: a setup interrupted partway is regenerated, and two runs started
+	// together cannot both generate.
+	generated, err := natsauth.EnsureSetup(*out, *force)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "nats-setup: %v\n", err)
 		os.Exit(1)
+	}
+	if !generated {
+		fmt.Printf("NATS credentials already exist in %s\n", *out)
+		return
 	}
 	fmt.Printf("Generated NATS credentials in %s\n", *out)
 }
