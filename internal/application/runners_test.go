@@ -484,8 +484,11 @@ func TestHaltKeepsTheRunnerLive(t *testing.T) {
 // vanished environment is lost.
 func TestAStoppedRunnerIsTheWorkflowsNotTheReconcilers(t *testing.T) {
 	w := newRunnerTestWorld(t)
+	runner, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+	if err != nil || runner.Handle == "" {
+		t.Fatalf("provision: %+v, %v", runner, err)
+	}
 	w.session.State = domain.SessionRunning
-	runner, _ := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
 	w.store.runners[runner.ID] = func() domain.Runner { r := w.store.runners[runner.ID]; r.State = domain.RunnerRunning; return r }()
 	w.backend.envs[runner.Handle] = application.RunnerStatus{Exists: true, Running: false, ExitCode: 0}
 
@@ -494,5 +497,37 @@ func TestAStoppedRunnerIsTheWorkflowsNotTheReconcilers(t *testing.T) {
 	}
 	if got := w.store.runners[runner.ID].State; got != domain.RunnerRunning {
 		t.Errorf("a stopped runner of a running session was reconciled to %s; it is the workflow's to end", got)
+	}
+}
+
+// TestAHaltedRunnerIsLeftToDrain: halted, a runner is terminating with its
+// environment already destroyed — by design — while its events drain. The
+// reconciler must neither finish it nor call it lost until the session ends.
+func TestAHaltedRunnerIsLeftToDrain(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	runner, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+	if err != nil || runner.Handle == "" {
+		t.Fatalf("provision: %+v, %v", runner, err)
+	}
+	w.session.State = domain.SessionRunning
+	w.store.runners[runner.ID] = func() domain.Runner { r := w.store.runners[runner.ID]; r.State = domain.RunnerRunning; return r }()
+	if err := w.service.Halt(context.Background(), w.session.WorkspaceID, w.session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := w.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.store.runners[runner.ID].State; got != domain.RunnerTerminating {
+		t.Errorf("a halted runner of a running session was reconciled to %s; it is draining", got)
+	}
+
+	// Once the session ends, it is the reconciler's.
+	w.session.State = domain.SessionReviewReady
+	if _, err := w.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.store.runners[runner.ID].State; got == domain.RunnerTerminating || got == domain.RunnerRunning {
+		t.Errorf("after the session ended the runner is still %s", got)
 	}
 }

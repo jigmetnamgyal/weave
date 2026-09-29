@@ -62,6 +62,11 @@ func TestHowASessionEnds(t *testing.T) {
 		{"unconfirmed events", "", application.RunOutcome{ExitCode: application.RunnerExitPublishFailed},
 			domain.SessionFailed, "could not get its events confirmed"},
 		{"lost", "", application.RunOutcome{ExitCode: -1}, domain.SessionFailed, "stopped before"},
+		{"runner interrupted", "", application.RunOutcome{ExitCode: application.RunnerExitInterrupted},
+			domain.SessionFailed, "stopped before the provider finished"},
+		// A cancelled workflow outranks the exit it happened to observe.
+		{"workflow interrupted", "", application.RunOutcome{ExitCode: 0, Interrupted: true},
+			domain.SessionFailed, "interrupted before the fake provider finished"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

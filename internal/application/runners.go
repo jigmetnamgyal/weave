@@ -46,6 +46,9 @@ const (
 	RunnerExitProviderUnavailable = 7
 	// RunnerExitPublishFailed: an event could not be confirmed by the stream.
 	RunnerExitPublishFailed = 8
+	// RunnerExitInterrupted: the runner was signalled to stop while its
+	// provider was still running. Never success: the provider did not finish.
+	RunnerExitInterrupted = 9
 )
 
 // RunnerSpec is everything an environment needs at start. Delivered at start,
@@ -410,7 +413,8 @@ func (s *RunnerService) AwaitReady(
 			return running, err
 		case !status.Exists:
 			return domain.Runner{}, ErrRunnerLost
-		case !status.Running && (status.ExitCode == 0 || status.ExitCode == RunnerExitProviderFailed):
+		case !status.Running && (status.ExitCode == 0 || status.ExitCode == RunnerExitProviderFailed ||
+			status.ExitCode == RunnerExitInterrupted):
 			// A fast provider can finish before a health check ever reports
 			// healthy. These two exits prove readiness anyway: the runner
 			// starts its provider only after the checkout and the broker
@@ -616,10 +620,13 @@ const reconcileMaxPages = 200
 //
 //  1. **The session has ended** but its runner is live — a workflow that
 //     died before tearing down. Torn down.
-//  2. **The environment is gone** while the runner is recorded live — lost,
-//     in the dev backend's terms. Torn down as failed. A *stopped*
+//  2. **The environment is gone** while the runner is recorded running —
+//     lost, in the dev backend's terms. Torn down as failed. A *stopped*
 //     environment is not lost: since M5.5b it is a finished provider waiting
-//     for the workflow to drain its events.
+//     for the workflow to drain its events. Nor is a *terminating* runner of
+//     a running session: its workflow halted it and is draining its events.
+//     It is left alone until the session moves on — review_ready is not
+//     terminal, so that is when it is finished here, not at case 1.
 //  3. **An environment exists that no live runner names** — the manager
 //     died after the backend created it and before anything recorded
 //     otherwise, or a runner ended with its destroy half-done. Destroyed.
@@ -680,6 +687,15 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 			continue
 		}
 
+		if runner.State == domain.RunnerTerminating && item.SessionState == domain.SessionRunning {
+			// Halted by its workflow and draining (M5.5b): its environment is
+			// already gone by design, and its events must still be accepted
+			// until the drain finishes. Ending it here — every 30 seconds,
+			// against a drain of up to ten minutes — would refuse them as
+			// runner_not_bound. The workflow ends it and then the session;
+			// once the session has moved on, the case below finishes it.
+			continue
+		}
 		if runner.Handle == "" {
 			// Being provisioned right now, or died before recording its
 			// handle. The provisioning activity resolves the first; the
@@ -696,10 +712,8 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 		// still draining as runner_not_bound — the loss the drain exists to
 		// prevent. The workflow always halts and ends it; a session that ends
 		// without that is cleaned up by the first case above.
-		lost := !status.Exists
-		if runner.State == domain.RunnerTerminating || lost {
-			reason := "the runner's environment stopped"
-			failed := true
+		if runner.State == domain.RunnerTerminating || !status.Exists {
+			reason, failed := "the runner's environment stopped", true
 			if runner.State == domain.RunnerTerminating {
 				reason, failed = "teardown finished by the reconciler", false
 			}

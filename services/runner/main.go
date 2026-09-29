@@ -57,6 +57,10 @@ const (
 	// runner stops rather than exit 0 with events the control plane will
 	// never see — the drain's proof depends on every event being confirmed.
 	exitPublishFailed = 8
+	// exitInterrupted: the runner was signalled to stop while the provider
+	// was still running. Its event channel closes early, so without this the
+	// loop would end as though the provider had finished.
+	exitInterrupted = 9
 )
 
 // secretEnv are the variables that carry secrets at start. scrubSecrets moves
@@ -160,16 +164,34 @@ func runProvider(ctx context.Context, cfg config, conn *nats.Conn) int {
 		return exitPublishFailed
 	}
 	correlation := uuid.New()
+	return relay(ctx, events, func(event agent.ProviderEvent) error {
+		return publish(ctx, js, cfg, correlation, event)
+	}, func() { _ = adapter.Cancel(context.Background()) })
+}
+
+// relay publishes each of the provider's events in order and decides the
+// exit code. Separate from runProvider so it can be exercised without a
+// broker.
+//
+// **The channel closing is not proof the provider finished**: a signal
+// cancels ctx, the adapter stops and closes its channel early, and without
+// the check after the loop that would exit 0 — read by the control plane as
+// a finished run, ending a half-run session review_ready.
+func relay(ctx context.Context, events <-chan agent.ProviderEvent, send func(agent.ProviderEvent) error, cancel func()) int {
 	failed := false
 	for event := range events {
-		if err := publish(ctx, js, cfg, correlation, event); err != nil {
+		if err := send(event); err != nil {
 			fmt.Fprintf(os.Stderr, "weave-runner: publish %s: %v\n", event.Type, err)
-			_ = adapter.Cancel(context.Background())
+			cancel()
 			return exitPublishFailed
 		}
 		if event.Type == domain.EventProviderFailed {
 			failed = true
 		}
+	}
+	if ctx.Err() != nil {
+		fmt.Fprintln(os.Stderr, "weave-runner: interrupted before the provider finished")
+		return exitInterrupted
 	}
 	if failed {
 		return exitProviderFailed

@@ -162,6 +162,16 @@ type CompleteInput struct {
 	ExitCode    int    `json:"exit_code"`
 	Expired     bool   `json:"expired"`
 	Undrained   bool   `json:"undrained"`
+	Interrupted bool   `json:"interrupted"`
+}
+
+// AwaitExitInput carries the run's deadline, fixed by the workflow once, so a
+// retried attempt — after a runner-manager restart, say — keeps the same
+// limit instead of starting a fresh eight hours.
+type AwaitExitInput struct {
+	WorkspaceID string    `json:"workspace_id"`
+	SessionID   string    `json:"session_id"`
+	Deadline    time.Time `json:"deadline"`
 }
 
 // runnerLostExit stands for "the runner could not be observed to exit".
@@ -170,12 +180,20 @@ const runnerLostExit = -1
 // AwaitRunnerExit waits for the runner to stop, bounded by the session's
 // maximum run time, heartbeating as it waits. Reaching the bound is an
 // outcome — the session expires — not an activity failure.
-func (a *RunnerActivities) AwaitRunnerExit(ctx context.Context, input SessionWorkflowInput) (RunnerExit, error) {
-	workspaceID, sessionID, err := parseIdentifiers(input)
+func (a *RunnerActivities) AwaitRunnerExit(ctx context.Context, input AwaitExitInput) (RunnerExit, error) {
+	workspaceID, sessionID, err := parseIdentifiers(SessionWorkflowInput{
+		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
+	})
 	if err != nil {
 		return RunnerExit{}, err
 	}
-	runCtx, cancel := context.WithTimeout(postgresTenant(ctx, workspaceID), application.SessionMaxRunTime)
+	if input.Deadline.IsZero() {
+		return RunnerExit{}, temporal.NewNonRetryableApplicationError("the run has no deadline", "InvalidInput", nil)
+	}
+	if !time.Now().Before(input.Deadline) {
+		return RunnerExit{Expired: true}, nil
+	}
+	runCtx, cancel := context.WithDeadline(postgresTenant(ctx, workspaceID), input.Deadline)
 	defer cancel()
 	code, err := a.runners.AwaitExit(runCtx, workspaceID, sessionID, time.Second,
 		func() { activity.RecordHeartbeat(ctx) })
@@ -232,6 +250,7 @@ func (a *SessionActivities) CompleteSession(ctx context.Context, input CompleteI
 	}
 	_, err = a.outcomes.Complete(postgresTenant(ctx, workspaceID), workspaceID, sessionID, application.RunOutcome{
 		ExitCode: input.ExitCode, Expired: input.Expired, Undrained: input.Undrained,
+		Interrupted: input.Interrupted,
 	})
 	if errors.Is(err, application.ErrSessionNotFound) {
 		return temporal.NewNonRetryableApplicationError("the session no longer exists", ErrorTypeNotFound, err)

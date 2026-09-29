@@ -395,32 +395,46 @@ func drainActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
 func finishRun(ctx workflow.Context, input SessionWorkflowInput, teardown func(bool, string) error) error {
 	logger := workflow.GetLogger(ctx)
 
+	// The deadline is fixed here, once, and recorded in history: a retried
+	// wait keeps it rather than starting a fresh maximum run.
 	var exit RunnerExit
 	runCtx := workflow.WithActivityOptions(ctx, runExitActivityOptions(ctx))
-	if err := workflow.ExecuteActivity(runCtx, ActivityAwaitRunnerExit, input).Get(ctx, &exit); err != nil {
+	if err := workflow.ExecuteActivity(runCtx, ActivityAwaitRunnerExit, AwaitExitInput{
+		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
+		Deadline: workflow.Now(ctx).Add(application.SessionMaxRunTime),
+	}).Get(ctx, &exit); err != nil {
 		logger.Warn("the runner's exit could not be observed", "session_id", input.SessionID, "error", err.Error())
 		exit = RunnerExit{ExitCode: runnerLostExit}
 	}
+	interrupted := ctx.Err() != nil
 
-	// Disconnected, so a cancelled workflow still halts and drains.
+	// Disconnected, so a cancelled workflow still halts, drains, tears down
+	// and ends the session — a session left in running with its runner gone
+	// is one nothing would ever move.
 	cleanup, cancel := workflow.NewDisconnectedContext(ctx)
 	defer cancel()
 	drainCtx := workflow.WithActivityOptions(cleanup, drainActivityOptions(ctx))
+	halted := true
 	if err := workflow.ExecuteActivity(drainCtx, ActivityHaltRunner, input).Get(cleanup, nil); err != nil {
-		logger.Error("the runner could not be halted; teardown and the reconciler will finish it",
+		// Not halted, the runner may still be publishing, so an empty stream
+		// proves nothing: the run cannot be vouched for.
+		logger.Error("the runner could not be halted; its history cannot be vouched for",
 			"session_id", input.SessionID, "error", err.Error())
+		halted = false
 	}
 	var drain DrainResult
 	if err := workflow.ExecuteActivity(drainCtx, ActivityDrainRunnerEvents, input).Get(cleanup, &drain); err != nil {
 		logger.Error("the drain could not complete", "session_id", input.SessionID, "error", err.Error())
 		drain.Drained = false
 	}
+	undrained := !halted || !drain.Drained
 
-	failed := exit.Expired || exit.ExitCode != 0 || !drain.Drained
+	failed := interrupted || exit.Expired || exit.ExitCode != 0 || undrained
 	_ = teardown(failed, "")
 
-	return workflow.ExecuteActivity(ctx, ActivityCompleteSession, CompleteInput{
+	completeCtx := workflow.WithActivityOptions(cleanup, workflow.GetActivityOptions(ctx))
+	return workflow.ExecuteActivity(completeCtx, ActivityCompleteSession, CompleteInput{
 		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
-		ExitCode: exit.ExitCode, Expired: exit.Expired, Undrained: !drain.Drained,
-	}).Get(ctx, nil)
+		ExitCode: exit.ExitCode, Expired: exit.Expired, Undrained: undrained, Interrupted: interrupted,
+	}).Get(cleanup, nil)
 }

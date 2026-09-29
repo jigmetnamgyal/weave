@@ -16,8 +16,12 @@ type RunOutcome struct {
 	ExitCode int
 	// Expired: the provider was still running at SessionMaxRunTime.
 	Expired bool
-	// Undrained: the stream still held the session's events at DrainTimeout.
+	// Undrained: the stream still held the session's events at DrainTimeout,
+	// or the runner could not be halted, so an empty stream proves nothing.
 	Undrained bool
+	// Interrupted: the session's workflow was cancelled before the provider
+	// finished.
+	Interrupted bool
 }
 
 // SessionProviderFailures reads whether a session's history holds a
@@ -78,6 +82,9 @@ func (s *SessionOutcomeService) Complete(
 	switch {
 	case outcome.Undrained:
 		return end(domain.SessionFailed, SessionFailureReason(string(RunnerFailureEventsNotDrained)))
+	case outcome.Interrupted:
+		return end(domain.SessionFailed,
+			fmt.Sprintf("the session's run was interrupted before the %s provider finished", provider))
 	case outcome.Expired:
 		return end(domain.SessionExpired,
 			fmt.Sprintf("the %s provider was still running at the session's maximum run time", provider))
@@ -100,6 +107,9 @@ func (s *SessionOutcomeService) Complete(
 			"the %s provider's runner reported failure without a failure event", provider))
 	case RunnerExitProviderUnavailable:
 		return end(domain.SessionFailed, SessionFailureReason(string(RunnerFailureProviderUnavailable)))
+	case RunnerExitInterrupted:
+		return end(domain.SessionFailed,
+			fmt.Sprintf("the %s provider's runner was stopped before the provider finished", provider))
 	case RunnerExitPublishFailed:
 		return end(domain.SessionFailed, SessionFailureReason(string(RunnerFailureEventsUnconfirmed)))
 	default:

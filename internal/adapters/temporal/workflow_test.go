@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
@@ -29,7 +30,10 @@ type run struct {
 	runningErr   error
 	exit         weavetemporal.RunnerExit
 	exitErr      error
+	haltErr      error
 	drained      bool
+	// cancelDuringRun cancels the workflow while it waits for the runner.
+	cancelDuringRun bool
 
 	steps          []string
 	cutAttempts    int
@@ -38,6 +42,7 @@ type run struct {
 	failCauses     []string
 	teardowns      []weavetemporal.TeardownInput
 	completed      []weavetemporal.CompleteInput
+	deadlines      []time.Time
 }
 
 func newRun() *run {
@@ -111,7 +116,12 @@ func (r *run) execute(t *testing.T) {
 		},
 		activityOptions(weavetemporal.ActivityFailUnprovisionable))
 	r.env.RegisterActivityWithOptions(
-		func(context.Context, weavetemporal.SessionWorkflowInput) (weavetemporal.RunnerExit, error) {
+		func(_ context.Context, input weavetemporal.AwaitExitInput) (weavetemporal.RunnerExit, error) {
+			r.deadlines = append(r.deadlines, input.Deadline)
+			if r.cancelDuringRun {
+				r.env.CancelWorkflow()
+				return weavetemporal.RunnerExit{}, context.Canceled
+			}
 			if r.exitErr != nil {
 				return weavetemporal.RunnerExit{}, r.exitErr
 			}
@@ -121,6 +131,9 @@ func (r *run) execute(t *testing.T) {
 		activityOptions(weavetemporal.ActivityAwaitRunnerExit))
 	r.env.RegisterActivityWithOptions(
 		func(context.Context, weavetemporal.SessionWorkflowInput) error {
+			if r.haltErr != nil {
+				return temporal.NewNonRetryableApplicationError("halt", "Test", r.haltErr)
+			}
 			r.steps = append(r.steps, "halt")
 			return nil
 		},
@@ -205,6 +218,14 @@ func TestWhatTheWorkflowObservesReachesTheOutcome(t *testing.T) {
 			weavetemporal.CompleteInput{Undrained: true}},
 		"exit not observed": {func(r *run) { r.exitErr = errors.New("backend unreachable") },
 			weavetemporal.CompleteInput{ExitCode: -1}},
+		// Not halted, the runner may still be publishing: an empty stream
+		// proves nothing, so the run is not vouched for.
+		"not halted": {func(r *run) { r.haltErr = errors.New("backend unreachable") },
+			weavetemporal.CompleteInput{Undrained: true}},
+		// Cancelled mid-run: still halted, drained, torn down — and ended,
+		// on a disconnected context, rather than left running.
+		"cancelled": {func(r *run) { r.cancelDuringRun = true },
+			weavetemporal.CompleteInput{ExitCode: -1, Interrupted: true}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -215,13 +236,14 @@ func TestWhatTheWorkflowObservesReachesTheOutcome(t *testing.T) {
 				t.Fatalf("route %s: completed %d times", r.route(), len(r.completed))
 			}
 			got := r.completed[0]
-			if got.ExitCode != tc.want.ExitCode || got.Expired != tc.want.Expired || got.Undrained != tc.want.Undrained {
+			if got.ExitCode != tc.want.ExitCode || got.Expired != tc.want.Expired ||
+				got.Undrained != tc.want.Undrained || got.Interrupted != tc.want.Interrupted {
 				t.Errorf("completed with %+v, want %+v", got, tc.want)
 			}
 			if len(r.teardowns) != 1 || !r.teardowns[0].Failed {
 				t.Errorf("teardowns = %+v, want one, as failed", r.teardowns)
 			}
-			if !strings.Contains(r.route(), "halt → drain → teardown → complete") {
+			if !strings.HasSuffix(r.route(), "drain → teardown → complete") {
 				t.Errorf("route = %s; the end must be halt, drain, teardown, complete, in that order", r.route())
 			}
 		})
@@ -438,4 +460,26 @@ var errRefused = errors.New("the session cannot become provisioning")
 // running workflow is not stranded by a rename.
 func activityOptions(name string) activity.RegisterOptions {
 	return activity.RegisterOptions{Name: name}
+}
+
+// TestARetriedWaitKeepsTheRunDeadline: the maximum run is fixed once, by the
+// workflow. An attempt retried hours in — after a runner-manager restart —
+// must not start a fresh eight hours, which could outlive the runner's
+// broker credential.
+func TestARetriedWaitKeepsTheRunDeadline(t *testing.T) {
+	r := newRun()
+	r.exitErr = errors.New("runner manager restarted")
+	r.execute(t)
+	if len(r.deadlines) < 2 {
+		t.Fatalf("%d attempts; the case needs retries", len(r.deadlines))
+	}
+	first := r.deadlines[0]
+	if want := r.env.Now().Add(application.SessionMaxRunTime); first.After(want) {
+		t.Errorf("deadline %s is beyond one maximum run from the start", first)
+	}
+	for i, d := range r.deadlines {
+		if !d.Equal(first) {
+			t.Errorf("attempt %d had deadline %s, attempt 1 had %s; retries must share it", i+1, d, first)
+		}
+	}
 }

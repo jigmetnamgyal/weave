@@ -1,8 +1,11 @@
 package temporal_test
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/eventstream"
 	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
@@ -35,5 +38,18 @@ func TestTheBrokerCredentialOutlivesTheRun(t *testing.T) {
 	need := weavetemporal.RunnerReadyTimeout + application.SessionMaxRunTime
 	if need >= natsauth.RunnerCredentialLifetime {
 		t.Errorf("a run may need the broker for %s, but its credential lives %s", need, natsauth.RunnerCredentialLifetime)
+	}
+}
+
+// TestAWaitPastItsDeadlineExpiresAtOnce: an attempt that starts after the
+// run's deadline — a retry late in a run — expires rather than waiting again.
+// The service is nil: reaching it at all would be the bug.
+func TestAWaitPastItsDeadlineExpiresAtOnce(t *testing.T) {
+	activities := weavetemporal.NewRunnerActivities(nil)
+	exit, err := activities.AwaitRunnerExit(context.Background(), weavetemporal.AwaitExitInput{
+		WorkspaceID: uuid.NewString(), SessionID: uuid.NewString(), Deadline: time.Now().Add(-time.Minute),
+	})
+	if err != nil || !exit.Expired {
+		t.Errorf("exit = %+v, %v; want expired", exit, err)
 	}
 }
