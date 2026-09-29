@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +64,7 @@ const (
 	runnerUser   = "weave-runner"
 	runnerPath   = "/usr/local/bin/weave-runner"
 	installDir   = "/tmp/weave-install"
+	extractDir   = "/tmp"
 	workspaceDir = "/workspace"
 	// startedMarker makes starting the runner happen at most once per
 	// sandbox. mkdir is atomic; a redelivered Provision whose first start
@@ -139,6 +141,7 @@ type Backend struct {
 	binary     []byte
 	binarySum  string
 	now        func() time.Time
+	statusPoll time.Duration
 
 	// ready remembers handles whose runner has reported ready. Readiness is
 	// monotonic — a runner never becomes un-ready while it runs — so once
@@ -202,7 +205,7 @@ func New(cfg Config) (*Backend, error) {
 		project: cfg.ProjectID, region: cfg.Region, scope: cfg.Scope,
 		lease: cfg.Lease, maxSession: cfg.MaxSession,
 		binary: cfg.RunnerBinary, binarySum: hex.EncodeToString(sum[:]),
-		now: now, ready: map[string]bool{},
+		now: now, ready: map[string]bool{}, statusPoll: defaultStatusPoll,
 	}, nil
 }
 
@@ -456,14 +459,18 @@ func (b *Backend) create(ctx context.Context, name string, spec application.Runn
 
 // install uploads the runner binary and prepares the sandbox.
 func (b *Backend) install(ctx context.Context, session string) error {
-	archive, err := tarball("weave-runner", b.binary)
+	// Extracted into /tmp, which always exists, with the install directory
+	// as an entry in the archive: Vercel extracts into an existing directory
+	// and refuses the upload ("could not be extracted") when X-Cwd names one
+	// that does not — found by the live acceptance test, not the fake.
+	archive, err := tarball(strings.TrimPrefix(installDir, extractDir+"/"), "weave-runner", b.binary)
 	if err != nil {
 		return err
 	}
 	if err := b.api.do(ctx, request{
 		method: http.MethodPost, path: "/v2/sandboxes/sessions/" + url.PathEscape(session) + "/fs/write",
 		raw: archive, contentType: "application/gzip",
-		header: http.Header{"X-Cwd": []string{installDir}},
+		header: http.Header{"X-Cwd": []string{extractDir}},
 		accept: []int{http.StatusOK, http.StatusCreated, http.StatusNoContent},
 	}, nil); err != nil {
 		return fmt.Errorf("vercelsandbox: upload the runner: %w", err)
@@ -504,11 +511,52 @@ func (b *Backend) runAndWait(ctx context.Context, session string, cmd commandReq
 	return *done.Command.ExitCode, nil
 }
 
+// defaultStatusPoll bounds how long a status read waits on a running
+// command.
+const defaultStatusPoll = 2 * time.Second
+
+// commandExit reports a command's exit code, or nil while it runs.
+//
+// **Only a read with wait=true reveals an exit.** Measured against the live
+// API in M5.4b: a command that exited in 26 ms still read exitCode null, on a
+// plain GET and in the list, more than half a minute later; a wait=true read
+// returned its code at once, and only after that did the others show it. The
+// reference does not say so, and the fake did not model it until the live
+// test found it — without this, a finished runner would have read as running
+// until its session expired. So the command is read with wait=true, bounded:
+// a finished one answers immediately, and a running one reaching the bound is
+// still running. Read from the backend, never from the runner.
+func (b *Backend) commandExit(ctx context.Context, session, command string) (*int, error) {
+	var cmd commandResponse
+	err := b.api.do(ctx, request{
+		method: http.MethodGet,
+		path:   "/v2/sandboxes/sessions/" + url.PathEscape(session) + "/cmd/" + url.PathEscape(command),
+		query:  url.Values{"wait": []string{"true"}},
+		poll:   b.statusPoll,
+		accept: []int{http.StatusOK},
+	}, &cmd)
+	if errors.Is(err, errStillWaiting) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return cmd.Command.ExitCode, nil
+}
+
 // findRunnerCommand finds the command that holds the start marker: the
-// runner's start command, not a duplicate that found the marker taken.
+// runner's start, not a duplicate that found the marker taken and exited 75.
+//
+// The list reports exit codes only once something has read them with
+// wait=true (see commandExit), and lists newest first, so a redelivered
+// start would come before the real one. Candidates are therefore taken
+// oldest first, and each one's exit resolved before it is chosen.
 func (b *Backend) findRunnerCommand(ctx context.Context, session string) (string, bool, error) {
 	var listed struct {
-		Commands []commandInfo `json:"commands"`
+		Commands []struct {
+			commandInfo
+			StartedAt int64 `json:"startedAt"`
+		} `json:"commands"`
 	}
 	err := b.api.do(ctx, request{
 		method: http.MethodGet, path: "/v2/sandboxes/sessions/" + url.PathEscape(session) + "/cmd",
@@ -520,11 +568,24 @@ func (b *Backend) findRunnerCommand(ctx context.Context, session string) (string
 	if err != nil {
 		return "", false, fmt.Errorf("vercelsandbox: list commands: %w", err)
 	}
+	starts := listed.Commands[:0]
 	for _, cmd := range listed.Commands {
-		if len(cmd.Args) == 2 && cmd.Args[1] == startScript &&
-			(cmd.ExitCode == nil || *cmd.ExitCode != startedDuplicateExit) {
-			return cmd.ID, true, nil
+		if len(cmd.Args) == 2 && cmd.Args[1] == startScript {
+			starts = append(starts, cmd)
 		}
+	}
+	sort.SliceStable(starts, func(i, j int) bool { return starts[i].StartedAt < starts[j].StartedAt })
+	for _, cmd := range starts {
+		exit := cmd.ExitCode
+		if exit == nil {
+			if exit, err = b.commandExit(ctx, session, cmd.ID); err != nil {
+				return "", false, fmt.Errorf("vercelsandbox: read a start command: %w", err)
+			}
+		}
+		if exit != nil && *exit == startedDuplicateExit {
+			continue
+		}
+		return cmd.ID, true, nil
 	}
 	return "", false, nil
 }
@@ -572,20 +633,15 @@ func (b *Backend) Status(ctx context.Context, raw string) (application.RunnerSta
 		return application.RunnerStatus{Exists: false}, nil
 	}
 
-	var cmd commandResponse
-	err = b.api.do(ctx, request{
-		method: http.MethodGet,
-		path:   "/v2/sandboxes/sessions/" + url.PathEscape(h.session) + "/cmd/" + url.PathEscape(h.command),
-		accept: []int{http.StatusOK},
-	}, &cmd)
+	exit, err := b.commandExit(ctx, h.session, h.command)
 	if errors.Is(err, errNotFound) {
 		return application.RunnerStatus{Exists: false}, nil
 	}
 	if err != nil {
 		return application.RunnerStatus{}, fmt.Errorf("vercelsandbox: read the runner command: %w", err)
 	}
-	if cmd.Command.ExitCode != nil {
-		return application.RunnerStatus{Exists: true, Running: false, ExitCode: *cmd.Command.ExitCode}, nil
+	if exit != nil {
+		return application.RunnerStatus{Exists: true, Running: false, ExitCode: *exit}, nil
 	}
 
 	ready, err := b.isReady(ctx, h)
@@ -803,14 +859,18 @@ func (b *Backend) ExtendLease(ctx context.Context, raw string) error {
 	return nil
 }
 
-// tarball packs one executable file for the file-write API, which takes a
-// gzipped tarball and extracts it where the X-Cwd header says.
-func tarball(name string, contents []byte) ([]byte, error) {
+// tarball packs one executable file, inside a directory, for the
+// file-write API, which takes a gzipped tarball and extracts it where the
+// X-Cwd header says.
+func tarball(dir, name string, contents []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: dir + "/", Mode: 0o755, Typeflag: tar.TypeDir}); err != nil {
+		return nil, err
+	}
 	if err := tw.WriteHeader(&tar.Header{
-		Name: name, Mode: 0o755, Size: int64(len(contents)), Typeflag: tar.TypeReg,
+		Name: dir + "/" + name, Mode: 0o755, Size: int64(len(contents)), Typeflag: tar.TypeReg,
 	}); err != nil {
 		return nil, err
 	}

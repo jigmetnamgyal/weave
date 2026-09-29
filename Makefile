@@ -38,7 +38,7 @@ NATS_WEBSOCKET_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_WEBSOCKET_URL)
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
         fmt fmt-check lint lint-go typecheck test test-integration build ci tidy tidy-check \
         migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check \
-        contracts contracts-check runner-image runner-binary nats-auth
+        contracts contracts-check runner-image runner-binary test-vercel-live nats-auth
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -165,6 +165,20 @@ runner-binary: ## Build the session runner for Vercel sandboxes (linux/amd64)
 	@mkdir -p bin
 	@GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/runner-linux-amd64 ./services/runner
 	@echo "Built bin/runner-linux-amd64"
+
+# The Vercel backend's live acceptance test (M5.4b): ADR-013's checklist against
+# the real account in .env. Opt-in, never in CI. Needs the development tunnel
+# (scripts/dev-tunnel.sh start) for the event-ingress host. VERCEL_* in .env
+# are mapped to the runner manager's names for this command only.
+test-vercel-live: .env runner-binary ## Run the Vercel backend's live acceptance test (creates real sandboxes)
+	@test -s tmp/tunnel/host || (echo "Start the tunnel first: scripts/dev-tunnel.sh start" && exit 1)
+	@set -a && . ./.env && set +a && \
+		RUNNER_VERCEL_TOKEN="$${RUNNER_VERCEL_TOKEN:-$$VERCEL_TOKEN}" \
+		RUNNER_VERCEL_TEAM_ID="$${RUNNER_VERCEL_TEAM_ID:-$$VERCEL_TEAM_ID}" \
+		RUNNER_VERCEL_PROJECT_ID="$${RUNNER_VERCEL_PROJECT_ID:-$$VERCEL_PROJECT_ID}" \
+		RUNNER_VERCEL_BINARY="$(CURDIR)/bin/runner-linux-amd64" \
+		WEAVE_LIVE_INGRESS_HOST="$$(cat tmp/tunnel/host)" \
+		go test -tags vercel_live -count=1 -v -timeout 20m -run Live ./internal/adapters/vercelsandbox/
 
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)

@@ -21,6 +21,10 @@ import (
 var (
 	errNotFound = errors.New("vercel: not found")
 	errConflict = errors.New("vercel: conflict")
+	// errStillWaiting means a request with a poll bound was still blocked
+	// when the bound was reached: for a command read with wait=true, the
+	// command is still running.
+	errStillWaiting = errors.New("vercel: still waiting")
 )
 
 // Retry bounds for one call. Temporal retries the activity above this; these
@@ -57,6 +61,10 @@ type request struct {
 	header      http.Header
 	// accept lists the statuses that are success.
 	accept []int
+	// poll, when set, bounds a request expected to block — a command read
+	// with wait=true — and reaching it is errStillWaiting, not a failure to
+	// retry.
+	poll time.Duration
 	// sensitive marks a request whose body carries secrets — the runner's
 	// start command. Its errors keep Vercel's error code but never its
 	// message, in case a message ever echoed the request.
@@ -116,6 +124,8 @@ func (c *client) do(ctx context.Context, req request, out any) error {
 			if !retryable(req.method, status) {
 				return last
 			}
+		} else if req.poll > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return errStillWaiting
 		} else {
 			// A transport error: the request may or may not have arrived.
 			// Only an idempotent method is retried here; a POST is retried
@@ -140,7 +150,11 @@ func (c *client) do(ctx context.Context, req request, out any) error {
 }
 
 func (c *client) once(ctx context.Context, req request, target string, payload []byte, contentType string) (int, []byte, time.Duration, error) {
-	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	timeout := c.timeout
+	if req.poll > 0 {
+		timeout = req.poll
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var body io.Reader
 	if payload != nil {

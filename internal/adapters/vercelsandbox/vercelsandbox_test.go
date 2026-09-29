@@ -55,6 +55,7 @@ type fakeVercel struct {
 	failCreate int
 	// rateLimitOnce answers the next request 429 with Retry-After.
 	rateLimitOnce bool
+	clock         int64
 	// echoStart refuses the runner's start command, echoing its body in the
 	// error message, as a hostile or buggy server might.
 	echoStart  bool
@@ -77,6 +78,12 @@ type fakeCommand struct {
 	exit     *int
 	env      map[string]string
 	sudo     bool
+	// startedAt orders commands; Vercel lists newest first.
+	startedAt int64
+	// revealed: as measured live, Vercel reports a command's exit only once
+	// something has read it with wait=true; until then every plain read and
+	// the list say exitCode null.
+	revealed bool
 }
 
 type recorded struct {
@@ -119,7 +126,12 @@ func (f *fakeVercel) sandboxJSON(s *fakeSandbox) map[string]any {
 }
 
 func commandJSON(c *fakeCommand) map[string]any {
-	return map[string]any{"command": map[string]any{"id": c.id, "name": c.name, "args": c.args, "exitCode": c.exit}}
+	var exit *int
+	if c.revealed {
+		exit = c.exit
+	}
+	return map[string]any{"command": map[string]any{"id": c.id, "name": c.name, "args": c.args,
+		"exitCode": exit, "startedAt": c.startedAt}}
 }
 
 func (f *fakeVercel) serve(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +248,7 @@ func (f *fakeVercel) serveSession(w http.ResponseWriter, r *http.Request, s *fak
 	case len(rest) == 0 && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"session": f.sandboxJSON(s)["session"]})
 	case len(rest) == 2 && rest[0] == "fs" && rest[1] == "write":
-		if r.Header.Get("Content-Type") != "application/gzip" || r.Header.Get("X-Cwd") != installDir {
+		if r.Header.Get("Content-Type") != "application/gzip" || r.Header.Get("X-Cwd") != extractDir {
 			f.t.Errorf("upload with content type %q to %q", r.Header.Get("Content-Type"), r.Header.Get("X-Cwd"))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{})
@@ -251,14 +263,16 @@ func (f *fakeVercel) serveSession(w http.ResponseWriter, r *http.Request, s *fak
 		writeJSON(w, http.StatusOK, map[string]any{"session": f.sandboxJSON(s)["session"]})
 	case len(rest) == 1 && rest[0] == "cmd" && r.Method == http.MethodGet:
 		var list []any
-		for _, c := range s.commands {
-			list = append(list, commandJSON(c)["command"])
+		for i := len(s.commands) - 1; i >= 0; i-- { // newest first, as Vercel lists
+			list = append(list, commandJSON(s.commands[i])["command"])
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"commands": list})
 	case len(rest) == 1 && rest[0] == "cmd" && r.Method == http.MethodPost:
 		var req commandRequest
 		_ = json.Unmarshal(body, &req)
-		c := &fakeCommand{id: "cmd_" + uuid.NewString()[:8], name: req.Command, args: req.Args, env: req.Env, sudo: req.Sudo}
+		f.clock++
+		c := &fakeCommand{id: "cmd_" + uuid.NewString()[:8], name: req.Command, args: req.Args, env: req.Env,
+			sudo: req.Sudo, startedAt: f.clock}
 		zero, one, dup := 0, 1, startedDuplicateExit
 		if f.echoStart && len(req.Args) == 2 && req.Args[1] == startScript {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"code": "bad_request", "message": string(body)}})
@@ -289,10 +303,22 @@ func (f *fakeVercel) serveSession(w http.ResponseWriter, r *http.Request, s *fak
 		writeJSON(w, http.StatusOK, commandJSON(c))
 	case len(rest) == 2 && rest[0] == "cmd" && r.Method == http.MethodGet:
 		for _, c := range s.commands {
-			if c.id == rest[1] {
-				writeJSON(w, http.StatusOK, commandJSON(c))
-				return
+			if c.id != rest[1] {
+				continue
 			}
+			if r.URL.Query().Get("wait") == "true" {
+				if c.exit == nil {
+					// A running command: wait=true blocks until it ends,
+					// or until the caller gives up.
+					f.mu.Unlock()
+					<-r.Context().Done()
+					f.mu.Lock()
+					return
+				}
+				c.revealed = true
+			}
+			writeJSON(w, http.StatusOK, commandJSON(c))
+			return
 		}
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"code": "not_found"}})
 	default:
@@ -312,6 +338,26 @@ func (f *fakeVercel) finish(sandbox string, code int) {
 	}
 }
 
+// inProcess serves the fake in the calling goroutine, with the caller's
+// context. A wait=true read of a running command blocks in the fake until the
+// caller's poll bound and then returns within the same call — so no handler
+// outlives the request that started it. Over a real socket, a request the
+// client had already given up on could reach its handler afterwards and touch
+// the fake while a test read it; the race detector found exactly that.
+type inProcess struct{ handler http.Handler }
+
+func (t inProcess) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Body == nil {
+		r.Body = http.NoBody // as a server would present a bodiless request
+	}
+	recorder := httptest.NewRecorder()
+	t.handler.ServeHTTP(recorder, r)
+	if err := r.Context().Err(); err != nil {
+		return nil, err
+	}
+	return recorder.Result(), nil
+}
+
 func testConfig(server *httptest.Server) Config {
 	return Config{
 		AppEnv: "test", Token: "test-token", TeamID: "team_1", ProjectID: "prj_1", Region: "iad1",
@@ -328,6 +374,9 @@ func newTestBackend(t *testing.T) (*Backend, *fakeVercel) {
 		t.Fatal(err)
 	}
 	backend.api.sleep = func(context.Context, time.Duration) error { return nil }
+	backend.statusPoll = 50 * time.Millisecond
+	// In-process, synchronously: see inProcess.
+	backend.api.http = &http.Client{Transport: inProcess{http.HandlerFunc(fake.serve)}}
 	return backend, fake
 }
 
@@ -793,5 +842,49 @@ func TestProvisionMarksItsStartSensitive(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), secretToken) || strings.Contains(err.Error(), "NATS USER") ||
 		strings.Contains(err.Error(), `"command"`) || strings.Contains(err.Error(), "setpriv") {
 		t.Errorf("a refused start = %v; want Vercel's code and none of the request body", err)
+	}
+}
+
+// TestAFinishedRunnerIsSeenThoughPlainReadsHideItsExit is the defect the live
+// acceptance test found: Vercel reports a command's exit only to a read with
+// wait=true. Read any other way, a runner that had exited looked like one
+// still running, and its session would have run on to its deadline.
+func TestAFinishedRunnerIsSeenThoughPlainReadsHideItsExit(t *testing.T) {
+	backend, fake := newTestBackend(t)
+	spec := testSpec()
+	h, err := backend.Provision(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.finish(backend.sandboxName(spec.RunnerID), 4)
+	status, err := backend.Status(context.Background(), h)
+	if err != nil || !status.Exists || status.Running || status.ExitCode != 4 {
+		t.Errorf("status of an exited runner = %+v, %v; want exited 4", status, err)
+	}
+}
+
+// TestADuplicateStartIsNotTakenForTheRunner: a redelivered start that found
+// the marker taken exits 75. Vercel lists it first — newest first — with its
+// exit hidden, and the first version would have taken it for the runner.
+func TestADuplicateStartIsNotTakenForTheRunner(t *testing.T) {
+	backend, fake := newTestBackend(t)
+	spec := testSpec()
+	first, err := backend.Provision(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := parseHandle(first)
+	if err := backend.api.do(context.Background(), request{method: http.MethodPost,
+		path:   "/v2/sandboxes/sessions/" + h.session + "/cmd",
+		body:   commandRequest{Command: "bash", Args: []string{"-c", startScript}, Sudo: true},
+		accept: []int{http.StatusOK}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fake.starts != 1 {
+		t.Fatalf("%d starts ran; the marker must stop the second", fake.starts)
+	}
+	found, ok, err := backend.HandleFor(context.Background(), spec.RunnerID)
+	if err != nil || !ok || found != first {
+		t.Errorf("HandleFor = %q, %v, %v; want the real runner %q, not the duplicate", found, ok, err, first)
 	}
 }
