@@ -86,12 +86,13 @@ server from its public hostname on 2026-09-29.
 
 **Before staging, and closing Vercel's acceptance under ADR-013:**
 
-1. **Vercel Pro**, for its 24-hour session cap; a session may run
-   `application.SessionMaxRunTime` (eight hours) plus its drain.
+1. **Vercel Pro**, for its 24-hour session cap; a sandbox may live
+   `MaxRunnerLifetime` (below) — provisioning, `application.SessionMaxRunTime`
+   (eight hours), and the halt and drain — about nine hours.
 2. **The one live test that has not run**: one sandbox kept alive by
-   heartbeat for longer than `SessionMaxRunTime` plus the drain bound —
-   about 8.5 hours, under a dollar. Needs Pro. Record it in the Verification
-   Record.
+   heartbeat for longer than `MaxRunnerLifetime`, **measured from its
+   creation** — about nine hours, around a dollar. Needs Pro. Record it in the
+   Verification Record.
 3. **Vercel's data-processing terms**, read and accepted for customer source.
 
 And a decision on Open Question 8 before anything is deployed.
@@ -184,10 +185,51 @@ is down extends nothing, which is the property wanted.
 (`RUNNER_VERCEL_MAX_SESSION`): 45 minutes on Hobby, 24 hours on Pro. No
 lease or timeout the backend requests may exceed it. **In staging and
 production the runner manager refuses to start** when the cap is below
-`SessionMaxRunTime` plus the drain bound — a test holds that, for both
-sides of the boundary. In development a cap below it is allowed: a session
-that outlives it loses its sandbox and fails through the lost-runner path,
-which is harmless with the fake provider and says so in its reason.
+`MaxRunnerLifetime` — a test holds that, for both sides of the boundary. In
+development a cap below it is allowed: a session that outlives it loses its
+sandbox and fails through the lost-runner path, which is harmless with the
+fake provider and says so in its reason.
+
+**The cap's clock and the run's deadline start at different times.** Vercel
+counts the cap from the sandbox's creation; the workflow fixes the run's
+deadline in `finishRun`, only after provisioning has waited for readiness and
+the session has been marked running. So `SessionMaxRunTime` plus the drain is
+not enough: every minute before the deadline is fixed comes off the end, and
+a runner that uses its full run time is stopped by Vercel before the workflow
+has halted it and confirmed its events were ingested — reported as a lost
+runner, not the outcome it reached. Provisioning alone can take longer than
+the drain (below), so the stop can land inside the run itself.
+
+`MaxRunnerLifetime` is therefore the longest a sandbox can live **from its
+creation**, one exported value in `internal/adapters/temporal` computed from
+the constants the workflow actually uses, never restated as a number:
+
+- **Provisioning, every attempt.** A retried `Provision` finds the sandbox
+  the first attempt created, so the sandbox's clock runs across all of them:
+  today three attempts of `RunnerReadyTimeout` plus a minute, with their
+  backoff — about 18 minutes.
+- **Marking the session running**: `activityOptions`' five attempts of 30
+  seconds, with backoff — about 3 minutes.
+- **`SessionMaxRunTime`**, from the deadline `finishRun` fixes.
+- **Halt and drain**: `2 × DrainScheduleToClose`, 30 minutes. Halt destroys
+  the sandbox before the drain begins, so today only the halt needs it alive;
+  the drain is counted anyway, so a later change that keeps the runner up
+  while its events drain does not silently reopen this.
+- **A named scheduling margin** for workflow and activity task latency
+  between those steps, which no timeout bounds. A worker down for longer
+  than the margin is the lost-runner path, as in development.
+
+About nine hours in total. The provisioning activity's attempt count and its
+extra minute are literals in `runnerActivityOptions` today; they become named
+constants used by both the options and this bound, so changing one changes
+the other. **Tests:** the startup refusal at `MaxRunnerLifetime` and one
+second below it; and one that fails if `MaxRunnerLifetime` is not at least
+the sum of those parts, so a new pre-run step or a longer timeout cannot
+shorten the margin unnoticed. The two invariant tests in `invariants_test.go`
+count provisioning as a single `RunnerReadyTimeout`, and both move to the
+same provisioning bound: the runner's broker credential is minted once with
+its sandbox and reused by a retried `Provision`, so its lifetime runs from
+the same start; the stream-age test only gets more conservative.
 
 ### Region
 
@@ -325,7 +367,7 @@ project's scope tag.
 - Runner and service credentials are each refused on the other's listener.
 - The image choice, lease length, extension placement and quick-or-named
   tunnel are recorded, with reasons.
-- The whole unit is verified on Hobby. Pro, the 8.5-hour survival run and
+- The whole unit is verified on Hobby. Pro, the nine-hour survival run and
   the DPA are tracked as the staging gate that closes Vercel's acceptance
   under ADR-013 — recorded when done, not required to finish this unit.
 - `make ci` and `make test-integration` pass; the live acceptance test
