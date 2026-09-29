@@ -224,7 +224,7 @@ Use UUIDv7 identifiers for sortable, globally unique IDs. Mutable resources incl
 - Every request resolves exactly one workspace context before accessing tenant-owned data.
 - Cross-workspace joins are prohibited in repository APIs and tested automatically.
 - Object-storage keys begin with opaque environment and workspace partitions, but authorization never relies on key shape alone.
-- NATS subjects use opaque tenant identifiers and are accessible only to service identities.
+- NATS subjects use opaque tenant identifiers and are accessible only to service identities, and to runners holding a credential that may publish their own session's subject and nothing else (ADR-014).
 - Encryption keys are environment-separated; enterprise customer-managed keys are a future extension.
 - Usage, quota, logs, caches, and metrics avoid exposing customer names or source content in labels.
 
@@ -253,6 +253,11 @@ Production must not use a plain privileged Docker socket or mount the host files
 - **Isolation** runs on a managed microVM or gVisor provider behind a `RunnerBackend` port, accepted only against the ADR's checklist — deny-by-default egress foremost. Kubernetes with gVisor is the scale-up path. Local development uses a hardened-Docker backend that is **not a security boundary** and that the runner manager refuses to start in staging or production.
 - **Source is not retained.** The sandbox, checkout and writable volumes are destroyed at teardown; only derived artifacts remain. A continuation re-clones at `sessions.branch_sha` and applies the stored patch. No persistent dependency cache in the MVP.
 - **Egress** is HTTPS on 443 through a hostname-enforcing egress proxy. The default allowlist is GitHub, the configured model provider, and the npm, PyPI, Go, crates.io, RubyGems and Maven Central registries. Metadata endpoints, private and link-local ranges, internal services, raw IPs and other ports are always refused. Workspace admins may add hostnames for their own sessions — audited and capped.
+- **The provider is Vercel Sandbox** (Firecracker microVMs), selected against ADR-013's checklist on 2026-09-29; its firewall is the hostname-enforcing proxy, and every sandbox is created non-persistent, because Vercel's default snapshots the filesystem on stop.
+
+**Decided in ADR-015** (`docs/adr/0015-runner-event-ingress.md`):
+
+- **Runners reach NATS only through a public WebSocket listener**, TLS on 443 at one dedicated hostname — the one Weave-operated destination on every sandbox's allowlist. The standard client port is never exposed. Runner credentials may connect only over WebSocket and service credentials only over the standard port, so neither is usable on the other's listener.
 
 ## Reliability and Consistency
 

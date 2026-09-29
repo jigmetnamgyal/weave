@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-09-28 (decided before M5.4, the first unit to run customer code)
+- Amended: 2026-09-29 by ADR-015 (runner event ingress); provider selected
+  the same day (see "Provider selection" below)
 
 ## Context
 
@@ -52,6 +54,17 @@ working account — and **egress is the item most likely to fail**:
 
 A provider failing any item is refused, however convenient.
 
+**Provider selection (2026-09-29).** Vercel Sandbox, Modal, E2B and Daytona
+were read against this checklist, and Vercel and Modal tested live. **Vercel
+Sandbox is selected.** Modal is refused on the first item: names outside its
+domain allowlist still resolve, a DNS exfiltration channel. E2B is refused on
+the same ground from its documentation, and Daytona's default sandbox shares
+the host kernel. Vercel's acceptance completes when the three items still
+open are recorded — a Pro plan (Hobby caps a sandbox at 45 minutes), one
+sandbox surviving past the session's maximum run time, and its
+data-processing terms. Evidence and the open items:
+`context/features-specs/20-vercel-runner-backend-and-event-ingress.md`.
+
 **Local development cannot use the production boundary**: macOS runs neither
 gVisor nor Firecracker. A local backend — hardened Docker: non-root, dropped
 capabilities, read-only root, no host mounts — exists for development and is
@@ -95,7 +108,10 @@ enforces hostnames** — IP-based network policy cannot express
 **Always refused, whatever a workspace adds:** cloud metadata endpoints
 (`169.254.169.254` and equivalents), private, loopback and link-local ranges,
 Weave's own internal services, destinations given as raw IP addresses, and any
-port but 443.
+port but 443. _(Amended by ADR-015: the runner event ingress — a public NATS
+WebSocket listener on 443 that accepts only runner credentials — is not an
+internal service, and is the one Weave-operated hostname on every sandbox's
+allowlist. Everything else Weave runs stays refused.)_
 
 **Workspace additions are self-serve for admins** — `workspace:manage`, the
 permission that already governs agent profiles — audited, capped in number,
