@@ -6,6 +6,8 @@
 package config
 
 import (
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
+
 	"fmt"
 	"os"
 	"strings"
@@ -19,6 +21,9 @@ type Config struct {
 	AppDatabaseURL string
 	// NATSURL is the JetStream server events arrive on.
 	NATSURL string
+	// NATSCreds is the ingestor's NATS credential (M5.5a): the stream's
+	// JetStream API, its consumer and acknowledgements, and nothing else.
+	NATSCreds string
 	// HealthAddr serves liveness and readiness for the deployment system.
 	HealthAddr string
 	// AppEnv names the environment in logs.
@@ -48,6 +53,12 @@ func Load() (Config, error) {
 	if cfg.AppEnv == "" {
 		cfg.AppEnv = "development"
 	}
+	creds, err := natsauth.ResolvePath(cfg.AppEnv, strings.TrimSpace(os.Getenv("INGESTOR_NATS_CREDS")),
+		string(natsauth.IdentityIngestor)+".creds")
+	if err != nil {
+		return Config{}, fmt.Errorf("INGESTOR_NATS_CREDS: %w", err)
+	}
+	cfg.NATSCreds = creds
 	if cfg.HealthAddr == "" {
 		cfg.HealthAddr = ":8091"
 	}

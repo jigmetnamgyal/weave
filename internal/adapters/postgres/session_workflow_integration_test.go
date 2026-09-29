@@ -98,8 +98,9 @@ func startHarness(t *testing.T) harness {
 		t.Fatalf("start worker: %v", err)
 	}
 
+	issuer, natsURL := runnerBroker(t)
 	runners := application.NewRunnerService(postgres.NewRunnerStore(pool), sessionStore, backend, installations,
-		postgres.WithTenantWorkspace, gitBase, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		issuer, natsURL, postgres.WithTenantWorkspace, gitBase, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	runnerActivities := weavetemporal.NewRunnerActivities(runners)
 	rw := worker.New(client, weavetemporal.RunnerTaskQueue(queue), worker.Options{})
 	rw.RegisterActivityWithOptions(runnerActivities.ProvisionRunner,

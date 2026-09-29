@@ -200,6 +200,12 @@ jobs:
       - name: Create .env from template
         run: cp .env.example .env
 
+      # NATS runs with authentication on (M5.5a), from an operator
+      # configuration generated here. Throwaway keys: nothing real exists in
+      # the repository or its secrets.
+      - name: Generate throwaway NATS credentials
+        run: go run ./services/nats-setup -out infra/nats/generated
+
       - name: Start dependencies
         run: docker compose --file infra/docker-compose.yml --env-file .env up --detach --wait
 

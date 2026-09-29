@@ -37,7 +37,7 @@ NATS_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_URL)
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
         fmt fmt-check lint lint-go typecheck test test-integration build ci tidy tidy-check \
         migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check \
-        contracts contracts-check runner-image
+        contracts contracts-check runner-image nats-auth
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -71,7 +71,10 @@ setup: check-prereqs .env ## Install dependencies and prepare the workspace
 dev: ## Start dependencies, the Go API and the web shell (one command)
 	@./scripts/dev.sh
 
-up: .env ## Start the dependency containers and wait until healthy
+nats-auth: ## Generate local NATS credentials if missing (M5.5a)
+	@go run ./services/nats-setup -out infra/nats/generated
+
+up: .env nats-auth ## Start the dependency containers and wait until healthy
 	@$(COMPOSE) up --detach --wait
 	@echo "Dependencies are healthy."
 
@@ -143,6 +146,7 @@ test-integration: .env runner-image ## Run integration tests against the local d
 	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
 		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" TEST_NATS_URL="$(NATS_URL)" \
 		TEST_DOCKER_SOCKET="$${RUNNER_DOCKER_SOCKET:-/var/run/docker.sock}" \
+		TEST_NATS_AUTH_DIR="$(CURDIR)/infra/nats/generated" \
 		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
 
 runner-image: ## Build the local session runner image (dev backend)

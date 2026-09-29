@@ -62,12 +62,17 @@ services:
     image: nats:2.10.24-alpine
     restart: unless-stopped
     # -js enables JetStream; -m exposes the monitoring endpoint used below.
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    # -c loads the generated operator configuration (M5.5a, ADR-014), which
+    # turns authentication on: an unauthenticated connection is refused. The
+    # file holds public JWTs only; the seeds stay on the host. `make up`
+    # generates it with services/nats-setup when it is missing.
+    command: ["-js", "-sd", "/data", "-m", "8222", "-c", "/etc/nats/weave.conf"]
     ports:
       - "127.0.0.1:${NATS_PORT:-54222}:4222"
       - "127.0.0.1:${NATS_MONITORING_PORT:-58222}:8222"
     volumes:
       - nats-data:/data
+      - ./nats/generated/server.conf:/etc/nats/weave.conf:ro
     healthcheck:
       # The monitoring endpoint enabled by -m above; /healthz reports readiness
       # including JetStream. The image has no curl, but busybox wget is present.

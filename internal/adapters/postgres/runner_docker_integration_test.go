@@ -18,8 +18,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nkeys"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/devdocker"
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/internal/domain"
@@ -153,6 +155,16 @@ type runnerWorld struct {
 
 func newRunnerWorld(t *testing.T, name string) *runnerWorld {
 	t.Helper()
+	return newRunnerWorldWith(t, name, nil)
+}
+
+// newRunnerWorldWith lets a test replace the broker credential a runner is
+// given, to prove the runner refuses one that does not do what it must. The
+// override wraps the world's real issuer, so the subject and inbox are right
+// and only the credential differs — the first version used an issuer for a
+// dummy prefix, and its runners failed the wrong check.
+func newRunnerWorldWith(t *testing.T, name string, override func(*natsauth.Issuer) application.RunnerCredentialIssuer) *runnerWorld {
+	t.Helper()
 	backend := dockerBackend(t)
 	ownerPool := newPool(t)
 	appPool := newAppPool(t)
@@ -179,8 +191,13 @@ func newRunnerWorld(t *testing.T, name string) *runnerWorld {
 		t.Fatalf("record branch: %v", err)
 	}
 
+	brokerIssuer, natsURL := runnerBroker(t)
+	var issuer application.RunnerCredentialIssuer = brokerIssuer
+	if override != nil {
+		issuer = override(brokerIssuer)
+	}
 	service := application.NewRunnerService(postgres.NewRunnerStore(appPool), postgres.NewSessionStore(appPool),
-		backend, installationServiceFor(t, appPool, github), postgres.WithTenantWorkspace, gitBase,
+		backend, installationServiceFor(t, appPool, github), issuer, natsURL, postgres.WithTenantWorkspace, gitBase,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return &runnerWorld{ownerPool: ownerPool, appPool: appPool, fixture: fixture, session: session,
 		commit: commit, backend: backend, service: service, tenant: tenant}
@@ -242,9 +259,15 @@ func TestARunnerChecksOutExactlyTheRecordedCommitIntegration(t *testing.T) {
 	if caps, _ := dockerExec(t, runner.Handle, "grep", "CapEff", "/proc/self/status"); !strings.HasSuffix(caps, "0000000000000000") {
 		t.Errorf("effective capabilities = %q, want none", caps)
 	}
-	// The token was delivered and then removed from the process environment.
-	if env, _ := dockerExec(t, runner.Handle, "cat", "/proc/1/environ"); strings.Contains(env, "WEAVE_GIT_TOKEN=ghs") {
+	// Both secrets were delivered and then removed from the process
+	// environment: the git token (M5.4a) and the broker credential (M5.5a).
+	env, _ := dockerExec(t, runner.Handle, "cat", "/proc/1/environ")
+	if strings.Contains(env, "WEAVE_GIT_TOKEN=ghs") {
 		t.Error("the git token is still in the runner's environment")
+	}
+	if strings.Contains(env, "WEAVE_NATS_CREDS=") || strings.Contains(env, "NATS USER JWT") ||
+		strings.Contains(env, "USER NKEY SEED") {
+		t.Error("the broker credential is still in the runner's environment")
 	}
 
 	if err := w.service.Teardown(w.tenant, w.fixture.workspace.ID, w.session.ID, false, ""); err != nil {
@@ -416,7 +439,7 @@ func TestAnotherScopesManagerLeavesTheseRunnersAloneIntegration(t *testing.T) {
 		t.Fatalf("two scopes share the backend name %q", other.Name())
 	}
 	elsewhere := application.NewRunnerService(postgres.NewRunnerStore(w.appPool), postgres.NewSessionStore(w.appPool),
-		other, nil, postgres.WithTenantWorkspace, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		other, nil, nil, "", postgres.WithTenantWorkspace, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := elsewhere.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile from another scope: %v", err)
 	}
@@ -487,5 +510,65 @@ func TestTeardownRemovesAVolumeLeftBeforeAnyHandleIntegration(t *testing.T) {
 	}
 	if dockerExists(t, "volume", name) {
 		t.Error("teardown left the workspace volume a failed provision created; ADR-013 retains no source")
+	}
+}
+
+// fixedCreds hands every runner the same credential, whatever it should have
+// been given.
+type fixedCreds struct {
+	creds  string
+	issuer *natsauth.Issuer
+}
+
+func (f fixedCreds) IssueRunner(runnerID, sessionID uuid.UUID) (application.RunnerCredentials, error) {
+	real, err := f.issuer.IssueRunner(runnerID, sessionID)
+	if err != nil {
+		return application.RunnerCredentials{}, err
+	}
+	real.Creds = f.creds
+	return real, nil
+}
+
+// TestARunnerWhoseBrokerCredentialIsWrongDoesNotBecomeReadyIntegration: the
+// runner proves its credential's scope at start, in both directions, and
+// refuses to call itself ready otherwise — rather than failing later, or
+// succeeding where it must not.
+func TestARunnerWhoseBrokerCredentialIsWrongDoesNotBecomeReadyIntegration(t *testing.T) {
+	dir := os.Getenv("TEST_NATS_AUTH_DIR")
+	if dir == "" {
+		t.Skip("TEST_NATS_AUTH_DIR is not set")
+	}
+	testsCreds, err := os.ReadFile(filepath.Join(dir, "tests.creds"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A credential signed by a key the server does not trust.
+	strangerAccount, _ := nkeys.CreateAccount()
+	strangerPub, _ := strangerAccount.PublicKey()
+	strangerSeed, _ := strangerAccount.Seed()
+	stranger, _ := natsauth.NewIssuer(strangerSeed, strangerPub, "weave.session", time.Now)
+	untrusted, _ := stranger.IssueRunner(uuid.New(), uuid.New())
+
+	for name, creds := range map[string]string{
+		// Can publish anywhere: the neighbouring-session check must catch it.
+		"too broad": string(testsCreds),
+		// Refused by the broker outright.
+		"untrusted": untrusted.Creds,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newRunnerWorldWith(t, "Broker Credential "+name, func(real *natsauth.Issuer) application.RunnerCredentialIssuer {
+				return fixedCreds{creds: creds, issuer: real}
+			})
+			runner, err := w.service.Provision(w.tenant, w.fixture.workspace.ID, w.session.ID)
+			if err != nil {
+				t.Fatalf("provision: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(w.tenant, 2*time.Minute)
+			defer cancel()
+			_, err = w.service.AwaitReady(ctx, w.fixture.workspace.ID, runner, 300*time.Millisecond, func() {})
+			if !errors.Is(err, application.ErrRunnerBrokerRefused) {
+				t.Errorf("await ready = %v, want ErrRunnerBrokerRefused", err)
+			}
+		})
 	}
 }

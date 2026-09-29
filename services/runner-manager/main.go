@@ -27,7 +27,9 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/devdocker"
+	"github.com/jigmetnamgyal/weave/internal/adapters/eventstream"
 	githubadapter "github.com/jigmetnamgyal/weave/internal/adapters/github"
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	weaveredis "github.com/jigmetnamgyal/weave/internal/adapters/redis"
 	weavetemporal "github.com/jigmetnamgyal/weave/internal/adapters/temporal"
@@ -84,8 +86,13 @@ func run() error {
 	installations := application.NewInstallationService(postgres.NewInstallationStore(appPool), nil,
 		githubadapter.NewPort(githubClient), postgres.WithTenantWorkspace, "")
 
+	// The runner manager is the only process holding the account signing key.
+	issuer, err := natsauth.LoadIssuer(cfg.NATSSigningKey, cfg.NATSAccount, eventstream.DefaultConfig().SubjectPrefix)
+	if err != nil {
+		return err
+	}
 	runners := application.NewRunnerService(postgres.NewRunnerStore(appPool), postgres.NewSessionStore(appPool),
-		backend, installations, postgres.WithTenantWorkspace, cfg.GitBaseURL, logger)
+		backend, installations, issuer, cfg.RunnerNATSURL, postgres.WithTenantWorkspace, cfg.GitBaseURL, logger)
 
 	temporalClient, err := temporalclient.Dial(temporalclient.Options{HostPort: cfg.TemporalHostPort, Logger: logger})
 	if err != nil {

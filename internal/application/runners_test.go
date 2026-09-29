@@ -36,6 +36,7 @@ func newRunnerTestWorld(t *testing.T) *runnerWorld {
 	w.backend = &fakeBackend{w: w, envs: map[string]application.RunnerStatus{}}
 	w.store = &fakeRunnerStore{w: w, runners: map[uuid.UUID]domain.Runner{}}
 	w.service = application.NewRunnerService(w.store, fakeSessionReader{w}, w.backend, fakeMinter{},
+		fakeBrokerIssuer{}, "nats://broker.test:4222",
 		func(ctx context.Context, _ uuid.UUID) context.Context { return ctx }, "https://github.test",
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return w
@@ -193,6 +194,13 @@ func (f fakeSessionReader) Get(_ context.Context, id, workspace uuid.UUID) (doma
 		return domain.Session{}, application.ErrSessionNotFound
 	}
 	return f.w.session, nil
+}
+
+type fakeBrokerIssuer struct{}
+
+func (fakeBrokerIssuer) IssueRunner(runnerID, sessionID uuid.UUID) (application.RunnerCredentials, error) {
+	return application.RunnerCredentials{Creds: "creds-" + runnerID.String(),
+		Subject: "weave.session." + sessionID.String() + ".events", InboxPrefix: "_INBOX_x"}, nil
 }
 
 type fakeMinter struct{}

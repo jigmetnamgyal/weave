@@ -4,6 +4,8 @@
 package config
 
 import (
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
+
 	"errors"
 	"fmt"
 	"os"
@@ -32,6 +34,10 @@ type Config struct {
 	RedisURL string
 	// NATSURL is the NATS JetStream connection string.
 	NATSURL string
+	// NATSCreds is the API's NATS credential (M5.5a). The API holds a
+	// connection only for its readiness probe, so the identity has no subject
+	// permissions at all.
+	NATSCreds string
 	// TemporalHostPort is the Temporal frontend address.
 	TemporalHostPort string
 	// OTelExporter selects the trace exporter: "none" or "stdout".
@@ -156,6 +162,13 @@ func Load() (Config, error) {
 		GitHubWebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_APP_WEBHOOK_SECRET")),
 		GitHubWebhookProxyURL:   strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_PROXY_URL")),
 	}
+
+	creds, err := natsauth.ResolvePath(cfg.AppEnv, strings.TrimSpace(os.Getenv("API_NATS_CREDS")),
+		string(natsauth.IdentityAPI)+".creds")
+	if err != nil {
+		return Config{}, fmt.Errorf("API_NATS_CREDS: %w", err)
+	}
+	cfg.NATSCreds = creds
 
 	if !validExporters[cfg.OTelExporter] {
 		return Config{}, fmt.Errorf(
