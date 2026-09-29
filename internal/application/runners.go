@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +30,29 @@ var (
 	ErrRunnerBrokerRefused = errors.New("the runner's event broker credential did not work as scoped")
 	// ErrRunnerNotReady: readiness did not arrive within the allowed time.
 	ErrRunnerNotReady = errors.New("the runner did not become ready in time")
+	// ErrRunnerBackendRefused: the runner backend refused to create or start
+	// the environment — credentials rejected, a plan limit reached, or a
+	// request it will not accept. Retrying the same request cannot fix it, and
+	// the session's reason names the backend rather than GitHub or a checkout
+	// (M5.4b).
+	ErrRunnerBackendRefused = errors.New("the runner backend refused to start the session's environment")
 )
+
+// DefaultEgressHosts is ADR-013's default allowlist, as exact hostnames: git
+// over HTTPS to GitHub and the public package registries. The model
+// provider's host is M6's to add; the fake provider needs none. Workspace
+// additions are M5.4c's. Every host is exact — no wildcards — because a
+// hostname-enforcing firewall matches on the TLS SNI and a wildcard over a
+// shared domain reaches whatever else is behind it.
+var DefaultEgressHosts = []string{
+	"github.com", "codeload.github.com",
+	"registry.npmjs.org",
+	"pypi.org", "files.pythonhosted.org",
+	"proxy.golang.org", "sum.golang.org",
+	"crates.io", "static.crates.io", "index.crates.io",
+	"rubygems.org",
+	"repo1.maven.org", "repo.maven.apache.org",
+}
 
 // Exit codes the runner uses, so the backend's status can say *why* it
 // stopped without the control plane reading anything the runner wrote.
@@ -75,6 +99,12 @@ type RunnerSpec struct {
 	// from the session's pinned agent version.
 	Provider domain.Provider
 	Model    string
+	// EgressHosts is every hostname the environment may reach, exactly:
+	// DefaultEgressHosts plus the event ingress the runner publishes to
+	// (ADR-015). Built by the runner manager, never from input. A backend
+	// that enforces egress allows these and nothing else; the dev backend
+	// enforces nothing and is refused outside development (ADR-013).
+	EgressHosts []string
 }
 
 // RunnerCredentials is a runner's NATS identity.
@@ -136,6 +166,18 @@ type RunnerBackend interface {
 	HandleFor(ctx context.Context, runnerID uuid.UUID) (handle string, found bool, err error)
 	// List returns every environment this backend holds.
 	List(ctx context.Context) ([]BackendRunner, error)
+}
+
+// RunnerLeaser is a backend whose environments stop on their own unless kept
+// alive: each is created with a short lease the runner manager extends while
+// its runner is live (M5.4b). A runner manager that stops extends nothing, so
+// its environments stop within one lease — teardown on lost heartbeat, from
+// the provider's side. Optional: the dev backend has no leases.
+type RunnerLeaser interface {
+	// ExtendLease pushes the environment's expiry to a lease from now,
+	// never past the backend's hard cap. An environment already stopped or
+	// gone is not an error: there is nothing left to keep alive.
+	ExtendLease(ctx context.Context, handle string) error
 }
 
 // RunnerToReconcile is a live runner seen across every workspace.
@@ -363,11 +405,24 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 		NATS:        natsCreds,
 		Provider:    version.Provider,
 		Model:       version.Model,
+		EgressHosts: egressHosts(s.natsURL),
 	})
 	if err != nil {
 		return domain.Runner{}, fmt.Errorf("provision runner: %w", err)
 	}
 	return s.runners.SetHandle(ctx, runner.ID, workspaceID, handle)
+}
+
+// egressHosts is what a runner may reach: ADR-013's defaults and the event
+// ingress it publishes to, which ADR-015 makes the one Weave-operated host on
+// every allowlist. Only the hostname: the port is the firewall's business,
+// and the ingress is 443 wherever it is enforced.
+func egressHosts(natsURL string) []string {
+	hosts := append([]string(nil), DefaultEgressHosts...)
+	if parsed, err := url.Parse(natsURL); err == nil && parsed.Hostname() != "" {
+		hosts = append(hosts, strings.ToLower(parsed.Hostname()))
+	}
+	return hosts
 }
 
 // create inserts the runner row before anything exists in the backend.
@@ -773,6 +828,7 @@ const (
 	RunnerFailureProviderUnavailable RunnerFailure = "provider_unavailable"
 	RunnerFailureEventsUnconfirmed   RunnerFailure = "events_unconfirmed"
 	RunnerFailureEventsNotDrained    RunnerFailure = "events_not_drained"
+	RunnerFailureBackendRefused      RunnerFailure = "backend_refused"
 	// RunnerFailureNoProvider is how every session ends until M5.5: the
 	// runner came up with a verified checkout, and there is no provider
 	// adapter to run in it yet.
@@ -793,6 +849,8 @@ func ClassifyRunnerFailure(err error) (RunnerFailure, bool) {
 		return RunnerFailureNoBranch, true
 	case errors.Is(err, ErrRunnerBrokerRefused):
 		return RunnerFailureBrokerRefused, true
+	case errors.Is(err, ErrRunnerBackendRefused):
+		return RunnerFailureBackendRefused, true
 	default:
 		return "", false
 	}
@@ -804,6 +862,8 @@ func SessionFailureReason(cause string) string {
 	switch RunnerFailure(cause) {
 	case RunnerFailureUnavailable:
 		return "the session's runner could not be started"
+	case RunnerFailureBackendRefused:
+		return "the runner backend refused to start the session's environment"
 	case RunnerFailureLost:
 		return "the session's runner stopped before it was ready"
 	case RunnerFailureNotReady:

@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sort"
@@ -560,5 +561,38 @@ func TestAnAbandonedHaltedRunnerIsFinishedAfterTheGrace(t *testing.T) {
 	}
 	if _, exists := w.backend.envs[runner.Handle]; exists {
 		t.Error("its environment was left standing")
+	}
+}
+
+// TestARunnerMayReachExactlyTheDefaultsAndItsIngress: the egress list a
+// backend enforces is ADR-013's defaults plus the event ingress the runner
+// publishes to (ADR-015) — exact hostnames, no port, no wildcard, and nothing
+// from the session or its repository.
+func TestARunnerMayReachExactlyTheDefaultsAndItsIngress(t *testing.T) {
+	w := newRunnerTestWorld(t)
+	if _, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := w.backend.lastSpec.EgressHosts
+	want := append(append([]string(nil), application.DefaultEgressHosts...), "broker.test")
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("egress hosts = %v, want %v", got, want)
+	}
+	for _, host := range got {
+		if strings.ContainsAny(host, "*:/") || host != strings.ToLower(host) {
+			t.Errorf("egress host %q is not an exact lowercase hostname", host)
+		}
+	}
+}
+
+// TestABackendRefusalIsNamedAsTheBackends: distinct from a lost runner or a
+// GitHub failure, and terminal.
+func TestABackendRefusalIsNamedAsTheBackends(t *testing.T) {
+	cause, terminal := application.ClassifyRunnerFailure(fmt.Errorf("vercel: %w: 402", application.ErrRunnerBackendRefused))
+	if !terminal || cause != application.RunnerFailureBackendRefused {
+		t.Fatalf("classified as %q, %v; want backend_refused, terminal", cause, terminal)
+	}
+	if reason := application.SessionFailureReason(string(cause)); !strings.Contains(reason, "runner backend") {
+		t.Errorf("reason %q does not name the backend", reason)
 	}
 }
