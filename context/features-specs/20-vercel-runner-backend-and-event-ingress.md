@@ -66,18 +66,32 @@ Modal fails deny-by-default egress on DNS, and ADR-013 refuses a provider
 that fails any item. Vercel is also roughly half the per-session cost once
 paid for (about $0.055 against $0.12 for a 30-minute, 2 vCPU session).
 
-## Operator prerequisites — blocking, and not code
+## Operator prerequisites — none block building; three block staging
 
-1. **Vercel Pro.** Hobby caps a sandbox at 45 minutes, and a session may run
+**Development runs on Vercel Hobby** (decided 2026-09-29). Everything this
+unit builds and tests works there — the spike ran on Hobby — and the fake
+provider's sessions last seconds to minutes. Hobby's limits: a 45-minute
+sandbox, 10 concurrent sandboxes, and a monthly allowance (5 active-CPU
+hours, 420 GB-hours of memory, 5,000 creations) past which creation
+**pauses** until the next cycle rather than billing. A live test that fails
+with creation refused has hit the allowance, not a defect. **Check Vercel's
+Hobby terms**, which restrict it to personal, non-commercial use, before
+relying on it for longer than development.
+
+`cloudflared` is installed (2026.9.3), and a quick tunnel reached a local
+server from its public hostname on 2026-09-29.
+
+**Before staging, and closing Vercel's acceptance under ADR-013:**
+
+1. **Vercel Pro**, for its 24-hour session cap; a session may run
    `application.SessionMaxRunTime` (eight hours) plus its drain.
 2. **The one live test that has not run**: one sandbox kept alive by
    heartbeat for longer than `SessionMaxRunTime` plus the drain bound —
-   about 8.5 hours, under a dollar. Record it in the Verification Record.
+   about 8.5 hours, under a dollar. Needs Pro. Record it in the Verification
+   Record.
 3. **Vercel's data-processing terms**, read and accepted for customer source.
-4. **`cloudflared` installed** for the development tunnel (below), and a
-   decision on Open Question 8 before anything is deployed.
 
-Acceptance of Vercel under ADR-013 is complete when 1–3 are recorded.
+And a decision on Open Question 8 before anything is deployed.
 
 ## The Vercel backend
 
@@ -163,8 +177,14 @@ and record** the lease length and where the extension runs. The reconciler
 already visits every live runner every 30 seconds, and a runner manager that
 is down extends nothing, which is the property wanted.
 
-The hard ceiling is Vercel's 24-hour session cap. Assert, in a test, that
-`SessionMaxRunTime` plus the drain bound stays under it.
+**The hard ceiling is the plan's session cap, so it is configuration**
+(`RUNNER_VERCEL_MAX_SESSION`): 45 minutes on Hobby, 24 hours on Pro. No
+lease or timeout the backend requests may exceed it. **In staging and
+production the runner manager refuses to start** when the cap is below
+`SessionMaxRunTime` plus the drain bound — a test holds that, for both
+sides of the boundary. In development a cap below it is allowed: a session
+that outlives it loses its sandbox and fails through the lost-runner path,
+which is harmless with the fake provider and says so in its reason.
 
 ### Region
 
@@ -173,7 +193,8 @@ Region changes Vercel's CPU and memory rates, not the design.
 
 ### Configuration
 
-`RUNNER_BACKEND=vercel`, with the token, team id and project id. In
+`RUNNER_BACKEND=vercel`, with the token, team id, project id, region and
+maximum session (`RUNNER_VERCEL_MAX_SESSION`, above). In
 development they come from `.env`; anywhere else an unset value fails
 startup, and they come from the secret store (M9). They are never logged.
 
@@ -204,6 +225,13 @@ startup, and they come from the secret store (M9). They are never logged.
   tunnel keeps one hostname but needs a Cloudflare account and a domain on
   it. Either way the hostname is an exact entry on the sandbox's policy,
   never a wildcard over `trycloudflare.com`.
+- **Start the tunnel first, and wait for its name to resolve.** A new
+  quick-tunnel hostname takes seconds to appear in DNS, and a lookup made
+  before then is cached as not-found: on 2026-09-29 the first check failed
+  for exactly that reason and every retry failed with it, until the name was
+  resolved through 1.1.1.1. So whatever starts the tunnel waits for
+  `Registered tunnel connection` and for the hostname to resolve publicly
+  **before** the runner manager provisions a sandbox that will look it up.
 
 ## Non-scope
 
@@ -286,7 +314,8 @@ project's scope tag.
 - Runner and service credentials are each refused on the other's listener.
 - The image choice, lease length, extension placement and quick-or-named
   tunnel are recorded, with reasons.
-- Pro, the 8.5-hour survival run and the DPA are recorded, closing Vercel's
-  acceptance under ADR-013.
+- The whole unit is verified on Hobby. Pro, the 8.5-hour survival run and
+  the DPA are tracked as the staging gate that closes Vercel's acceptance
+  under ADR-013 — recorded when done, not required to finish this unit.
 - `make ci` and `make test-integration` pass; the live acceptance test
   passes and its output is in the Verification Record.
