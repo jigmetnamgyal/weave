@@ -80,8 +80,14 @@ binding as the second layer (ADR-014, M5.4a).
 - **Limits on the public listener and on runner users**: a maximum payload
   no larger than the event contract permits, a small maximum number of
   subscriptions per runner (it needs its reply inbox and nothing else), and a
-  connection limit on the account, so an authenticated flood is capped as well
-  as an unauthenticated one.
+  connection limit on the account, which caps an **authenticated** flood only:
+  it counts connections once they have authenticated.
+- **Before authentication**, a short authentication timeout and the WebSocket
+  handshake timeout drop connections that never complete, and a per-source
+  connection and rate limit sits in front of the listener, at whatever hosts
+  it (Open Question 8), since NATS has none of its own. The server-wide
+  connection limit is not that cap: it is shared with the internal listener,
+  so a public flood reaching it would lock Weave's own services out.
 - **The allowlist entry is the system's, not a workspace's.** The runner
   manager adds the ingress hostname to every sandbox's policy itself, as an
   exact hostname with no wildcard. It is not a workspace addition, does not

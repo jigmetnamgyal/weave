@@ -74,9 +74,12 @@ provider's sessions last seconds to minutes. Hobby's limits: a 45-minute
 sandbox, 10 concurrent sandboxes, and a monthly allowance (5 active-CPU
 hours, 420 GB-hours of memory, 5,000 creations) past which creation
 **pauses** until the next cycle rather than billing. A live test that fails
-with creation refused has hit the allowance, not a defect. **Check Vercel's
-Hobby terms**, which restrict it to personal, non-commercial use, before
-relying on it for longer than development.
+with creation refused has hit the allowance, not a defect. **Unconfirmed, on
+the operator:** Vercel's terms restrict Hobby to personal, non-commercial use,
+and its fair-use guidelines count a deployment made for anyone's financial
+gain as commercial. Whether developing Weave on Hobby qualifies is not yet
+settled. If it does not, Pro moves ahead of this unit's live tests, not only
+ahead of staging; nothing in the code changes either way.
 
 `cloudflared` is installed (2026.9.3), and a quick tunnel reached a local
 server from its public hostname on 2026-09-29.
@@ -210,9 +213,17 @@ startup, and they come from the secret store (M9). They are never logged.
 - **`internal/adapters/natsauth`** sets `AllowedConnectionTypes`:
   `WEBSOCKET` for runners, `STANDARD` for every service identity, both for
   tests.
-- **Limits**: a maximum payload no larger than the event contract permits
-  (`message.created` text is capped at 32 KiB), a small subscription cap for
-  runner users, and an account connection limit.
+- **Limits**: a maximum payload sized from the encoded-event limit,
+  `domain.MaxEventBytes` (64 KiB, `contracts/events`), plus headroom for
+  message headers — NATS counts headers against it, and every runner publish
+  carries `Nats-Msg-Id` — so no event the ingestor would accept is refused at
+  the broker. A field cap such as `message.created`'s 32,768-character text
+  is not the bound. Also a small subscription cap for runner users, and an
+  account connection limit, which counts only authenticated connections.
+  Before authentication: a short authentication timeout and the WebSocket
+  handshake timeout here, and a per-source limit in front of the listener
+  wherever it is hosted (ADR-015) — not the server-wide connection limit,
+  which the internal listener shares.
 - **Development tunnel: Cloudflare Tunnel** (decided 2026-09-29). A Vercel
   sandbox cannot reach a laptop, so testing this backend against a local
   stack needs a public 443 hostname forwarded to the local WebSocket

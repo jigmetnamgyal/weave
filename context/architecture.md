@@ -224,7 +224,7 @@ Use UUIDv7 identifiers for sortable, globally unique IDs. Mutable resources incl
 - Every request resolves exactly one workspace context before accessing tenant-owned data.
 - Cross-workspace joins are prohibited in repository APIs and tested automatically.
 - Object-storage keys begin with opaque environment and workspace partitions, but authorization never relies on key shape alone.
-- NATS subjects use opaque tenant identifiers and are accessible only to service identities, and to runners holding a credential that may publish their own session's subject and nothing else (ADR-014).
+- NATS subjects use opaque tenant identifiers and are accessible only to service identities, and to runners holding a credential that may publish their own session's subject and subscribe to their own reply inbox, and nothing else (ADR-014).
 - Encryption keys are environment-separated; enterprise customer-managed keys are a future extension.
 - Usage, quota, logs, caches, and metrics avoid exposing customer names or source content in labels.
 

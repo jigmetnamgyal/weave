@@ -140,10 +140,13 @@ applies to that workspace's sessions only.
   delay — but not bounded: repeated requests can move data in chunks, so a
   small file is slow to exfiltrate this way, not impossible. The first version
   of this ADR wrongly said registries expose nothing, and the second wrongly
-  said the channel could not carry a file. **Control, required with the egress proxy
-  (M5.4b), before M6:** the proxy logs every registry request with its
-  package path per session, so a session fetching packages no manifest in its
-  repository names is visible and alertable. **Revisit** — with a pull-through
+  said the channel could not carry a file. **Control, required in M5.4c, before
+  M6:** a Weave logging proxy, reached through Vercel's `forwardURL` rule,
+  logs every registry request with its package path per session, so a session
+  fetching packages no manifest in its repository names is visible and
+  alertable. It is not the enforcement: M5.4b's hostname allowlist is enforced
+  by Vercel's firewall, and the proxy only observes what that allowlist lets
+  through. **Revisit** — with a pull-through
   registry mirror resolving only packages the repository's lockfiles name —
   if a customer's threat model includes a determined insider or high-value
   source.
