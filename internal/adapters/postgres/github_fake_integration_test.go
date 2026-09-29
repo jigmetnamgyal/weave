@@ -48,6 +48,10 @@ type fakeGitHubServer struct {
 	// refsCreated counts successful POST /git/refs, per branch name.
 	refsCreated map[string]int
 	calls       int
+	// baseCommit is where granted repositories' default branch points.
+	// baseSHA unless a test serves a real repository, when it must be that
+	// repository's commit so a runner can check it out.
+	baseCommit string
 }
 
 type fakeRepository struct {
@@ -62,6 +66,7 @@ func newFakeGitHubServer(t *testing.T) *fakeGitHubServer {
 		granted:     map[int64][]fakeRepository{},
 		branches:    map[string]map[string]string{},
 		refsCreated: map[string]int{},
+		baseCommit:  baseSHA,
 	}
 	fake.server = httptest.NewServer(http.HandlerFunc(fake.serve))
 	t.Cleanup(fake.server.Close)
@@ -91,7 +96,7 @@ func (f *fakeGitHubServer) grant(t *testing.T, pool *pgxpool.Pool, fixture sessi
 	if f.branches[key] == nil {
 		f.branches[key] = map[string]string{}
 	}
-	f.branches[key][repository.DefaultBranch] = baseSHA
+	f.branches[key][repository.DefaultBranch] = f.baseCommit
 }
 
 func (f *fakeGitHubServer) created(branch string) int {

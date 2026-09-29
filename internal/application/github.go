@@ -141,6 +141,9 @@ type GitHubAPI interface {
 	// BranchRules answers for names that do not exist yet, which is the only
 	// way to know whether a ruleset governs a branch about to be created.
 	BranchRules(ctx context.Context, githubInstallationID int64, owner, repo, branch string) (BranchRule, error)
+	// RepositoryReadToken mints a token scoped to one repository with
+	// contents:read, for a runner's clone. Never cached, never persisted.
+	RepositoryReadToken(ctx context.Context, githubInstallationID, githubRepositoryID int64) (string, error)
 }
 
 // ErrRemoteNotFound is the port's "no such thing on GitHub". Adapters

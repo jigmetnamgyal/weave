@@ -23,9 +23,15 @@ build/
 # go
 bin/
 # `go build ./services/<name>` from the root writes the binary here rather than
-# into bin/. One was committed by accident on PR #17, 47 MB of it.
+# into bin/. One was committed by accident on PR #17, 47 MB of it, and a second
+# was caught before commit on M5.4a — so every service is listed, not only the
+# ones that have already been built there by mistake.
 /api
 /worker
+/ingestor
+/migrate
+/runner
+/runner-manager
 *.test
 *.out
 

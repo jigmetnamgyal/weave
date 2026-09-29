@@ -83,10 +83,17 @@ type Querier interface {
 	// refuse both. Editing a profile means writing another row.
 	CreateAgentVersion(ctx context.Context, arg CreateAgentVersionParams) (AgentVersion, error)
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (WorkspaceInvitation, error)
+	// Fails on runners_one_live_per_session if the session already has a live
+	// runner; the caller reads that one instead of making a second.
+	CreateRunner(ctx context.Context, arg CreateRunnerParams) (Runner, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
+	// The terminal write, after the backend confirms the environment is gone.
+	// Conditional on the runner being live, so a redelivered teardown finds no
+	// row and treats that as already done.
+	EndRunner(ctx context.Context, arg EndRunnerParams) (Runner, error)
 	// Written in the same transaction as the thing it promises. That is the whole
 	// mechanism: writing the session and then publishing leaves a window where the
 	// session exists and nothing will pick it up, open exactly when the process
@@ -111,6 +118,7 @@ type Querier interface {
 	// Scoped by workspace so an invitation id from one tenant cannot be revoked
 	// through another.
 	GetInvitationForWorkspace(ctx context.Context, arg GetInvitationForWorkspaceParams) (WorkspaceInvitation, error)
+	GetLiveRunnerForSession(ctx context.Context, arg GetLiveRunnerForSessionParams) (Runner, error)
 	// Used by tests and by an operator looking at one row. Workspace-scoped like
 	// everything else, so a row id from one tenant is not readable through
 	// another.
@@ -119,6 +127,7 @@ type Querier interface {
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
 	GetRepositoryForWorkspace(ctx context.Context, arg GetRepositoryForWorkspaceParams) (Repository, error)
+	GetRunner(ctx context.Context, arg GetRunnerParams) (Runner, error)
 	// Scoped by workspace, so a session id from one tenant cannot be read through
 	// another even before the policies are consulted.
 	GetSessionForWorkspace(ctx context.Context, arg GetSessionForWorkspaceParams) (Session, error)
@@ -218,6 +227,10 @@ type Querier interface {
 	// an old audit entry or a finished session readable. Withdrawing the
 	// repositories is a separate statement in the same transaction.
 	MarkInstallationDeleted(ctx context.Context, arg MarkInstallationDeletedParams) error
+	MarkRunnerRunning(ctx context.Context, arg MarkRunnerRunningParams) (Runner, error)
+	// Taken before the backend is asked to destroy anything, so a crash mid-
+	// teardown leaves a runner the reconciler knows to finish.
+	MarkRunnerTerminating(ctx context.Context, arg MarkRunnerTerminatingParams) (Runner, error)
 	// Read under the agent's row lock by the caller, so two concurrent edits
 	// cannot both compute the same next number and collide on the unique index.
 	NextAgentVersionNumber(ctx context.Context, arg NextAgentVersionNumberParams) (int32, error)
@@ -288,6 +301,16 @@ type Querier interface {
 	// Only an outstanding invitation can be revoked; revoking an accepted or
 	// already-revoked one matches no row.
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (WorkspaceInvitation, error)
+	// Whether a producer is a live runner of this session. Read inside the event
+	// append transaction, without a lock, after the event counter is taken.
+	//
+	// `terminating` counts. Teardown marks the runner terminating *before* it
+	// asks the backend to destroy anything, so a runner's last events — flushed
+	// as it is stopped — arrive while its row reads terminating. They are that
+	// session's history, from that session's runner; refusing them would record
+	// a normal shutdown as an intrusion. Once the backend confirms the
+	// environment is gone the row reads terminated, and nothing more is accepted.
+	RunnerBoundToSession(ctx context.Context, arg RunnerBoundToSessionParams) (bool, error)
 	// Whether an event is already stored, for a terminal session: a redelivery of
 	// an event stored before the session ended is a duplicate, not a refusal.
 	SessionEventExists(ctx context.Context, arg SessionEventExistsParams) (bool, error)
@@ -311,6 +334,9 @@ type Querier interface {
 	// previous state rather than require a fresh install, and keeping the rows is
 	// what makes that possible.
 	SetInstallationSuspended(ctx context.Context, arg SetInstallationSuspendedParams) (GithubInstallation, error)
+	// Recorded as soon as the backend returns one, so a crash after this point
+	// leaves something to tear down rather than an environment nothing names.
+	SetRunnerHandle(ctx context.Context, arg SetRunnerHandleParams) (Runner, error)
 	SlugExists(ctx context.Context, slug string) (bool, error)
 	// The delivery will never succeed, or has failed too many times to keep
 	// trying. The row stops being claimed and keeps its reason.

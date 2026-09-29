@@ -109,6 +109,9 @@ const (
 	// never shipped: every execution that ran it was a local one, and all of
 	// them had closed. A closed execution is never replayed.
 	versionBranchStep workflow.Version = 2
+	// versionRunnerStep is M5.4a: provisioning, the branch, a runner with a
+	// verified checkout, running, then failure — there is no provider yet.
+	versionRunnerStep workflow.Version = 3
 )
 
 // SessionWorkflow takes a queued session as far as this milestone can.
@@ -130,7 +133,7 @@ func SessionWorkflow(ctx workflow.Context, input SessionWorkflowInput) error {
 	// `context/code-standards.md` requires. An execution that recorded
 	// version 1 finishes on the path it started — no branch step — and every
 	// new one takes version 2.
-	version := workflow.GetVersion(ctx, sessionWorkflowChange, workflow.DefaultVersion, versionBranchStep)
+	version := workflow.GetVersion(ctx, sessionWorkflowChange, workflow.DefaultVersion, versionRunnerStep)
 
 	logger.Info("provisioning a session", "session_id", input.SessionID)
 
@@ -159,7 +162,11 @@ func SessionWorkflow(ctx workflow.Context, input SessionWorkflowInput) error {
 		}
 	}
 
-	// The runner arrives in M5.4. Until then the session fails here, with a
+	if version >= versionRunnerStep {
+		return runSession(ctx, input)
+	}
+
+	// Versions 1 and 2 end here: no runner. The session fails with a
 	// reason that says why rather than leaving it in `provisioning` for
 	// someone to find.
 	return workflow.ExecuteActivity(ctx, ActivityFailUnprovisionable, input).Get(ctx, nil)
@@ -210,4 +217,126 @@ func branchFailureCause(err error, exhausted string) (string, bool) {
 		}
 	}
 	return exhausted, true
+}
+
+// runnerActivityOptions govern provisioning, which runs in the runner manager
+// on its own queue.
+//
+// A heartbeat timeout, because the activity waits for readiness: a runner
+// manager that dies mid-wait is noticed within it, and the retry finds the
+// runner it had started. Three attempts: provisioning is idempotent, but a
+// backend that fails three times is not going to succeed on the fourth.
+func runnerActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		TaskQueue:           RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
+		StartToCloseTimeout: RunnerReadyTimeout + time.Minute,
+		HeartbeatTimeout:    30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2,
+			MaximumInterval:    30 * time.Second,
+			MaximumAttempts:    3,
+			NonRetryableErrorTypes: []string{
+				ErrorTypeNotFound, ErrorTypeTransitionNotAllowed, ErrorTypeRunnerRefused,
+			},
+		},
+	}
+}
+
+// teardownActivityOptions govern teardown, which must not give up easily: a
+// runner that outlives its session holds a checkout ADR-013 says is gone.
+// Retried without an attempt limit, bounded by an hour; the reconciler is the
+// backstop past that.
+func teardownActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		TaskQueue:              RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
+		StartToCloseTimeout:    2 * time.Minute,
+		ScheduleToCloseTimeout: time.Hour,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2,
+			MaximumInterval:    time.Minute,
+			MaximumAttempts:    0,
+		},
+	}
+}
+
+// runSession gives the session a runner, moves it to running, and ends it.
+//
+// **Once provisioning has been attempted, every path out tears the runner
+// down** — a runner that outlives its session is the failure this unit exists
+// to prevent. Teardown runs on a disconnected context, so a cancelled workflow
+// still cleans up, and it is idempotent, so tearing down a runner that never
+// started is success.
+//
+// With no provider adapter (M5.5), a ready runner has nothing to run: it is
+// torn down and the session fails naming that, rather than sitting in
+// `running` with nothing that will ever move it.
+func runSession(ctx workflow.Context, input SessionWorkflowInput) error {
+	logger := workflow.GetLogger(ctx)
+	teardown := func(failed bool, cause string) error {
+		cleanup, cancel := workflow.NewDisconnectedContext(ctx)
+		defer cancel()
+		cleanup = workflow.WithActivityOptions(cleanup, teardownActivityOptions(ctx))
+		err := workflow.ExecuteActivity(cleanup, ActivityTeardownRunner, TeardownInput{
+			WorkspaceID: input.WorkspaceID, SessionID: input.SessionID, Failed: failed, Cause: cause,
+		}).Get(cleanup, nil)
+		if err != nil {
+			// The reconciler finds a runner whose session has ended, so this
+			// is not the last word — but it must be loud.
+			logger.Error("runner teardown did not complete; the reconciler will finish it",
+				"session_id", input.SessionID, "error", err.Error())
+		}
+		return err
+	}
+
+	runnerCtx := workflow.WithActivityOptions(ctx, runnerActivityOptions(ctx))
+	var runner RunnerResult
+	if err := workflow.ExecuteActivity(runnerCtx, ActivityProvisionRunner, input).Get(ctx, &runner); err != nil {
+		cause, fail := runnerFailureCause(err)
+		_ = teardown(true, cause)
+		if !fail {
+			return err
+		}
+		logger.Warn("the session's runner could not be provisioned", "session_id", input.SessionID, "cause", cause)
+		return workflow.ExecuteActivity(ctx, ActivityFailSession, FailSessionInput{
+			WorkspaceID: input.WorkspaceID, SessionID: input.SessionID, Cause: cause,
+		}).Get(ctx, nil)
+	}
+
+	if err := workflow.ExecuteActivity(ctx, ActivityMarkRunning, input).Get(ctx, nil); err != nil {
+		_ = teardown(true, string(application.RunnerFailureUnavailable))
+		return err
+	}
+	logger.Info("the session is running", "session_id", input.SessionID, "runner_id", runner.RunnerID)
+
+	// No provider adapter yet. The runner is torn down in the ordinary way —
+	// it did its job — and the session fails saying why. The session is
+	// failed even if teardown did not complete: the reconciler tears down
+	// runners of *ended* sessions, so leaving this one in `running` would
+	// leave its runner with nothing that will ever remove it.
+	_ = teardown(false, string(application.RunnerFailureNoProvider))
+	return workflow.ExecuteActivity(ctx, ActivityFailSession, FailSessionInput{
+		WorkspaceID: input.WorkspaceID, SessionID: input.SessionID,
+		Cause: string(application.RunnerFailureNoProvider),
+	}).Get(ctx, nil)
+}
+
+// runnerFailureCause decides what a failed provisioning means for the session:
+// a named refusal, not this workflow's to fail (session gone or moved on), or
+// — retries spent — the runner was unavailable.
+func runnerFailureCause(err error) (string, bool) {
+	var applicationErr *temporal.ApplicationError
+	if errors.As(err, &applicationErr) {
+		switch applicationErr.Type() {
+		case ErrorTypeRunnerRefused:
+			var cause string
+			if applicationErr.HasDetails() && applicationErr.Details(&cause) == nil && cause != "" {
+				return cause, true
+			}
+		case ErrorTypeNotFound, ErrorTypeTransitionNotAllowed:
+			return "", false
+		}
+	}
+	return string(application.RunnerFailureUnavailable), true
 }

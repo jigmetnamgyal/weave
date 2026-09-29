@@ -113,3 +113,12 @@ func translateRefusal(err error) error {
 	}
 	return err
 }
+
+// RepositoryReadToken mints a token that can read one repository.
+func (p *Port) RepositoryReadToken(ctx context.Context, githubInstallationID, githubRepositoryID int64) (string, error) {
+	token, err := p.client.RepositoryReadToken(ctx, githubInstallationID, githubRepositoryID)
+	if err != nil {
+		return "", translateRefusal(err)
+	}
+	return token, nil
+}

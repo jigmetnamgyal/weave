@@ -248,6 +248,12 @@ The execution plane treats the repository, task text, dependencies, generated co
 
 Production must not use a plain privileged Docker socket or mount the host filesystem into customer runners.
 
+**Decided in ADR-013** (`docs/adr/0013-runner-execution-boundary.md`):
+
+- **Isolation** runs on a managed microVM or gVisor provider behind a `RunnerBackend` port, accepted only against the ADR's checklist — deny-by-default egress foremost. Kubernetes with gVisor is the scale-up path. Local development uses a hardened-Docker backend that is **not a security boundary** and that the runner manager refuses to start in staging or production.
+- **Source is not retained.** The sandbox, checkout and writable volumes are destroyed at teardown; only derived artifacts remain. A continuation re-clones at `sessions.branch_sha` and applies the stored patch. No persistent dependency cache in the MVP.
+- **Egress** is HTTPS on 443 through a hostname-enforcing egress proxy. The default allowlist is GitHub, the configured model provider, and the npm, PyPI, Go, crates.io, RubyGems and Maven Central registries. Metadata endpoints, private and link-local ranges, internal services, raw IPs and other ports are always refused. Workspace admins may add hostnames for their own sessions — audited and capped.
+
 ## Reliability and Consistency
 
 - PostgreSQL is the source of truth for product state.

@@ -135,6 +135,8 @@ func run() error {
 		activityOptions(weavetemporal.ActivityRecordBranch))
 	w.RegisterActivityWithOptions(activities.FailSession,
 		activityOptions(weavetemporal.ActivityFailSession))
+	w.RegisterActivityWithOptions(activities.MarkRunning,
+		activityOptions(weavetemporal.ActivityMarkRunning))
 
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("start temporal worker: %w", err)

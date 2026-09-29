@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/jigmetnamgyal/weave/internal/adapters/devdocker"
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	weavetemporal "github.com/jigmetnamgyal/weave/internal/adapters/temporal"
 	"github.com/jigmetnamgyal/weave/internal/application"
@@ -38,7 +40,11 @@ type harness struct {
 	pool      *pgxpool.Pool
 	publisher *application.Publisher
 	github    *fakeGitHubServer
-	stop      func()
+	// commit is the real commit the test git server's repository holds, and
+	// the one the fake GitHub cuts branches at — so a runner can clone it.
+	commit  string
+	backend *devdocker.Backend
+	stop    func()
 }
 
 // startHarness is newHarness, keeping hold of the fake GitHub so a test can
@@ -60,8 +66,15 @@ func startHarness(t *testing.T) harness {
 	sessionStore := postgres.NewSessionStore(pool)
 	sessions := application.NewSessionService(
 		sessionStore, postgres.NewTaskStore(pool), postgres.NewAgentStore(pool))
+	// Every session workflow now provisions a runner (M5.4a), so the harness
+	// runs a runner manager too: the dev Docker backend on a scope of its own,
+	// cloning from a real git server.
+	backend := dockerBackend(t)
+	gitBase, commit := gitServer(t, "acme", "service")
 	github := newFakeGitHubServer(t)
-	branches := application.NewSessionBranchService(sessionStore, installationServiceFor(t, pool, github))
+	github.baseCommit = commit
+	installations := installationServiceFor(t, pool, github)
+	branches := application.NewSessionBranchService(sessionStore, installations)
 	activities := weavetemporal.NewSessionActivities(sessions, branches)
 
 	// A task queue per test, so two tests never race for each other's work.
@@ -79,8 +92,22 @@ func startHarness(t *testing.T) harness {
 		activity.RegisterOptions{Name: weavetemporal.ActivityRecordBranch})
 	w.RegisterActivityWithOptions(activities.FailSession,
 		activity.RegisterOptions{Name: weavetemporal.ActivityFailSession})
+	w.RegisterActivityWithOptions(activities.MarkRunning,
+		activity.RegisterOptions{Name: weavetemporal.ActivityMarkRunning})
 	if err := w.Start(); err != nil {
 		t.Fatalf("start worker: %v", err)
+	}
+
+	runners := application.NewRunnerService(postgres.NewRunnerStore(pool), sessionStore, backend, installations,
+		postgres.WithTenantWorkspace, gitBase, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runnerActivities := weavetemporal.NewRunnerActivities(runners)
+	rw := worker.New(client, weavetemporal.RunnerTaskQueue(queue), worker.Options{})
+	rw.RegisterActivityWithOptions(runnerActivities.ProvisionRunner,
+		activity.RegisterOptions{Name: weavetemporal.ActivityProvisionRunner})
+	rw.RegisterActivityWithOptions(runnerActivities.TeardownRunner,
+		activity.RegisterOptions{Name: weavetemporal.ActivityTeardownRunner})
+	if err := rw.Start(); err != nil {
+		t.Fatalf("start runner worker: %v", err)
 	}
 
 	publisher := application.NewPublisher(
@@ -96,10 +123,11 @@ func startHarness(t *testing.T) harness {
 		publisher.Run(ctx)
 	}()
 
-	return harness{pool: pool, publisher: publisher, github: github, stop: func() {
+	return harness{pool: pool, publisher: publisher, github: github, commit: commit, backend: backend, stop: func() {
 		cancel()
 		<-done
 		w.Stop()
+		rw.Stop()
 		client.Close()
 	}}
 }
@@ -244,4 +272,56 @@ func waitForSettled(t *testing.T, pool *pgxpool.Pool, subjectID uuid.UUID) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatal("the outbox row was never settled — a duplicate reported as an error retries forever")
+}
+
+// TestASessionReachesRunningWithAVerifiedCheckoutIntegration is M5.4a's check,
+// end to end: a session created the way the API creates one is provisioned a
+// real runner, reaches `running` for the first time any session has, and —
+// with no provider yet — is torn down and ends `failed` saying so. Nothing is
+// left behind: no container, no volume.
+func TestASessionReachesRunningWithAVerifiedCheckoutIntegration(t *testing.T) {
+	h := startHarness(t)
+	defer h.stop()
+
+	fixture := seedSessionFixture(t, h.pool, "Running Session Workspace")
+	h.github.grant(t, h.pool, fixture)
+	session, err := fixture.createSession(t, postgres.NewSessionStore(h.pool), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	waitForState(t, h.pool, fixture.ctx, session.ID, fixture.workspace.ID, "failed")
+
+	rows, err := h.pool.Query(context.Background(),
+		`SELECT next_state, reason FROM session_state_transitions WHERE session_id = $1 ORDER BY created_at, id`, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var route []string
+	var lastReason string
+	for rows.Next() {
+		var state, reason string
+		_ = rows.Scan(&state, &reason)
+		route = append(route, state)
+		lastReason = reason
+	}
+	rows.Close()
+	if got := strings.Join(route, " → "); got != "queued → provisioning → running → failed" {
+		t.Errorf("route = %s, want queued → provisioning → running → failed", got)
+	}
+	if !strings.Contains(lastReason, "no provider adapter") {
+		t.Errorf("final reason = %q, want the missing provider named", lastReason)
+	}
+
+	var state string
+	var ready bool
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT state, ready_at IS NOT NULL FROM runners WHERE session_id = $1`, session.ID).Scan(&state, &ready); err != nil {
+		t.Fatalf("read runner: %v", err)
+	}
+	if state != "terminated" || !ready {
+		t.Errorf("runner = %s (ready %v), want terminated after having been ready", state, ready)
+	}
+	if environments, _ := h.backend.List(context.Background()); len(environments) != 0 {
+		t.Errorf("%d runner environments left behind; ADR-013 retains no source", len(environments))
+	}
 }

@@ -37,7 +37,7 @@ NATS_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_URL)
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
         fmt fmt-check lint lint-go typecheck test test-integration build ci tidy tidy-check \
         migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check \
-        contracts contracts-check
+        contracts contracts-check runner-image
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -135,14 +135,22 @@ test: ## Run unit tests (CI gate)
 # APP_DATABASE_URL existed is not updated by the .env rule above, so the
 # variable would be empty, every RLS test would skip itself, and the command
 # would report success having proved nothing about the policies.
-test-integration: .env ## Run integration tests against the local database
+test-integration: .env runner-image ## Run integration tests against the local database
 	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is empty. Check .env against .env.example." && exit 1)
 	@test -n "$(APP_DATABASE_URL)" || (echo "APP_DATABASE_URL is empty, so the row-level-security tests would skip. Add it to .env — see .env.example." && exit 1)
 	@test -n "$(TEMPORAL_HOST_PORT)" || (echo "TEMPORAL_HOST_PORT is empty, so the session-workflow tests would skip. Add it to .env — see .env.example." && exit 1)
 	@test -n "$(NATS_URL)" || (echo "NATS_URL is empty, so the event-ingestion tests would skip. Add it to .env — see .env.example." && exit 1)
 	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
 		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" TEST_NATS_URL="$(NATS_URL)" \
+		TEST_DOCKER_SOCKET="$${RUNNER_DOCKER_SOCKET:-/var/run/docker.sock}" \
 		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
+
+runner-image: ## Build the local session runner image (dev backend)
+	@mkdir -p bin/runner-image
+	@GOOS=linux GOARCH=$$(docker version --format '{{.Server.Arch}}') CGO_ENABLED=0 \
+		go build -trimpath -o bin/runner-image/weave-runner ./services/runner
+	@docker build -q -t weave-runner:dev -f infra/runner/Dockerfile bin/runner-image >/dev/null
+	@echo "Built weave-runner:dev"
 
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)

@@ -1,0 +1,204 @@
+Read `CLAUDE.md` before starting
+
+We're building the runner manager and the first runner (Unit M5.4a), which
+is the first time Weave executes anything it did not write: a customer's
+repository, checked out inside a sandbox, with a process running in it.
+
+Read `docs/adr/0013-runner-execution-boundary.md` first. It decides the
+isolation technology, that source is not retained, and the egress policy.
+This unit builds against that ADR and does not reopen it.
+
+## M5.4 is two units, and this is the first
+
+M5.4's line is "runner manager and the isolated runner". The ADR makes one
+part of that impossible to do yet: **no production provider is chosen**,
+because acceptance requires verifying a vendor against a checklist with a
+working account. So:
+
+- **M5.4a — this unit.** The runner manager, the `RunnerBackend` port, the
+  local development backend, the runner record and its binding to a session,
+  provisioning and teardown in the session workflow, and the ingestor
+  refusing events from runners not bound to their session. Everything that
+  does not depend on which vendor is chosen.
+- **M5.4b — next.** Verifying candidate providers against the ADR's
+  checklist, the production `RunnerBackend` adapter, the egress proxy with
+  the default allowlist, and workspace allowlist additions.
+
+Splitting here keeps the security boundary's *plumbing* — who may start a
+runner, what a runner may say, when it is destroyed — reviewable on its own,
+before a vendor's specifics arrive.
+
+## Narrowed before implementation, and why
+
+Recorded here rather than discovered in review. Scoped as first written, this
+unit spanned five systems — a runner manager, a container backend, a runner
+image, the workflow, and NATS authentication — which the project rules say to
+split. Two parts move, and neither weakens a guarantee this unit ships:
+
+- **The runner does not connect to NATS in M5.4a.** It emits nothing until a
+  provider exists (M5.5), so readiness and liveness come from the backend's
+  own status — the container health check for the dev backend, the vendor's
+  status for M5.4b's. **Scoped NATS credentials move to the unit where a
+  runner first publishes**, as a hard gate on it. The ingestor-side binding
+  (`runner_not_bound`) is still built here, so M5.3's gate closes at the
+  ingestor in this unit.
+- **The dev backend does not enforce egress in M5.4a.** Hostname filtering is
+  M5.4b's egress proxy; a Docker network cannot express it. Nothing
+  untrusted executes in this unit — `git clone` runs no repository code — and
+  the dev backend is refused outside development regardless. **The proxy is
+  gated before M6**, the first unit that runs a real agent in a repository.
+
+## The dev backend is not a boundary, and must not become one by accident
+
+macOS runs neither gVisor nor Firecracker, so development needs a local
+backend. The ADR decides its shape: hardened Docker — non-root, all
+capabilities dropped, read-only root filesystem with an ephemeral writable
+workspace, no host mounts, no Docker socket inside, and resource limits.
+Egress is not enforced by this backend — see "Narrowed before
+implementation".
+
+The project rules forbid representing a simulated security boundary as
+production behaviour. So:
+
+- name it for what it is — `DevDockerBackend`, not `DockerBackend`;
+- the runner manager **refuses to start** with it when `APP_ENV` is
+  `staging` or `production`, and a test proves the refusal;
+- the runner manager talks to Docker through the Docker API from *its own*
+  process; the socket is never mounted into a runner.
+
+## Decided here: the runner manager is a Temporal worker on its own queue
+
+The architecture says only the runner manager and workflow workers may
+provision runners, and lists the runner manager as its own deployment unit.
+It becomes `services/runner-manager`: a Temporal worker serving provisioning
+and teardown activities on a **separate task queue**, with no HTTP API.
+
+- The session workflow stays in `services/worker` and schedules
+  `ProvisionRunner` and `TeardownRunner` onto the runner-manager queue.
+- Only the runner manager holds the backend's credentials (the Docker
+  socket today, a vendor API key in M5.4b). The workflow worker never does.
+- No inbound API means nothing to authenticate and nothing to expose.
+
+Record the decision and the reasoning in the tracker.
+
+## The runner record, and binding it to its session
+
+M5.3 handed this unit a gate: until a runner is bound to its session,
+anything that can publish to the stream can write history for any session
+whose id it knows. Close it:
+
+- A `runners` table: runner id, session, workspace, backend, the backend's
+  own handle, state (`provisioning`, `running`, `terminating`,
+  `terminated`, `failed`), and timestamps. Row-level security in the
+  creating migration. **One live runner per session**, enforced by a
+  partial unique index rather than by a check.
+- The **runner id is generated by the control plane** and passed to the
+  runner. The runner never chooses its own.
+- The **ingestor refuses an event** whose `producer` is not a runner
+  provisioned for that session and not yet terminated, as
+  `runner_not_bound` in quarantine. This is decided inside the append
+  transaction, beside the terminal-state check, for the same reason: a
+  state read earlier can be overtaken.
+- **NATS publish permission is not scoped in this unit** — see "Narrowed
+  before implementation". A runner in M5.4a holds no NATS credentials and does
+  not connect to NATS, because it emits nothing. Scoped, expiring credentials
+  — publish to `weave.session.<its session>.events` only, subscribe to
+  nothing — are issued by the unit where a runner first publishes (M5.5), and
+  gated there.
+
+Test that an event for session B from a runner bound to session A is
+quarantined by the ingestor as `runner_not_bound`. The broker-side refusal is
+M5.5's test, once runners hold credentials.
+
+## What the runner does in this unit
+
+Little, on purpose. The provider adapters are M5.5 (fake) and M6
+(Claude Code). The M5.4a runner:
+
+1. starts in the sandbox with its runner id and session id — delivered at
+   start, **never baked into the image**, and with no NATS credentials (see
+   above);
+2. receives a **short-lived GitHub installation token scoped to the one
+   repository** with `contents: read` only, and clones the session branch at
+   `sessions.branch_sha`. The branch was cut in M5.2 and its commit recorded;
+   the checkout must be at exactly that commit, and a mismatch fails the
+   runner rather than proceeding;
+3. reports readiness through the backend's status (a health check), and stays
+   alive — liveness is the backend reporting it running;
+4. waits until torn down.
+
+It emits **no session events** and holds no NATS credentials —
+`message.created` and `provider.failed` come from a provider, and there is
+none yet.
+
+## The workflow, extended
+
+`queued → provisioning → (cut branch) → (provision runner) → running`, then
+torn down and ended. With no provider the session cannot do work, so after
+the runner reports ready the workflow tears it down and fails the session
+with a reason naming the missing provider — the M5.1/M5.2 pattern of ending
+honestly rather than leaving a session in a state nothing will leave.
+
+- **`provisioning → running`** is the first time a session reaches
+  `running`. The transition table allows it; nothing has exercised it.
+- **Teardown on every path out**: success, failure, cancellation, timeout,
+  and lost heartbeat. A runner that outlives its session is the failure this
+  unit exists to prevent. Teardown is idempotent. An already-destroyed
+  runner is success, because redelivery will ask twice.
+- **Lost heartbeat** is detected by the runner manager, not by the runner,
+  and ends in teardown and a failed session with a reason.
+- **Version the workflow**, as M5.2 did. Executions started on version 2
+  finish on version 2.
+
+### The race M5.3 left for this unit
+
+M5.3 quarantines events for terminal sessions and recorded that a real
+runner's last events might race the terminal transition. With a runner that
+emits nothing, the race cannot occur yet. Say so in the tracker, and keep the
+gate on M5.5, whose fake provider is the first thing that emits.
+
+## Source retention, applied
+
+The ADR says no source outlives the session. The dev backend must honour it
+too, so that a production backend is not the first place it is tested:
+
+- the workspace is an ephemeral volume created for the runner and removed at
+  teardown;
+- a test asserts the container **and** its volume are gone after teardown on
+  each exit path, including a runner manager restarted mid-session. It
+  reconciles orphans at startup, and tearing down a runner whose session is
+  terminal is part of that reconciliation.
+
+## Carried forward, and worth re-reading before starting
+
+**From M5.1 and M5.2, on idempotent side effects.** Provisioning is an
+external side effect retried by Temporal. A redelivered `ProvisionRunner`
+must find the runner it already started rather than start a second. The
+one-live-runner index is the backstop, not the mechanism.
+
+**From M5.3, on locks.** A share lock on `sessions` starved transitions under
+load. The runner-binding check inside the append must not take a lock on
+`sessions` or `runners` that transitions or teardown then queue behind;
+measure it under load, as M5.3 did.
+
+**From M5.3, on test interference.** A running `make dev` claimed integration
+tests' work twice. Runner tests must use their own task queue and their own
+Docker labels, and clean up only what they created.
+
+**From the project rules.** Never represent a simulated boundary as
+production. The dev backend is the obvious place to slip.
+
+### Check when done
+
+- A session created through the API reaches `running` with a real container
+  holding a checkout at exactly `sessions.branch_sha`, then is torn down and
+  ends `failed` naming the missing provider. Container and volume are gone.
+- A runner cannot get an event stored for another session: the ingestor
+  quarantines it as `runner_not_bound`. (The NATS-side refusal is M5.5's.)
+- Every exit path tears down, including lost heartbeat and a runner-manager
+  restart.
+- The runner manager refuses the dev backend in staging and production.
+- The runner-manager placement, the runner record, and why NATS credentials
+  move to M5.5 are recorded in the tracker with reasoning.
+- `go.mod` keeps its `toolchain` directive; `govulncheck` is clean.
+- `make ci` and `make test-integration` pass.

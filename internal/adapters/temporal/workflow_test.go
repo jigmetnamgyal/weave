@@ -22,15 +22,18 @@ import (
 type run struct {
 	env *testsuite.TestWorkflowEnvironment
 
-	markErr   error
-	cutErr    error
-	recordErr error
+	markErr      error
+	cutErr       error
+	recordErr    error
+	provisionErr error
+	runningErr   error
 
 	steps          []string
 	cutAttempts    int
 	recordAttempts int
 	recorded       []weavetemporal.RecordBranchInput
 	failCauses     []string
+	teardowns      []weavetemporal.TeardownInput
 }
 
 func newRun() *run {
@@ -73,6 +76,31 @@ func (r *run) execute(t *testing.T) {
 		},
 		activityOptions(weavetemporal.ActivityRecordBranch))
 	r.env.RegisterActivityWithOptions(
+		func(context.Context, weavetemporal.SessionWorkflowInput) (weavetemporal.RunnerResult, error) {
+			if r.provisionErr != nil {
+				return weavetemporal.RunnerResult{}, r.provisionErr
+			}
+			r.steps = append(r.steps, "runner")
+			return weavetemporal.RunnerResult{RunnerID: uuid.NewString()}, nil
+		},
+		activityOptions(weavetemporal.ActivityProvisionRunner))
+	r.env.RegisterActivityWithOptions(
+		func(_ context.Context, input weavetemporal.TeardownInput) error {
+			r.steps = append(r.steps, "teardown")
+			r.teardowns = append(r.teardowns, input)
+			return nil
+		},
+		activityOptions(weavetemporal.ActivityTeardownRunner))
+	r.env.RegisterActivityWithOptions(
+		func(context.Context, weavetemporal.SessionWorkflowInput) error {
+			if r.runningErr != nil {
+				return r.runningErr
+			}
+			r.steps = append(r.steps, "running")
+			return nil
+		},
+		activityOptions(weavetemporal.ActivityMarkRunning))
+	r.env.RegisterActivityWithOptions(
 		func(context.Context, weavetemporal.SessionWorkflowInput) error {
 			r.steps = append(r.steps, "failed")
 			return nil
@@ -112,13 +140,67 @@ func TestSessionWorkflowEndsSomewhereLegal(t *testing.T) {
 	if err := r.env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	if got := r.route(); got != "provisioning → cut → record → failed" {
-		t.Errorf("route = %s, want provisioning → cut → record → failed", got)
+	// Version 3: the branch, a runner with a verified checkout, the first
+	// `running` any session has reached — then, with no provider yet, the
+	// runner torn down and the session failed saying so.
+	want := "provisioning → cut → record → runner → running → teardown → failed:" +
+		string(application.RunnerFailureNoProvider)
+	if got := r.route(); got != want {
+		t.Errorf("route = %s\nwant    %s", got, want)
 	}
-	// The branch recorded is the one the cut returned, carried through
-	// history rather than re-read.
 	if len(r.recorded) != 1 || r.recorded[0].Branch.Name != "weave/x" || !r.recorded[0].Branch.Created {
 		t.Errorf("recorded %+v, want the cut branch", r.recorded)
+	}
+	if len(r.teardowns) != 1 || r.teardowns[0].Failed {
+		t.Errorf("teardowns = %+v, want one ordinary teardown — the runner did its job", r.teardowns)
+	}
+}
+
+// TestEveryPathOutOfProvisioningTearsDown: a runner that outlives its session
+// is the failure M5.4a exists to prevent, so each way provisioning can go
+// wrong ends in a teardown before the session is failed.
+func TestEveryPathOutOfProvisioningTearsDown(t *testing.T) {
+	cases := map[string]struct {
+		arrange   func(*run)
+		wantCause string
+		wantFail  bool
+	}{
+		"a refused checkout": {func(r *run) {
+			r.provisionErr = temporal.NewNonRetryableApplicationError("mismatch",
+				weavetemporal.ErrorTypeRunnerRefused, nil, string(application.RunnerFailureCheckoutMismatch))
+		}, string(application.RunnerFailureCheckoutMismatch), true},
+		"a backend that keeps failing": {func(r *run) {
+			r.provisionErr = errors.New("docker: connection refused")
+		}, string(application.RunnerFailureUnavailable), true},
+		"a session that moved on": {func(r *run) {
+			r.provisionErr = temporal.NewNonRetryableApplicationError("moved on",
+				weavetemporal.ErrorTypeTransitionNotAllowed, nil)
+		}, "", false},
+		"running refused after the runner came up": {func(r *run) {
+			r.runningErr = temporal.NewNonRetryableApplicationError("moved on",
+				weavetemporal.ErrorTypeTransitionNotAllowed, nil)
+		}, "", false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := newRun()
+			tc.arrange(r)
+			r.execute(t)
+
+			if len(r.teardowns) != 1 {
+				t.Fatalf("route %s: %d teardowns, want exactly 1", r.route(), len(r.teardowns))
+			}
+			if !r.teardowns[0].Failed {
+				t.Error("a failed provisioning was torn down as an ordinary end")
+			}
+			if tc.wantFail {
+				if len(r.failCauses) != 1 || r.failCauses[0] != tc.wantCause {
+					t.Errorf("fail causes = %v, want [%s]", r.failCauses, tc.wantCause)
+				}
+			} else if len(r.failCauses) != 0 {
+				t.Errorf("failed a session that was not this workflow's to fail: %v", r.failCauses)
+			}
+		})
 	}
 }
 
@@ -136,7 +218,7 @@ func TestSessionWorkflowStopsWhenProvisioningIsRefused(t *testing.T) {
 	if r.env.GetWorkflowError() == nil {
 		t.Error("the workflow reported success after its first step failed")
 	}
-	if len(r.steps) != 0 || r.cutAttempts != 0 {
+	if len(r.steps) != 0 || r.cutAttempts != 0 || len(r.teardowns) != 0 {
 		t.Errorf("the workflow went on to %s after never provisioning", r.route())
 	}
 }
@@ -157,6 +239,7 @@ func TestARefusedBranchFailsTheSessionWithItsCause(t *testing.T) {
 		t.Errorf("the branch was attempted %d times; a terminal refusal must not be retried", r.cutAttempts)
 	}
 	if got := r.route(); got != "provisioning → failed:"+string(application.BranchFailureNoWriteAccess) {
+		// No runner is started for a session whose branch was refused.
 		t.Errorf("route = %s, want one failure naming the cause and nothing recorded", got)
 	}
 }
@@ -235,7 +318,7 @@ func TestASessionThatMovedOnIsNotFailed(t *testing.T) {
 // non-deterministically.
 func TestAVersionOneExecutionTakesNoBranchStep(t *testing.T) {
 	r := newRun()
-	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(2)).
+	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(3)).
 		Return(workflow.Version(1))
 	r.execute(t)
 
@@ -244,6 +327,22 @@ func TestAVersionOneExecutionTakesNoBranchStep(t *testing.T) {
 	}
 	if got := r.route(); got != "provisioning → failed" {
 		t.Errorf("route = %s, want a version-1 execution to finish on its original path", got)
+	}
+}
+
+// TestAVersionTwoExecutionTakesNoRunnerStep: executions that recorded version
+// 2 before M5.4a finish without a runner, as they started.
+func TestAVersionTwoExecutionTakesNoRunnerStep(t *testing.T) {
+	r := newRun()
+	r.env.OnGetVersion("session-workflow", workflow.DefaultVersion, workflow.Version(3)).
+		Return(workflow.Version(2))
+	r.execute(t)
+
+	if err := r.env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if got := r.route(); got != "provisioning → cut → record → failed" {
+		t.Errorf("route = %s, want a version-2 execution to finish without a runner", got)
 	}
 }
 
