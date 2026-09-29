@@ -38,7 +38,7 @@ NATS_WEBSOCKET_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_WEBSOCKET_URL)
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
         fmt fmt-check lint lint-go typecheck test test-integration build ci tidy tidy-check \
         migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check \
-        contracts contracts-check runner-image nats-auth
+        contracts contracts-check runner-image runner-binary nats-auth
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -157,6 +157,14 @@ runner-image: ## Build the local session runner image (dev backend)
 		go build -trimpath -o bin/runner-image/weave-runner ./services/runner
 	@docker build -q -t weave-runner:dev -f infra/runner/Dockerfile bin/runner-image >/dev/null
 	@echo "Built weave-runner:dev"
+
+# The runner for Vercel sandboxes (M5.4b). Always linux/amd64 — the default
+# sandbox image is x86_64, measured with `uname -m` — whatever this machine is.
+# The Vercel backend uploads it at provision and checks its SHA-256 there.
+runner-binary: ## Build the session runner for Vercel sandboxes (linux/amd64)
+	@mkdir -p bin
+	@GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/runner-linux-amd64 ./services/runner
+	@echo "Built bin/runner-linux-amd64"
 
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)

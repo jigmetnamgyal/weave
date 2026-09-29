@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 // TestRunnersReachNATSOnlyOverWebSocket holds ADR-015 at startup: a runner's
 // broker URL is the WebSocket listener, and TLS outside development and test.
@@ -53,5 +57,63 @@ func TestTheRunnerURLIsDerivedFromTheWebSocketListener(t *testing.T) {
 	t.Setenv("NATS_WEBSOCKET_URL", "")
 	if _, err := Load(); err == nil {
 		t.Error("with no WebSocket URL the runner's URL fell back to something; it must fail to start")
+	}
+}
+
+// TestTheVercelBackendNeedsItsAccountStated: token, team, project and the
+// plan's cap are required, the cap never defaulted; the runner binary
+// defaults only in development and test.
+func TestTheVercelBackendNeedsItsAccountStated(t *testing.T) {
+	base := map[string]string{
+		"APP_ENV": "development", "APP_DATABASE_URL": "postgres://x", "TEMPORAL_HOST_PORT": "localhost:1",
+		"REDIS_URL": "redis://x", "GITHUB_APP_ID": "1", "GITHUB_APP_PRIVATE_KEY_PATH": "/k",
+		"NATS_URL": "nats://localhost:54222", "NATS_WEBSOCKET_URL": "ws://localhost:54280",
+		"RUNNER_BACKEND": "vercel", "RUNNER_VERCEL_TOKEN": "", "RUNNER_VERCEL_TEAM_ID": "",
+		"RUNNER_VERCEL_PROJECT_ID": "", "RUNNER_VERCEL_MAX_SESSION": "", "RUNNER_VERCEL_BINARY": "",
+		"RUNNER_VERCEL_REGION": "", "RUNNER_VERCEL_LEASE": "", "RUNNER_NATS_URL": "",
+	}
+	set := func(overrides map[string]string) {
+		for k, v := range base {
+			t.Setenv(k, v)
+		}
+		for k, v := range overrides {
+			t.Setenv(k, v)
+		}
+	}
+
+	set(nil)
+	_, err := Load()
+	for _, want := range []string{"RUNNER_VERCEL_TOKEN", "RUNNER_VERCEL_TEAM_ID", "RUNNER_VERCEL_PROJECT_ID", "RUNNER_VERCEL_MAX_SESSION"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %s not reported: %v", want, err)
+		}
+	}
+
+	account := map[string]string{"RUNNER_VERCEL_TOKEN": "t", "RUNNER_VERCEL_TEAM_ID": "team",
+		"RUNNER_VERCEL_PROJECT_ID": "prj", "RUNNER_VERCEL_MAX_SESSION": "45m",
+		"RUNNER_NATS_URL": "wss://events.example.trycloudflare.com"}
+	set(account)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Vercel.MaxSession != 45*time.Minute || cfg.Vercel.Region != "iad1" || cfg.Vercel.RunnerBinary != "bin/runner-linux-amd64" {
+		t.Errorf("= %+v", cfg.Vercel)
+	}
+
+	account["RUNNER_VERCEL_MAX_SESSION"] = "forever"
+	set(account)
+	if _, err := Load(); err == nil {
+		t.Error("an unparseable session cap was accepted")
+	}
+
+	account["RUNNER_VERCEL_MAX_SESSION"] = "24h"
+	account["APP_ENV"] = "production"
+	account["RUNNER_NATS_SIGNING_KEY"] = "/secrets/signing.nk"
+	account["RUNNER_NATS_ACCOUNT"] = "/secrets/account.pub"
+	account["RUNNER_MANAGER_NATS_CREDS"] = "/secrets/runner-manager.creds"
+	set(account)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "RUNNER_VERCEL_BINARY") {
+		t.Errorf("production without a stated runner binary = %v", err)
 	}
 }

@@ -771,6 +771,7 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 			// session ending resolves the second through case 1.
 			continue
 		}
+		s.extendLease(ctx, runner)
 		status, err := s.backend.Status(ctx, runner.Handle)
 		if err != nil {
 			continue
@@ -810,6 +811,29 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 		}
 	}
 	return cleaned, nil
+}
+
+// extendLease keeps a live runner's environment alive for another lease, on
+// a backend that has leases (M5.4b).
+//
+// Here, in the reconciler, because it already visits every live runner every
+// pass, and because the property wanted follows for free: a runner manager
+// that is down runs no pass and extends nothing, so its environments stop
+// within one lease. Only a runner that should still be running is extended —
+// provisioning or running, of a session that has not ended (case 1 has
+// already torn those down). A terminating runner's environment is being
+// destroyed on purpose. A failure is logged, never fatal to the pass: one
+// sandbox's API error must not stop the others being reconciled, and a lease
+// has several passes' slack.
+func (s *RunnerService) extendLease(ctx context.Context, runner domain.Runner) {
+	leaser, ok := s.backend.(RunnerLeaser)
+	if !ok || (runner.State != domain.RunnerProvisioning && runner.State != domain.RunnerRunning) {
+		return
+	}
+	if err := leaser.ExtendLease(ctx, runner.Handle); err != nil {
+		s.logger.WarnContext(ctx, "reconcile: could not extend a runner's lease",
+			slog.String("runner_id", runner.ID.String()), slog.String("error", err.Error()))
+	}
 }
 
 // RunnerFailure is why a session's runner could not serve it, as a stable
