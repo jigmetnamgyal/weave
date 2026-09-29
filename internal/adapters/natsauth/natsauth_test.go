@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
+	"github.com/jigmetnamgyal/weave/internal/domain"
 )
 
 func issuer(t *testing.T, now func() time.Time) (*natsauth.Issuer, string) {
@@ -204,5 +205,142 @@ func TestConcurrentSetupsGenerateOnce(t *testing.T) {
 	after, _ := os.ReadFile(filepath.Join(dir, natsauth.AccountPublicFile))
 	if string(after) != string(account) {
 		t.Error("the account key changed after the setup was complete")
+	}
+}
+
+// userClaims decodes a credential's user claims.
+func userClaims(t *testing.T, creds string) *jwt.UserClaims {
+	t.Helper()
+	token, err := jwt.ParseDecoratedJWT([]byte(creds))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := jwt.DecodeUserClaims(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return claims
+}
+
+// TestARunnerMayConnectOnlyOverWebSocketWithinItsLimits: ADR-015's edge, as
+// the credential states it. The server enforces each of these; the
+// integration tests show that it does.
+func TestARunnerMayConnectOnlyOverWebSocketWithinItsLimits(t *testing.T) {
+	i, _ := issuer(t, time.Now)
+	creds, err := i.IssueRunner(uuid.New(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := userClaims(t, creds.Creds)
+	if got := claims.AllowedConnectionTypes; len(got) != 1 || got[0] != jwt.ConnectionTypeWebsocket {
+		t.Errorf("allowed connection types = %v, want only %s", got, jwt.ConnectionTypeWebsocket)
+	}
+	if claims.NatsLimits.Payload != natsauth.RunnerMaxPayload || claims.Subs != natsauth.RunnerMaxSubscriptions {
+		t.Errorf("limits = payload %d, subs %d; want %d, %d", claims.NatsLimits.Payload, claims.Subs,
+			natsauth.RunnerMaxPayload, natsauth.RunnerMaxSubscriptions)
+	}
+}
+
+// TestTheRunnerPayloadLimitAdmitsEveryValidEvent: sized from the encoded-event
+// limit plus headers, so the broker never refuses an event the ingestor
+// would accept.
+func TestTheRunnerPayloadLimitAdmitsEveryValidEvent(t *testing.T) {
+	if natsauth.RunnerMaxPayload < domain.MaxEventBytes+1024 {
+		t.Errorf("runner payload limit %d leaves under 1 KiB of header room above the %d-byte event limit",
+			natsauth.RunnerMaxPayload, domain.MaxEventBytes)
+	}
+}
+
+// TestServicesMayConnectOnlyOnTheStandardPort: a service credential that
+// leaks is useless on the public listener. Tests use both, as themselves.
+func TestServicesMayConnectOnlyOnTheStandardPort(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "generated")
+	if _, err := natsauth.Generate(dir); err != nil {
+		t.Fatal(err)
+	}
+	setup := natsauth.Setup{Dir: dir}
+	for identity := range natsauth.ServicePermissions {
+		raw, err := os.ReadFile(setup.CredsFile(identity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := userClaims(t, string(raw)).AllowedConnectionTypes
+		want := []string{jwt.ConnectionTypeStandard}
+		if identity == natsauth.IdentityTests {
+			want = []string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket}
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s may connect over %v, want %v", identity, got, want)
+		}
+	}
+	// And minted for a test's own stream, a service's allow-list keeps its
+	// connection type.
+	i, _ := issuer(t, time.Now)
+	creds, err := i.ServiceCredentials(natsauth.IdentityIngestor, natsauth.IngestorPermissions("S"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := userClaims(t, creds).AllowedConnectionTypes; len(got) != 1 || got[0] != jwt.ConnectionTypeStandard {
+		t.Errorf("a minted ingestor credential may connect over %v", got)
+	}
+}
+
+// TestTheGeneratedServerListensForRunnersAndBoundsTheAccount: the WebSocket
+// listener, the authentication timeouts, and the account's connection limit.
+func TestTheGeneratedServerListensForRunnersAndBoundsTheAccount(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "generated")
+	if _, err := natsauth.Generate(dir); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(dir, natsauth.ServerConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"websocket {", "port: 8080", "handshake_timeout:", "timeout: 2", "store_dir: \"/data/setup-"} {
+		if !strings.Contains(string(config), want) {
+			t.Errorf("server.conf does not contain %q", want)
+		}
+	}
+	account, _ := os.ReadFile(filepath.Join(dir, natsauth.AccountPublicFile))
+	var accountJWT string
+	for _, line := range strings.Split(string(config), "\n") {
+		if key, value, ok := strings.Cut(strings.TrimSpace(line), ": "); ok && key == strings.TrimSpace(string(account)) {
+			accountJWT = value
+		}
+	}
+	claims, err := jwt.DecodeAccountClaims(accountJWT)
+	if err != nil {
+		t.Fatalf("decode the application account: %v", err)
+	}
+	if claims.Limits.Conn != natsauth.AccountConnectionLimit {
+		t.Errorf("account connection limit = %d, want %d", claims.Limits.Conn, natsauth.AccountConnectionLimit)
+	}
+}
+
+// TestASetupFromAnOlderVersionIsRegenerated: complete in files, but made
+// before the WebSocket listener and connection types existed. Trusting it
+// would leave runners with credentials the server accepts on the wrong port.
+func TestASetupFromAnOlderVersionIsRegenerated(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "generated")
+	if _, err := natsauth.Generate(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, natsauth.ServerConfigFile)
+	config, _ := os.ReadFile(path)
+	var older []string
+	for _, line := range strings.Split(string(config), "\n") {
+		if !strings.HasPrefix(line, "# weave-nats-setup-version:") {
+			older = append(older, line)
+		}
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(older, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if natsauth.Complete(dir) {
+		t.Fatal("a setup without the current version was taken as complete")
+	}
+	generated, err := natsauth.EnsureSetup(dir, false)
+	if err != nil || !generated || !natsauth.Complete(dir) {
+		t.Errorf("EnsureSetup = %v, %v; want the outdated setup regenerated", generated, err)
 	}
 }

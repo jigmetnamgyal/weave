@@ -31,6 +31,7 @@ APP_DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$APP_DATABASE_URL)
 TEMPORAL_HOST_PORT := $(shell . ./.env 2>/dev/null && echo $$TEMPORAL_HOST_PORT)
 # The event-ingestion tests run against a real JetStream; without this they skip.
 NATS_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_URL)
+NATS_WEBSOCKET_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_WEBSOCKET_URL)
 
 .DEFAULT_GOAL := help
 
@@ -71,8 +72,8 @@ setup: check-prereqs .env ## Install dependencies and prepare the workspace
 dev: ## Start dependencies, the Go API and the web shell (one command)
 	@./scripts/dev.sh
 
-nats-auth: ## Generate local NATS credentials if missing (M5.5a)
-	@go run ./services/nats-setup -out infra/nats/generated
+nats-auth: .env ## Generate local NATS credentials if missing or outdated, restarting NATS onto them
+	@./scripts/nats-setup.sh
 
 up: .env nats-auth ## Start the dependency containers and wait until healthy
 	@$(COMPOSE) up --detach --wait
@@ -143,8 +144,9 @@ test-integration: .env runner-image ## Run integration tests against the local d
 	@test -n "$(APP_DATABASE_URL)" || (echo "APP_DATABASE_URL is empty, so the row-level-security tests would skip. Add it to .env — see .env.example." && exit 1)
 	@test -n "$(TEMPORAL_HOST_PORT)" || (echo "TEMPORAL_HOST_PORT is empty, so the session-workflow tests would skip. Add it to .env — see .env.example." && exit 1)
 	@test -n "$(NATS_URL)" || (echo "NATS_URL is empty, so the event-ingestion tests would skip. Add it to .env — see .env.example." && exit 1)
+	@test -n "$(NATS_WEBSOCKET_URL)" || (echo "NATS_WEBSOCKET_URL is empty, so runners have no way to reach NATS (ADR-015). Add it to .env — see .env.example." && exit 1)
 	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
-		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" TEST_NATS_URL="$(NATS_URL)" \
+		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" TEST_NATS_URL="$(NATS_URL)" TEST_NATS_WEBSOCKET_URL="$(NATS_WEBSOCKET_URL)" \
 		TEST_DOCKER_SOCKET="$${RUNNER_DOCKER_SOCKET:-/var/run/docker.sock}" \
 		TEST_NATS_AUTH_DIR="$(CURDIR)/infra/nats/generated" \
 		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)

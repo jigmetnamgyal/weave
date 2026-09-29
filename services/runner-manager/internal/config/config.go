@@ -7,11 +7,12 @@
 package config
 
 import (
-	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
-
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
+
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
 )
 
 // Config is what the runner manager needs to run.
@@ -88,7 +89,7 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("RUNNER_NATS_ACCOUNT: %w", err)
 		}
 	}
-	cfg.RunnerNATSURL = get("RUNNER_NATS_URL", runnerReachable(get("NATS_URL", "")))
+	cfg.RunnerNATSURL = get("RUNNER_NATS_URL", runnerReachable(get("NATS_WEBSOCKET_URL", "")))
 	cfg.NATSURL = get("NATS_URL", "")
 	if cfg.AppEnv != "" {
 		if cfg.NATSCreds, err = natsauth.ResolvePath(cfg.AppEnv, get("RUNNER_MANAGER_NATS_CREDS", ""),
@@ -101,9 +102,9 @@ func Load() (Config, error) {
 	for key, value := range map[string]string{
 		"APP_ENV": cfg.AppEnv, "APP_DATABASE_URL": cfg.AppDatabaseURL, "TEMPORAL_HOST_PORT": cfg.TemporalHostPort,
 		"REDIS_URL": cfg.RedisURL, "GITHUB_APP_ID": cfg.GitHubAppID,
-		"GITHUB_APP_PRIVATE_KEY_PATH":   cfg.GitHubAppPrivateKeyPath,
-		"RUNNER_NATS_URL (or NATS_URL)": cfg.RunnerNATSURL,
-		"NATS_URL":                      cfg.NATSURL,
+		"GITHUB_APP_PRIVATE_KEY_PATH":             cfg.GitHubAppPrivateKeyPath,
+		"RUNNER_NATS_URL (or NATS_WEBSOCKET_URL)": cfg.RunnerNATSURL,
+		"NATS_URL": cfg.NATSURL,
 	} {
 		if value == "" {
 			missing = append(missing, key)
@@ -112,7 +113,37 @@ func Load() (Config, error) {
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
 	}
+	if err := validateRunnerNATSURL(cfg.AppEnv, cfg.RunnerNATSURL); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// validateRunnerNATSURL holds ADR-015's rule at startup: a runner reaches NATS
+// only through its WebSocket listener, and outside development and test only
+// over TLS. A nats:// URL is refused rather than left to fail later — a runner
+// credential cannot use the standard port, so every session would fail
+// broker_refused, which reads like a credential fault rather than a
+// misconfiguration.
+func validateRunnerNATSURL(appEnv, raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("RUNNER_NATS_URL %q is not a URL", raw)
+	}
+	switch parsed.Scheme {
+	case "wss":
+		return nil
+	case "ws":
+		switch strings.ToLower(strings.TrimSpace(appEnv)) {
+		case "development", "test":
+			return nil
+		}
+		return fmt.Errorf("RUNNER_NATS_URL must be wss:// outside development and test (APP_ENV=%q): "+
+			"runner events cross the internet (ADR-015)", appEnv)
+	default:
+		return fmt.Errorf("RUNNER_NATS_URL must be NATS's WebSocket listener (ws:// or wss://), not %q: "+
+			"runner credentials are refused on the standard port (ADR-015)", parsed.Scheme+"://")
+	}
 }
 
 // runnerReachable turns the host's NATS URL into one a local container can

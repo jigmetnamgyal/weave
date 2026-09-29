@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +16,15 @@ import (
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/eventstream"
 	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
+	"github.com/jigmetnamgyal/weave/internal/domain"
 )
 
 // authWorld is a real, authenticated NATS server and the generated setup that
 // configures it. Every refusal below is the broker's, not our code's.
 type authWorld struct {
-	url    string
+	url string
+	// wsURL is the WebSocket listener (ADR-015): runners' only way in.
+	wsURL  string
 	dir    string
 	issuer *natsauth.Issuer
 	cfg    eventstream.Config
@@ -30,8 +34,9 @@ type authWorld struct {
 func newAuthWorld(t *testing.T) *authWorld {
 	t.Helper()
 	url, dir := os.Getenv("TEST_NATS_URL"), os.Getenv("TEST_NATS_AUTH_DIR")
-	if url == "" || dir == "" {
-		t.Skip("TEST_NATS_URL and TEST_NATS_AUTH_DIR are not set; run `make test-integration`")
+	wsURL := os.Getenv("TEST_NATS_WEBSOCKET_URL")
+	if url == "" || dir == "" || wsURL == "" {
+		t.Skip("TEST_NATS_URL, TEST_NATS_WEBSOCKET_URL and TEST_NATS_AUTH_DIR are not set; run `make test-integration`")
 	}
 	id := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	cfg := eventstream.Config{
@@ -53,17 +58,37 @@ func newAuthWorld(t *testing.T) *authWorld {
 		t.Fatalf("test stream: %v", err)
 	}
 	t.Cleanup(func() { _ = js.DeleteStream(context.Background(), cfg.Stream) })
-	return &authWorld{url: url, dir: dir, issuer: issuer, cfg: cfg, admin: admin}
+	return &authWorld{url: url, wsURL: wsURL, dir: dir, issuer: issuer, cfg: cfg, admin: admin}
 }
 
-// connect opens a connection with a credential, collecting the broker's
-// asynchronous errors — which is where a permissions violation arrives.
+// connect opens a connection on the standard port with a credential,
+// collecting the broker's asynchronous errors — which is where a permissions
+// violation arrives.
 func (w *authWorld) connect(t *testing.T, creds string, opts ...nats.Option) (*nats.Conn, <-chan error) {
+	t.Helper()
+	return w.connectTo(t, w.url, creds, opts...)
+}
+
+// connectRunner opens a connection where a runner may: the WebSocket listener.
+func (w *authWorld) connectRunner(t *testing.T, runner uuid.UUID, creds string, opts ...nats.Option) (*nats.Conn, <-chan error) {
+	t.Helper()
+	opts = append(opts, nats.CustomInboxPrefix(natsauth.RunnerInboxPrefix(runner)))
+	return w.connectTo(t, w.wsURL, creds, opts...)
+}
+
+// credsFile writes a credential where a client can read it.
+func credsFile(t *testing.T, creds string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "user.creds")
 	if err := os.WriteFile(path, []byte(creds), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return path
+}
+
+func (w *authWorld) connectTo(t *testing.T, url, creds string, opts ...nats.Option) (*nats.Conn, <-chan error) {
+	t.Helper()
+	path := credsFile(t, creds)
 	errs := make(chan error, 16)
 	opts = append(opts, nats.UserCredentials(path),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
@@ -72,7 +97,7 @@ func (w *authWorld) connect(t *testing.T, creds string, opts ...nats.Option) (*n
 			default:
 			}
 		}))
-	conn, err := nats.Connect(w.url, opts...)
+	conn, err := nats.Connect(url, opts...)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -118,7 +143,7 @@ func TestAnUnauthenticatedConnectionIsRefusedIntegration(t *testing.T) {
 func TestARunnerPublishesOnlyItsOwnSessionIntegration(t *testing.T) {
 	w := newAuthWorld(t)
 	runner, session, creds := w.runner(t)
-	conn, errs := w.connect(t, creds, nats.CustomInboxPrefix(natsauth.RunnerInboxPrefix(runner)))
+	conn, errs := w.connectRunner(t, runner, creds)
 
 	js, _ := jetstream.New(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -146,7 +171,7 @@ func TestARunnerCannotReadTheStreamOrAnotherInboxIntegration(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner, _, creds := w.runner(t)
-			conn, errs := w.connect(t, creds, nats.CustomInboxPrefix(natsauth.RunnerInboxPrefix(runner)))
+			conn, errs := w.connectRunner(t, runner, creds)
 			if _, err := conn.SubscribeSync(subject); err != nil {
 				t.Fatal(err)
 			}
@@ -173,7 +198,9 @@ func TestAnExpiredRunnerCredentialIsRefusedIntegration(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "expired.creds")
 	_ = os.WriteFile(path, []byte(creds.Creds), 0o600)
-	if conn, err := nats.Connect(w.url, nats.UserCredentials(path)); err == nil {
+	// Over WebSocket, the one listener a runner credential is otherwise
+	// accepted on, so the refusal is the expiry and not the connection type.
+	if conn, err := nats.Connect(w.wsURL, nats.UserCredentials(path)); err == nil {
 		conn.Close()
 		t.Error("an expired credential was accepted")
 	}
@@ -271,4 +298,121 @@ func TestTheAPIAndRunnerManagerAreRefusedOutsideTheirAllowListsIntegration(t *te
 	if !refused(t, manager, managerErrs) {
 		t.Error("the runner manager could publish a session event")
 	}
+}
+
+// TestEachCredentialIsRefusedOnTheOtherListenerIntegration is ADR-015's
+// connection-type rule, enforced by the server: a runner credential cannot
+// use the internal standard port, a service credential cannot use the public
+// WebSocket listener, and nobody unauthenticated gets onto either.
+func TestEachCredentialIsRefusedOnTheOtherListenerIntegration(t *testing.T) {
+	w := newAuthWorld(t)
+	_, _, runnerCreds := w.runner(t)
+	accepted := func(url, creds string) error {
+		opts := []nats.Option{nats.NoReconnect(), nats.Timeout(5 * time.Second)}
+		if creds != "" {
+			opts = append(opts, nats.UserCredentials(credsFile(t, creds)))
+		}
+		conn, err := nats.Connect(url, opts...)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		// A refused connection type can surface on the first round trip
+		// rather than at connect; either is a refusal.
+		return conn.FlushTimeout(3 * time.Second)
+	}
+
+	if err := accepted(w.url, runnerCreds); err == nil {
+		t.Error("a runner credential was accepted on the standard port")
+	}
+	if err := accepted(w.wsURL, runnerCreds); err != nil {
+		t.Errorf("a runner credential was refused on the WebSocket listener: %v", err)
+	}
+	for _, identity := range []natsauth.Identity{natsauth.IdentityAPI, natsauth.IdentityIngestor, natsauth.IdentityRunnerManager} {
+		raw, err := os.ReadFile(natsauth.Setup{Dir: w.dir}.CredsFile(identity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := accepted(w.wsURL, string(raw)); err == nil {
+			t.Errorf("the %s credential was accepted on the public WebSocket listener", identity)
+		}
+		if err := accepted(w.url, string(raw)); err != nil {
+			t.Errorf("the %s credential was refused on the standard port: %v", identity, err)
+		}
+	}
+	tests, _ := os.ReadFile(natsauth.Setup{Dir: w.dir}.CredsFile(natsauth.IdentityTests))
+	for _, url := range []string{w.url, w.wsURL} {
+		if err := accepted(url, string(tests)); err != nil {
+			t.Errorf("the tests identity was refused on %s: %v", url, err)
+		}
+	}
+	if err := accepted(w.wsURL, ""); err == nil {
+		t.Error("an unauthenticated WebSocket connection was accepted")
+	}
+}
+
+// TestARunnerIsBoundedAtTheEdgeIntegration: the largest event the ingestor
+// accepts still goes through; one byte past the runner's payload limit, or a
+// subscription past its cap, is refused by the server.
+func TestARunnerIsBoundedAtTheEdgeIntegration(t *testing.T) {
+	w := newAuthWorld(t)
+
+	t.Run("payload", func(t *testing.T) {
+		runner, session, creds := w.runner(t)
+		conn, _ := w.connectRunner(t, runner, creds, nats.NoReconnect())
+		js, _ := jetstream.New(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		own := w.cfg.SubjectPrefix + "." + session.String() + ".events"
+		// The largest encoded event, with the headers a runner sends.
+		if _, err := js.Publish(ctx, own, make([]byte, domain.MaxEventBytes),
+			jetstream.WithMsgID(uuid.NewString())); err != nil {
+			t.Fatalf("an event at the encoded-event limit was refused: %v", err)
+		}
+		// After authentication the server advertises the credential's own
+		// limit as this connection's maximum payload \u2014 the server's server-wide
+		// default is far larger \u2014 which is the observable proof it applied the
+		// runner's limit to the connection. nats.go then refuses a larger
+		// message before sending it, so what a client ignoring the advert would
+		// meet (the server closing it for a payload violation) is NATS's
+		// documented behaviour and is not re-tested here.
+		if got := conn.MaxPayload(); got != natsauth.RunnerMaxPayload {
+			t.Errorf("the server advertised a maximum payload of %d to a runner, want its credential's %d",
+				got, natsauth.RunnerMaxPayload)
+		}
+		if err := conn.Publish(own, make([]byte, natsauth.RunnerMaxPayload+1)); !errors.Is(err, nats.ErrMaxPayload) {
+			t.Errorf("a message one byte past the runner's payload limit = %v, want ErrMaxPayload", err)
+		}
+	})
+
+	t.Run("subscriptions", func(t *testing.T) {
+		runner, _, creds := w.runner(t)
+		conn, errs := w.connectRunner(t, runner, creds)
+		inbox := natsauth.RunnerInboxPrefix(runner)
+		for n := 0; n < natsauth.RunnerMaxSubscriptions; n++ {
+			if _, err := conn.SubscribeSync(inbox + "." + strconv.Itoa(n)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := conn.FlushTimeout(3 * time.Second); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-errs:
+			t.Fatalf("a subscription within the cap was refused: %v", err)
+		default:
+		}
+		if _, err := conn.SubscribeSync(inbox + ".over"); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.FlushTimeout(3 * time.Second)
+		select {
+		case err := <-errs:
+			if !strings.Contains(strings.ToLower(err.Error()), "maximum subscriptions") {
+				t.Errorf("unexpected error past the cap: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Errorf("a subscription past the runner's cap of %d was accepted", natsauth.RunnerMaxSubscriptions)
+		}
+	})
 }
