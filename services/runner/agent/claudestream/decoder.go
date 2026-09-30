@@ -82,18 +82,14 @@ func Decode(ctx context.Context, input io.Reader, session uuid.UUID, emit func(a
 	providerSession := ""
 	terminal := false
 	result := Result{}
-	fail := func(code string) error {
-		if result.Failed {
-			return nil
+	failureCode := ""
+	fail := func(code string) {
+		if failureCode == "" {
+			failureCode = code
 		}
 		result.Failed = true
-		if err := emit(agent.ProviderEvent{Type: domain.EventProviderFailed, Payload: domain.ProviderFailed{
-			Code: code, Retryable: false, Message: "Claude Code did not complete the requested turn.",
-		}}); err != nil {
-			return ErrDelivery
-		}
-		return nil
 	}
+
 	for count := 0; ; count++ {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -105,6 +101,15 @@ func Decode(ctx context.Context, input io.Reader, session uuid.UUID, emit func(a
 		if errors.Is(err, io.EOF) {
 			if !terminal {
 				return Result{}, ErrIncomplete
+			}
+			// A failed record does not end the stream. Publish failure only once
+			// the terminal record and EOF prove no more messages can follow.
+			if failureCode != "" {
+				if err := emit(agent.ProviderEvent{Type: domain.EventProviderFailed, Payload: domain.ProviderFailed{
+					Code: failureCode, Retryable: false, Message: "Claude Code did not complete the requested turn.",
+				}}); err != nil {
+					return Result{}, ErrDelivery
+				}
 			}
 			return result, nil
 		}
@@ -156,21 +161,25 @@ func Decode(ctx context.Context, input io.Reader, session uuid.UUID, emit func(a
 				return Result{}, ErrLimit
 			}
 			seen[id] = digest
-			if rec.Error != "" || rec.Aborted {
-				if err := fail("claude_assistant_failed"); err != nil {
-					return Result{}, err
-				}
-				continue
-			}
 			var text strings.Builder
 			for _, block := range rec.Message.Content {
-				if block.Type == "text" {
+				switch block.Type {
+				case "text":
 					if block.Text == nil {
 						return Result{}, ErrProtocol
 					}
 					text.WriteString(*block.Text)
+				case "tool_use", "thinking", "redacted_thinking":
+					// Known non-text blocks are deliberately not persisted.
+				default:
+					return Result{}, ErrProtocol
 				}
 			}
+			if rec.Error != "" || rec.Aborted {
+				fail("claude_assistant_failed")
+				continue
+			}
+
 			if text.Len() == 0 {
 				continue
 			}
@@ -212,9 +221,7 @@ func Decode(ctx context.Context, input io.Reader, session uuid.UUID, emit func(a
 				code = "claude_permission_denied"
 			}
 			if code != "" {
-				if err := fail(code); err != nil {
-					return Result{}, err
-				}
+				fail(code)
 			}
 			terminal = true
 		default:
@@ -223,6 +230,7 @@ func Decode(ctx context.Context, input io.Reader, session uuid.UUID, emit func(a
 	}
 }
 
+// readRecord assembles one newline-terminated record without growing beyond the byte cap.
 func readRecord(reader *bufio.Reader) ([]byte, error) {
 	var record []byte
 	for {
@@ -247,6 +255,7 @@ func readRecord(reader *bufio.Reader) ([]byte, error) {
 	}
 }
 
+// resultUsage sums nonnegative input components and rejects missing counts or overflow.
 func resultUsage(rec record) (agent.Usage, error) {
 	if rec.Usage.Input == nil || rec.Usage.Output == nil || rec.Usage.CacheRead == nil || rec.Usage.CacheCreation == nil {
 		return agent.Usage{}, ErrProtocol

@@ -95,6 +95,8 @@ assistant UUID, scoped to the Weave session, not that shared API ID.
 - Emit only complete assistant text as `message.created`. Ignore partial events
   and the final result text, so neither duplicates completed text. Tools,
   thinking, user echoes and system metadata are not persisted by this slice.
+  Assistant blocks must be `text`, `tool_use`, `thinking` or `redacted_thinking`;
+  unknown block types are refused, including within aborted/error records.
 - A stream ends successfully only with one validated final result followed by
   EOF. Unknown top-level kinds, records after result, missing result, malformed
   shapes and missing final newline are refused. This intentionally supports a
@@ -106,6 +108,9 @@ assistant UUID, scoped to the Weave session, not that shared API ID.
 - Assistant errors/aborts, error result subtypes, `is_error: true` and nonempty
   permission denials cannot be successful, even if the result says success.
   Emit only stable failure codes and fixed descriptions, never provider errors.
+  Record the first failure cause and emit one `provider.failed` only after a
+  validated terminal result and EOF, so no completed messages follow it. Decode
+  errors/cancellation still return errors for runtime wiring to handle.
 - Bound records to 256 KiB, records per stream to 65,536, assistant identities
   to 4,096 and text to the existing domain limits plus encoded-envelope headroom.
   Equal assistant UUID/raw-record replays are absorbed; conflicting replays
@@ -138,6 +143,19 @@ assistant UUID, scoped to the Weave session, not that shared API ID.
 - `make test`, `make lint` (only six pre-existing web warnings), `make build`,
   `make typecheck`, contracts check and targeted formatting pass. No database or
   broker behavior changed, so no integration/live suite was needed for this unit.
+
+## PR #32 review verification
+
+- Two inline findings fixed: defer `provider.failed` until validated EOF, and
+  refuse unknown assistant block types rather than dropping future content.
+- Three regression checks fail against 70ab8c9 and pass with the fixes: failure
+  ordering after later text, unknown content rejection, and no premature failure
+  event on malformed/missing terminal tails. Explicit known non-text blocks
+  remain ignored; their supported behavior has an additional guard test.
+- Added function documentation for decoder helpers and test functions in
+  response to CodeRabbit's docstring-coverage warning.
+- Race tests repeated three times, full unit suite, Go build and targeted
+  golangci-lint pass. Coverage 98.3%; fresh fuzz smoke run over 319,000 executions.
 
 ## Next
 

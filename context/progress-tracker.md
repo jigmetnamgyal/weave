@@ -677,3 +677,16 @@ are not represented as live output. Protocol sources/hashes and unsupported
 features are recorded in `docs/runbooks/claude-stream-protocol.md`.
 Next: review/merge M6.1a, then specify M6.1b credential/input/tool boundaries;
 paid runtime execution remains disabled until those gates are verified.
+
+### PR #32 review fixes — terminal failure ordering and block drift
+
+Addressed two Greptile findings: assistant failure is now remembered and emitted
+once only after terminal-result/EOF validation, after all completed messages;
+unknown assistant content-block types are rejected instead of silently dropped.
+Known tool/thinking/redacted-thinking blocks remain ignored. Three regression
+checks fail on 70ab8c9 and pass after the fixes, plus a supported-block guard.
+Added function documentation in response to CodeRabbit's docstring warning.
+Verification: three repeated race runs, full unit suite, Go build, targeted
+lint, 98.3% coverage and a fresh fuzz smoke run over 319,000 executions. No paid
+run or runtime adapter registration. Next: finish PR #32 review/CI, obtain merge
+authorization, then refine M6.1b credential/input/tool boundaries.

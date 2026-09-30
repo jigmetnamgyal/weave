@@ -44,7 +44,9 @@ reference; the evidence above is from the actual code.claude.com markdown pages.
 `services/runner/agent/claudestream` supports a bounded, single-turn offline
 profile. Complete assistant text becomes existing `message.created` payloads;
 partial events and result text are ignored to prevent duplication. Tools and
-thinking are not advertised as normalized tool/approval events. Known system,
+thinking are not advertised as normalized tool/approval events. The accepted
+assistant block types are `text`, `tool_use`, `thinking` and `redacted_thinking`;
+other block types are refused even within assistant error/abort records. Known system,
 user and stream-event records are ignored after bounded envelope decoding;
 unknown top-level kinds are refused rather than silently declaring success.
 
@@ -54,6 +56,11 @@ multi-turn/background-result feature requires deliberate spec changes and tests.
 A replay of the same assistant UUID must have the same raw record bytes;
 conflicting content is refused. Normalized message IDs are deterministic UUIDs
 scoped to the Weave session and outer assistant UUID, not the shared API ID.
+
+The first provider failure is remembered and emitted once, only after the terminal
+result and EOF have been validated. Later completed text therefore precedes the
+final `provider.failed`. Malformed/truncated tails and cancellation return errors
+without emitting a premature failure; runtime wiring must handle those errors.
 
 Provider failure descriptions and decoder errors are fixed safe strings. Raw
 provider errors, tool inputs, paths, user echoes, startup configuration and

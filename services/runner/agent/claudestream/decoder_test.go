@@ -23,6 +23,7 @@ var session = uuid.MustParse("10000000-0000-4000-8000-000000000001")
 
 const messageUUID = "20000000-0000-4000-8000-000000000001"
 
+// fixture loads explicitly synthetic NDJSON test evidence.
 func fixture(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile("testdata/" + name + ".ndjson")
@@ -32,20 +33,26 @@ func fixture(t *testing.T, name string) string {
 	return string(b)
 }
 
+// assistant builds a synthetic completed text block with stable identity.
 func assistant(text string) string {
 	b, _ := json.Marshal(map[string]any{"type": "assistant", "session_id": "synthetic-provider-session", "uuid": messageUUID,
 		"message": map[string]any{"id": "shared-api-id", "role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}}})
 	return string(b) + "\n"
 }
+
+// terminal builds a valid single-turn success result with complete usage.
 func terminal() string {
 	return `{"type":"result","session_id":"synthetic-provider-session","subtype":"success","is_error":false,"usage":{"input_tokens":11,"output_tokens":19,"cache_read_input_tokens":13,"cache_creation_input_tokens":17},"permission_denials":[]}` + "\n"
 }
+
+// decode collects normalized events without a broker or provider invocation.
 func decode(input io.Reader) (Result, []agent.ProviderEvent, error) {
 	var events []agent.ProviderEvent
 	result, err := Decode(context.Background(), input, session, func(e agent.ProviderEvent) error { events = append(events, e); return nil })
 	return result, events, err
 }
 
+// TestSyntheticCompleteBlocksAreEmittedOnce checks short reads, replay absorption and scoped block identity.
 func TestSyntheticCompleteBlocksAreEmittedOnce(t *testing.T) {
 	for name, wrap := range map[string]func(io.Reader) io.Reader{"normal": func(r io.Reader) io.Reader { return r }, "one-byte": iotest.OneByteReader, "short-reads": iotest.HalfReader} {
 		t.Run(name, func(t *testing.T) {
@@ -77,6 +84,7 @@ func TestSyntheticCompleteBlocksAreEmittedOnce(t *testing.T) {
 	}
 }
 
+// assertContract validates normalized payloads against the real event envelope and safe failure policy.
 func assertContract(t *testing.T, event agent.ProviderEvent) {
 	t.Helper()
 	if event.Metadata != nil {
@@ -98,6 +106,7 @@ func assertContract(t *testing.T, event agent.ProviderEvent) {
 	}
 }
 
+// TestFailuresCannotBecomeSuccessfulResults preserves assistant/result failures despite a success subtype.
 func TestFailuresCannotBecomeSuccessfulResults(t *testing.T) {
 	cases := map[string]string{
 		"error result":                 fixture(t, "failure"),
@@ -121,6 +130,7 @@ func TestFailuresCannotBecomeSuccessfulResults(t *testing.T) {
 	}
 }
 
+// TestInvalidStreamsAreRefusedWithSafeCategories checks framing, schema and usage refusals without reflecting content.
 func TestInvalidStreamsAreRefusedWithSafeCategories(t *testing.T) {
 	cases := []struct {
 		name, input string
@@ -172,6 +182,7 @@ func TestInvalidStreamsAreRefusedWithSafeCategories(t *testing.T) {
 	}
 }
 
+// TestCountLimitsBoundMemoryAndWork exercises record and identity caps.
 func TestCountLimitsBoundMemoryAndWork(t *testing.T) {
 	t.Run("records", func(t *testing.T) {
 		input := strings.Repeat(`{"type":"system","session_id":"s"}`+"\n", MaxRecords) + terminal()
@@ -194,6 +205,7 @@ func TestCountLimitsBoundMemoryAndWork(t *testing.T) {
 
 type failingReader struct{}
 
+// Read simulates a reader error containing content that must never escape.
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("SYNTHETIC_SECRET") }
 
 type cancellingReader struct {
@@ -201,8 +213,10 @@ type cancellingReader struct {
 	reader io.Reader
 }
 
+// Read cancels during a successful read to exercise delivery suppression.
 func (r cancellingReader) Read(p []byte) (int, error) { r.cancel(); return r.reader.Read(p) }
 
+// TestReadDeliveryAndCancellationErrorsDoNotLeak checks safe callback/read errors and cancellation during reads.
 func TestReadDeliveryAndCancellationErrorsDoNotLeak(t *testing.T) {
 	if _, _, err := decode(failingReader{}); err != ErrRead {
 		t.Fatalf("read error=%v", err)
@@ -223,6 +237,7 @@ func TestReadDeliveryAndCancellationErrorsDoNotLeak(t *testing.T) {
 	}
 }
 
+// TestBoundaryRecordsAndToolOnlyContent checks the exact framing boundary and ignored thinking.
 func TestBoundaryRecordsAndToolOnlyContent(t *testing.T) {
 	// A known ignored object padded to exactly the framing limit is accepted.
 	raw := `{"type":"system","session_id":"synthetic-provider-session","ignored":""}`
@@ -239,6 +254,7 @@ func TestBoundaryRecordsAndToolOnlyContent(t *testing.T) {
 	}
 }
 
+// TestClaudeRemainsDisabled prevents an offline decoder from registering paid runtime execution.
 func TestClaudeRemainsDisabled(t *testing.T) {
 	if _, err := agent.New(domain.ProviderClaudeCode); err == nil {
 		t.Fatal("offline decoder must not enable paid execution")
@@ -251,6 +267,7 @@ type cancellingEOFReader struct {
 	cancel context.CancelFunc
 }
 
+// Read cancels on EOF so a terminal success cannot hide an interrupted run.
 func (r cancellingEOFReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	if errors.Is(err, io.EOF) {
@@ -258,6 +275,8 @@ func (r cancellingEOFReader) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
+
+// TestCancellationAtEOFOverridesTerminalSuccess verifies cancellation wins at the final read.
 func TestCancellationAtEOFOverridesTerminalSuccess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -267,6 +286,7 @@ func TestCancellationAtEOFOverridesTerminalSuccess(t *testing.T) {
 	}
 }
 
+// FuzzDecode checks bounded decoding never panics or emits invalid domain payloads.
 func FuzzDecode(f *testing.F) {
 	f.Add([]byte(assistant("Synthetic text") + terminal()))
 	f.Add([]byte("null\n"))
@@ -280,4 +300,61 @@ func FuzzDecode(f *testing.F) {
 			t.Fatal("decoder returned non-category error")
 		}
 	})
+}
+
+// TestFailureIsTheFinalEvent preserves the failing-history ordering invariant.
+func TestFailureIsTheFinalEvent(t *testing.T) {
+	first := strings.Replace(assistant("failed block"), `"type":"assistant"`, `"type":"assistant","error":"SYNTHETIC_SECRET"`, 1)
+	late := strings.Replace(assistant("late completed text"), messageUUID, "20000000-0000-4000-8000-000000000002", 1)
+	result, events, err := decode(strings.NewReader(first + late + terminal()))
+	if err != nil || !result.Failed || len(events) != 2 {
+		t.Fatalf("result=%+v events=%d error=%v", result, len(events), err)
+	}
+	if events[0].Type != domain.EventMessageCreated || events[1].Type != domain.EventProviderFailed {
+		t.Fatal("failure must follow all completed messages")
+	}
+	if events[0].Payload.(domain.MessageCreated).Text != "late completed text" {
+		t.Fatal("completed text was lost")
+	}
+	for _, event := range events {
+		assertContract(t, event)
+	}
+}
+
+// TestUnknownContentBlocksAreRefused makes schema drift visible, including mixed blocks.
+func TestUnknownContentBlocksAreRefused(t *testing.T) {
+	for _, kind := range []string{"future_content", "", "SYNTHETIC_SECRET"} {
+		for _, aborted := range []bool{false, true} {
+			input := strings.Replace(assistant("text"), `"content":[`, `"content":[{"type":"`+kind+`"},`, 1)
+			if aborted {
+				input = strings.Replace(input, `"type":"assistant"`, `"type":"assistant","aborted":true`, 1)
+			}
+			_, events, err := decode(strings.NewReader(input + terminal()))
+			if err != ErrProtocol || len(events) != 0 {
+				t.Fatalf("kind=%q aborted=%v events=%d error=%v", kind, aborted, len(events), err)
+			}
+		}
+	}
+}
+
+// TestKnownNonTextBlocksRemainIgnored keeps the intentionally supported subset usable.
+func TestKnownNonTextBlocksRemainIgnored(t *testing.T) {
+	for _, kind := range []string{"tool_use", "thinking", "redacted_thinking"} {
+		input := strings.Replace(assistant("not persisted"), `"type":"text"`, `"type":"`+kind+`"`, 1)
+		result, events, err := decode(strings.NewReader(input + terminal()))
+		if err != nil || result.Failed || len(events) != 0 {
+			t.Fatalf("kind=%q result=%+v events=%d error=%v", kind, result, len(events), err)
+		}
+	}
+}
+
+// TestInvalidTailDoesNotEmitPrematureFailure requires framing validation before final emission.
+func TestInvalidTailDoesNotEmitPrematureFailure(t *testing.T) {
+	failed := strings.Replace(assistant("failed block"), `"type":"assistant"`, `"type":"assistant","aborted":true`, 1)
+	for _, tail := range []string{"", terminal() + terminal(), terminal() + "{"} {
+		_, events, err := decode(strings.NewReader(failed + tail))
+		if err == nil || len(events) != 0 {
+			t.Fatalf("events=%d error=%v", len(events), err)
+		}
+	}
 }
