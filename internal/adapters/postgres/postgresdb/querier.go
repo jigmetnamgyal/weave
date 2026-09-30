@@ -89,7 +89,11 @@ type Querier interface {
 	CreateRunner(ctx context.Context, arg CreateRunnerParams) (Runner, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
-	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
+	// No RETURNING. Under RLS, PostgreSQL applies the workspaces *read* policy to
+	// returned rows, and that policy shows a workspace only to its members — none
+	// exist yet, in the statement that creates it. The store reads the row back
+	// after inserting the owner's membership.
+	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) error
 	DeleteWorkspaceEgressHost(ctx context.Context, arg DeleteWorkspaceEgressHostParams) (WorkspaceEgressHost, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
 	// The terminal write, after the backend confirms the environment is gone.

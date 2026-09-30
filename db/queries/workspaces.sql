@@ -1,7 +1,10 @@
--- name: CreateWorkspace :one
+-- name: CreateWorkspace :exec
+-- No RETURNING. Under RLS, PostgreSQL applies the workspaces *read* policy to
+-- returned rows, and that policy shows a workspace only to its members — none
+-- exist yet, in the statement that creates it. The store reads the row back
+-- after inserting the owner's membership.
 INSERT INTO workspaces (id, slug, name, created_by)
-VALUES ($1, $2, $3, $4)
-RETURNING *;
+VALUES ($1, $2, $3, $4);
 
 -- name: GetWorkspaceForMember :one
 -- Scoped by member, not just by id. A caller who is not a member gets no row,
