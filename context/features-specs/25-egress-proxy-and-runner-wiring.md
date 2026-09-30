@@ -190,7 +190,8 @@ to default GitHub/registry/ingress rules.
 - `components/add-egress-host-form.tsx`: bound into `useActionState`; the API's
   refusal is shown inline and the typed hostname kept; one idempotency key per
   submission, written after mount. Retry identity lives outside the DOM, survives
-  the at-limit state, and changes on a changed hostname or successful result.
+  the at-limit state. New hostnames get fresh keys; failed submissions keep their
+  keys through edit/revert and other hosts' successes until that host succeeds.
 - `components/remove-egress-host-button.tsx`: a confirmation that says removal is
   not an immediate cut-off, submitted as a bound form action with its own key.
 - `app/actions/egress.ts` and `lib/api.ts`: pass-throughs over the generated
@@ -210,6 +211,11 @@ to default GitHub/registry/ingress rules.
   workspace failure reference. All pass on the fix and all fail against the
   reviewed implementation. Wired into web CI and `make test`; this is not a
   browser/React integration test and does not verify Next's action transport.
+- Follow-up PR #31 finding: retain keys for submitted unconfirmed hostnames, not
+  intermediate keystrokes. Three more checks cover edit/revert, another host's
+  success, and renewal after confirmation (ten total). The first two fail on
+  4545a84 and pass with the fix; the third guards against retaining a confirmed
+  key forever. Browser/action-transport verification is still outstanding.
 - **Not yet done: the walkthrough.**
   a signed-in Clerk session is needed to render the page; as with M4.3, the walk
   is the operator's: sign in as an owner, add a host, see it listed with the

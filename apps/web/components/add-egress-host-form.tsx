@@ -32,13 +32,19 @@ export function AddEgressHostForm({
   // the latter disappears at the limit. Changed input is a new intent, while
   // resubmitting the same trimmed hostname retries the old request.
   const retry = useRef<{ hostname: string; key: string } | null>(null);
+  // Only retain submitted, unconfirmed requests, not every intermediate
+  // keystroke. Editing away and back must not destroy a lost-response replay.
+  const unconfirmed = useRef(new Map<string, string>());
   const keyInput = useRef<HTMLInputElement>(null);
   const hostnameInput = useRef<HTMLInputElement>(null);
 
   function syncKey(hostname: string) {
     const identity = hostname.trim();
     if (!retry.current || retry.current.hostname !== identity) {
-      retry.current = { hostname: identity, key: crypto.randomUUID() };
+      retry.current = {
+        hostname: identity,
+        key: unconfirmed.current.get(identity) ?? crypto.randomUUID(),
+      };
     }
     if (keyInput.current) keyInput.current.value = retry.current.key;
   }
@@ -46,7 +52,14 @@ export function AddEgressHostForm({
   // Randomness stays out of render. Rotate on each successful action result,
   // even if its hostname is the same as an earlier successful submission.
   useEffect(() => {
-    if (state.added) retry.current = null;
+    if (state.error && state.hostname && retry.current?.hostname === state.hostname.trim()) {
+      unconfirmed.current.set(retry.current.hostname, retry.current.key);
+    }
+    if (state.added && retry.current) {
+      // Confirming B must not discard an uncertain request for A.
+      unconfirmed.current.delete(retry.current.hostname);
+      retry.current = null;
+    }
   }, [state]);
   useEffect(() => {
     if (hostnameInput.current) syncKey(hostnameInput.current.value);

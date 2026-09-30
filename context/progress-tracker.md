@@ -610,3 +610,16 @@ lint (only the six existing warnings), formatting and web build pass. These are
 not browser or Next action-transport tests; the signed-in operator walkthrough
 remains outstanding. Next: finish PR #31 review/CI and the walkthrough before
 asking to merge.
+
+### PR #31 follow-up — edit/revert retry identity
+
+Greptile found one additional valid case: after an uncertain add response,
+editing away and back discarded that hostname's replay key. The form now retains
+keys for submitted unconfirmed hostnames until confirmation of that host; a
+success for another host does not discard them. Three additional tests cover
+edit/revert, cross-host confirmation and key retirement. The first two fail on
+4545a84 and pass after the fix; all ten regression checks now pass. Typecheck,
+lint (six pre-existing warnings), web build and targeted formatting pass. These
+remain hook/host-model checks, not browser/action-transport verification.
+Next: complete the signed-in walkthrough and remaining PR #31 review/CI before
+requesting merge authorization.

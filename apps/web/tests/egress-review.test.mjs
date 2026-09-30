@@ -103,7 +103,7 @@ function addHarness() {
   return formHarness("../components/add-egress-host-form.tsx", "AddEgressHostForm");
 }
 
-// Each assertion below failed against the reviewed implementation.
+// Regression checks for the form and page cases raised in review.
 test("add initializes a key when returning from the limit, including initially at limit", () => {
   const h = addHarness();
   h.render({ ...addProps, atLimit: true });
@@ -137,6 +137,46 @@ test("same input retries its key; editing to a different hostname changes it", (
   assert.notEqual(changed, key);
   h.type("other.example.com");
   assert.equal(h.input("idempotency_key").value, changed);
+});
+
+test("edit and revert after an uncertain response restores the original key", () => {
+  const h = addHarness();
+  h.render(addProps);
+  h.type("docs.example.com");
+  const original = h.input("idempotency_key").value;
+  h.state = { error: "Lost response", hostname: "docs.example.com" };
+  h.render(addProps);
+  h.type("other.example.com");
+  assert.notEqual(h.input("idempotency_key").value, original);
+  h.type("docs.example.com");
+  assert.equal(h.input("idempotency_key").value, original);
+});
+
+test("another host's success does not discard an uncertain host's key", () => {
+  const h = addHarness();
+  h.render(addProps);
+  h.type("docs.example.com");
+  const original = h.input("idempotency_key").value;
+  h.state = { error: "Lost response", hostname: "docs.example.com" };
+  h.render(addProps);
+  h.type("other.example.com");
+  h.state = { added: "other.example.com" };
+  h.render(addProps);
+  h.type("docs.example.com");
+  assert.equal(h.input("idempotency_key").value, original);
+});
+
+test("a confirmed hostname gets a fresh key for its next add", () => {
+  const h = addHarness();
+  h.render(addProps);
+  h.type("docs.example.com");
+  const original = h.input("idempotency_key").value;
+  h.state = { error: "Lost response", hostname: "docs.example.com" };
+  h.render(addProps);
+  h.state = { added: "docs.example.com" };
+  h.render(addProps);
+  h.type("docs.example.com");
+  assert.notEqual(h.input("idempotency_key").value, original);
 });
 
 test("successful retry clears the field and renews its key", () => {
