@@ -9,7 +9,7 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Specify M5.4d workspace allowlist additions (`context/features-specs/22-workspace-egress-allowlist.md`) on branch `m5.4d-workspace-allowlist`. M5.4c is merged. Before implementation, confirm the additions cap, effective-time/removal semantics and hostname canonicalization; verify Vercel enforces forbidden resolved addresses and DNS rebinding. The spec proposes values but does not treat them as approved.
+Specify M5.4d workspace allowlist additions (`context/features-specs/22-workspace-egress-allowlist.md`) on branch `m5.4d-workspace-allowlist`. M5.4c is merged. The operator approved a cap of 20 additional hosts, future-provisioning-only changes and exact ASCII hostnames. Before implementation, verify Vercel enforces forbidden resolved addresses and DNS rebinding.
 
 ## Product Milestones
 
@@ -311,8 +311,13 @@ PR #26 merged with all published checks green and all eight review threads resol
 
 Draft: `context/features-specs/22-workspace-egress-allowlist.md`. Defines the
 store/API/audit/runner/UI boundary, fail-closed behavior and acceptance gates.
-No implementation yet. Decisions requested: proposed cap 20, future-provisioning
+No implementation yet. Operator approved: cap 20, future-provisioning
 only (removal is not immediate revocation), ASCII exact hostnames. Security gate:
 prove forbidden resolved addresses and DNS rebinding remain blocked by Vercel;
-one-time DNS checks are not an acceptable substitute. Next: obtain decisions and
-verify this enforcement boundary before contracting/building the feature.
+one-time DNS checks are not an acceptable substitute. Next: verify this enforcement boundary before contracting/building the feature.
+
+M5.4d operator policy approval recorded: 20 extra destinations excluding defaults,
+changes apply only to newly provisioned sandboxes, exact ASCII hostnames. The
+provider security gate remains open: existing live tests prove raw-IP denial and
+proxy-side hostname resolution, not denial of an allowed name resolving to a
+private address or rebinding. Do not treat those tests as proof of this gate.

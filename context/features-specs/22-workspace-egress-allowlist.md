@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d — Workspace egress allowlist additions
 
-**Status: draft; security-policy decisions below require confirmation before implementation.**
+**Status: policy rules approved by the operator; provider security verification pending before implementation.**
 
 ## Outcome
 
@@ -57,8 +57,7 @@ refused outside development. No real agent execution before M6.
   must not reveal another workspace's entries or audit data.
 - Accept exact hostnames only. Define canonicalization once, then validate and
   persist that canonical value. Reject IP literals, wildcards, credentials,
-  schemes, ports, paths, empty labels and malformed DNS names. Decide IDN policy
-  before implementation; never silently broaden a host to its subdomains.
+  schemes, ports, paths, empty labels and malformed DNS names. Reject Unicode/IDN input; never silently broaden a host to its subdomains.
 - Reserved defaults, ingress, proxy and other Weave-operated destinations cannot
   be added as plain rules. A duplicate cannot overwrite a registry forwardURL.
 - Metadata, private, loopback and link-local addresses remain unreachable even
@@ -71,19 +70,21 @@ refused outside development. No real agent execution before M6.
 - Show an explicit warning: an added destination can receive repository data.
   Admin approval is a deliberate expansion of the sandbox's trust boundary.
 
-## Decisions needed before implementation
+## Approved policy rules
 
-These are proposals, not approved product behavior:
+Approved by the operator after explanation of the tradeoffs:
 
-1. **Cap:** propose 20 additional hostnames per workspace (defaults excluded).
-2. **Effective time:** propose changes affect future provisioning only, including
+1. **Cap:** 20 additional hostnames per workspace (defaults excluded).
+2. **Effective time:** changes affect future provisioning only, including
    retries that create a new sandbox. Existing sandboxes retain their policy until
    teardown. Removing a hostname does not immediately revoke active connections;
    the UI must say this and offer the existing session cancellation path.
-3. **Canonicalization:** propose lowercase ASCII hostnames, no trailing dot, no
+3. **Canonicalization:** lowercase ASCII hostnames, no trailing dot, no
    Unicode/IDN input, no wildcard; reject reserved/internal names. Document the
    exact reserved list from deployment configuration before implementation.
-4. **Private-destination guarantee:** demonstrate Vercel's firewall blocks public
+## Remaining security gate
+
+**Private-destination guarantee:** demonstrate Vercel's firewall blocks public
    names resolving to forbidden ranges, including rebinding. If it does not,
    stop and select an enforcing design in an ADR; do not ship a DNS-check-only
    workaround or claim compliance with ADR-013.
