@@ -9,7 +9,7 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Review M6.1b.2a immutable session input storage on `m6.1b2-session-inputs`
+Review draft PR #34: M6.1b.2a immutable session input storage on `m6.1b2-session-inputs`
 (spec 28): atomic locked-task title/body capture with existing agent-version pin,
 forced RLS and fail-closed missing reads. Document credential isolation/delivery
 requirements in proposed ADR-018; account/funding and secret-store choices need
@@ -840,3 +840,8 @@ secret-store/hosting and opt-in spend choices require an owner decision. No CLI
 registration, provider key discovery, paid invocation, image or egress change.
 Next: restore local Temporal health/re-run workflows, review this PR, then decide
 credential ownership before building authenticated input/credential delivery.
+
+Draft PR #34: https://github.com/jigmetnamgyal/weave/pull/34 (implementation
+80fd80c). Remains draft until local Temporal workflow integration can run.
+Ask before restarting the operator's Temporal container; do not stop unrelated
+dev processes or enable paid Claude execution.
