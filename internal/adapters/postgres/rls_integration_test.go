@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
+	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/internal/domain"
 )
 
@@ -488,5 +489,44 @@ func TestPreviewRefusesAnUnusableTokenWithoutTheService(t *testing.T) {
 	}
 	if _, err := store.Context(viewerCtx, domain.HashInvitationToken(usable.Token)); err != nil {
 		t.Fatalf("a usable token was refused: %v", err)
+	}
+}
+
+// TestAWorkspaceCanBeCreatedAsTheApplicationRoleIntegration is the path the API
+// takes: create a workspace on the application role, under RLS, with only the
+// creating user in context. Every other test created workspaces on the owner
+// connection, which bypasses RLS — so an INSERT ... RETURNING that the
+// workspaces read policy refused (the row has no members yet) went unnoticed
+// from M3.0 until a real sign-up tried it.
+func TestAWorkspaceCanBeCreatedAsTheApplicationRoleIntegration(t *testing.T) {
+	ownerPool := newPool(t)
+	appPool := newAppPool(t)
+	user := seedUser(t, ownerPool)
+
+	ctx := postgres.WithTenant(context.Background(), postgres.TenantContext{UserID: user.ID})
+	service := application.NewWorkspaceService(postgres.NewWorkspaceStore(appPool))
+	workspace, err := service.Create(ctx, user.ID, "Created Under RLS")
+	if err != nil {
+		t.Fatalf("create a workspace as the application role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ownerPool.Exec(context.Background(), "DELETE FROM workspaces WHERE id = $1", workspace.ID)
+	})
+	if workspace.ID == uuid.Nil || workspace.Name != "Created Under RLS" || workspace.CreatedBy != user.ID || workspace.Version != 1 {
+		t.Errorf("created %+v", workspace)
+	}
+	// The creator is its owner, and can read it back through the same path.
+	membership, err := service.Membership(ctx, workspace.ID, user.ID)
+	if err != nil || membership.Role != domain.RoleOwner {
+		t.Errorf("creator membership = %+v, %v; want owner", membership, err)
+	}
+	if got, err := service.Get(ctx, workspace.ID, user.ID); err != nil || got.ID != workspace.ID {
+		t.Errorf("read back = %+v, %v", got, err)
+	}
+
+	// Still refused: creating one attributed to someone else.
+	other := seedUser(t, ownerPool)
+	if _, err := service.Create(ctx, other.ID, "Not Mine"); err == nil {
+		t.Error("a workspace was created for another user")
 	}
 }
