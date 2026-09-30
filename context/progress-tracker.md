@@ -5,11 +5,11 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; next M5.4d (workspace allowlist additions), before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; M5.4d spec draft in progress, before M6
 
 ## Current Goal
 
-Make a session actually run: drain the outbox, start a durable workflow, cut a branch, and provision an isolated runner for a deterministic provider. M4 left every session sitting in `queued` with a promise nothing reads.
+Specify M5.4d workspace allowlist additions (`context/features-specs/22-workspace-egress-allowlist.md`) on branch `m5.4d-workspace-allowlist`. M5.4c is merged. Before implementation, confirm the additions cap, effective-time/removal semantics and hostname canonicalization; verify Vercel enforces forbidden resolved addresses and DNS rebinding. The spec proposes values but does not treat them as approved.
 
 ## Product Milestones
 
@@ -306,3 +306,13 @@ of reachability. All six live tests pass; forcing that upstream fetch to fail
 makes the wheel check fail, confirming proxy 502s cannot pass it. Tunnels stopped.
 
 PR #26 merged with all published checks green and all eight review threads resolved.
+
+### M5.4d — specification started
+
+Draft: `context/features-specs/22-workspace-egress-allowlist.md`. Defines the
+store/API/audit/runner/UI boundary, fail-closed behavior and acceptance gates.
+No implementation yet. Decisions requested: proposed cap 20, future-provisioning
+only (removal is not immediate revocation), ASCII exact hostnames. Security gate:
+prove forbidden resolved addresses and DNS rebinding remain blocked by Vercel;
+one-time DNS checks are not an acceptable substitute. Next: obtain decisions and
+verify this enforcement boundary before contracting/building the feature.
