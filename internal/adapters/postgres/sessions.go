@@ -31,12 +31,10 @@ func (s *SessionStore) inTx(ctx context.Context, fn func(*postgresdb.Queries) er
 
 // Create writes a session and everything that must exist with it.
 //
-// Six rows in one transaction: the session, its first participant, its first
-// state transition, the audit event, and the outbox record that is the durable
-// promise something will pick it up. The policy snapshot is the sixth and is
-// the `agent_version_id` column rather than a row of its own — the version is
-// append-only and cannot change, so the pin already says what this session
-// runs under.
+// Six rows in one transaction: the session, participant, transition, audit,
+// outbox and trigger-captured task input snapshot. Agent settings remain pinned
+// by agent_version_id to an append-only version rather than duplicated here.
+// The snapshot is captured under the same task lock as verifyTask.
 //
 // The atomicity is the feature, not an implementation detail. Writing the
 // session and then enqueuing would leave a window where a session exists that
@@ -522,6 +520,8 @@ func payloadOrEmpty(payload []byte) []byte {
 // and useless, so each one a caller can fix is named.
 func translateSessionError(err error) error {
 	switch {
+	case constraintViolated(err, "session_input_task_not_runnable"):
+		return domain.ErrTaskNotRunnable
 	case constraintViolated(err, "sessions_task_fkey"):
 		return application.ErrTaskNotFound
 	case constraintViolated(err, "sessions_agent_version_fkey"):

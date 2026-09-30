@@ -111,3 +111,13 @@ SET branch_sha = $3,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND branch_sha IS NULL
 RETURNING *;
+
+-- name: GetSessionInputForWorkspace :one
+-- No mutable task/current-agent join and no legacy fallback. Settings come from
+-- the frozen version pin; task text comes from its creation-time snapshot.
+SELECT i.session_id, i.workspace_id, i.input_version, i.task_title, i.task_body,
+       s.task_id, s.agent_version_id, a.provider, a.model, a.capabilities, a.tool_policy
+FROM session_input_snapshots i
+JOIN sessions s ON s.id = i.session_id AND s.workspace_id = i.workspace_id
+JOIN agent_versions a ON a.id = s.agent_version_id AND a.workspace_id = s.workspace_id
+WHERE i.session_id = $1 AND i.workspace_id = $2;

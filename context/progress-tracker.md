@@ -9,12 +9,11 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Define the next M6.1b slice: immutable task/agent input delivery and credential
-ownership/delivery before runtime activation. M6.1b.1 merged as 3af964a (PR #33)
-with native Linux CI passing and all review feedback resolved. Image pin/terms,
-provider egress and real-CLI isolation acceptance also remain activation gates.
-No paid invocation or local login reuse is enabled. Live session room/reconnect
-and its cursor pagination gate remain separate M6 slices.
+Review M6.1b.2a immutable session input storage on `m6.1b2-session-inputs`
+(spec 28): atomic locked-task title/body capture with existing agent-version pin,
+forced RLS and fail-closed missing reads. Document credential isolation/delivery
+requirements in proposed ADR-018; account/funding and secret-store choices need
+an owner decision. No credential retrieval or runtime activation in this slice.
 
 ## Product Milestones
 
@@ -804,3 +803,40 @@ repair; macOS race tests validate kqueue and signaling retirement. No actual
 Claude CLI/model run or provider registration was enabled.
 Next: scope immutable task/agent inputs and credential ownership/delivery;
 retain image/terms, provider egress and real-CLI isolation activation gates.
+
+### M6.1b.2a in progress
+
+Selected the bounded storage foundation before delivery: locked session input
+capture, tenant-scoped read and immutable identity guards. Spec 28 and ADR-018
+define acceptance and the still-unresolved credential ownership/hosting choices.
+
+### M6.1b.2a built for review — immutable session input storage
+
+Spec 28, migration 00016 and proposed ADR-018: capture locked task title/body on
+all session INSERTs, SELECT-only app grants, forced RLS, immutable snapshot and
+session input/branch identity. Internal tenant-scoped sqlc/store reader joins
+only the pinned append-only agent version. Missing/legacy input refuses without
+mutable fallback; no invented agent instruction field and no public API changes.
+Existing repository-not-found error semantics preserved after the wider test
+suite caught the trigger preempting its FK translation.
+
+Six new PostgreSQL race integration tests plus existing creation/rollback cases
+pass. Disposable migration DB proves no fabricated legacy backfill and Down/Up
+recovery with data. Five security mutations caught: snapshot mutation, tenant
+policy, task locking, pin mutation and explicit workspace filtering. Full unit,
+lint/golangci-lint, typecheck, Go/web build, govulncheck and npm high/critical audit
+pass. Isolated full integration attempted; seven workflows blocked by local
+Temporal not listening on container port 7233. DB/NATS/Docker suite passes when
+those workflows are explicitly skipped, not claimed as a full integration pass.
+Full format gate flags unrelated local Claude files; changed files pass. All
+test-owned databases and runner containers cleaned, user dev workers untouched.
+Local draft migration function sync retained existing snapshot rows.
+
+Credential rules documented, **not implemented/activated**: explicit workspace
+provider binding, managed-secret references, workload identity, fenced allocation
+and backend secret delivery; keys are long-lived provider capabilities, not
+session tokens. Account/funding (workspace-owned vs Weave-operated project),
+secret-store/hosting and opt-in spend choices require an owner decision. No CLI
+registration, provider key discovery, paid invocation, image or egress change.
+Next: restore local Temporal health/re-run workflows, review this PR, then decide
+credential ownership before building authenticated input/credential delivery.

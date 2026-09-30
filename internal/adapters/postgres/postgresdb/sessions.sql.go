@@ -223,6 +223,55 @@ func (q *Queries) GetSessionForWorkspace(ctx context.Context, arg GetSessionForW
 	return i, err
 }
 
+const getSessionInputForWorkspace = `-- name: GetSessionInputForWorkspace :one
+SELECT i.session_id, i.workspace_id, i.input_version, i.task_title, i.task_body,
+       s.task_id, s.agent_version_id, a.provider, a.model, a.capabilities, a.tool_policy
+FROM session_input_snapshots i
+JOIN sessions s ON s.id = i.session_id AND s.workspace_id = i.workspace_id
+JOIN agent_versions a ON a.id = s.agent_version_id AND a.workspace_id = s.workspace_id
+WHERE i.session_id = $1 AND i.workspace_id = $2
+`
+
+type GetSessionInputForWorkspaceParams struct {
+	SessionID   uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+type GetSessionInputForWorkspaceRow struct {
+	SessionID      uuid.UUID
+	WorkspaceID    uuid.UUID
+	InputVersion   int32
+	TaskTitle      string
+	TaskBody       string
+	TaskID         uuid.UUID
+	AgentVersionID uuid.UUID
+	Provider       string
+	Model          string
+	Capabilities   []string
+	ToolPolicy     []byte
+}
+
+// No mutable task/current-agent join and no legacy fallback. Settings come from
+// the frozen version pin; task text comes from its creation-time snapshot.
+func (q *Queries) GetSessionInputForWorkspace(ctx context.Context, arg GetSessionInputForWorkspaceParams) (GetSessionInputForWorkspaceRow, error) {
+	row := q.db.QueryRow(ctx, getSessionInputForWorkspace, arg.SessionID, arg.WorkspaceID)
+	var i GetSessionInputForWorkspaceRow
+	err := row.Scan(
+		&i.SessionID,
+		&i.WorkspaceID,
+		&i.InputVersion,
+		&i.TaskTitle,
+		&i.TaskBody,
+		&i.TaskID,
+		&i.AgentVersionID,
+		&i.Provider,
+		&i.Model,
+		&i.Capabilities,
+		&i.ToolPolicy,
+	)
+	return i, err
+}
+
 const listPendingOutboxEvents = `-- name: ListPendingOutboxEvents :many
 SELECT id, workspace_id, topic, subject_id, payload, attempts, available_at, leased_until, last_error, completed_at, created_at, claimant, terminated_at FROM outbox_events
 WHERE workspace_id = $1
