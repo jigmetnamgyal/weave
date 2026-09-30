@@ -88,9 +88,9 @@ func buildPolicy(rules []application.EgressRule) (any, error) {
 }
 
 // validForwardURL holds Vercel's rule — no user information, query or
-// fragment — and Weave's: HTTPS, and the registry proxy's route for this exact
-// host (…/r/<host>), so the token Vercel signs for it names this host and no
-// other.
+// fragment — and Weave's: HTTPS, and a proxy's route for this exact host
+// (/r/<host> for the registry proxy, /e/<host> for the egress proxy), so the
+// token Vercel signs for it names this host and no other.
 func validForwardURL(host, raw string) error {
 	parsed, err := url.Parse(raw)
 	switch {
@@ -100,8 +100,10 @@ func validForwardURL(host, raw string) error {
 		return fmt.Errorf("%w: %q must be https", ErrInvalidForwardURL, raw)
 	case parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(raw, "#"):
 		return fmt.Errorf("%w: %q carries user information, a query or a fragment", ErrInvalidForwardURL, raw)
-	case !strings.HasSuffix(parsed.Path, "/r/"+host):
-		return fmt.Errorf("%w: %q is not the registry proxy's route for %s", ErrInvalidForwardURL, raw, host)
+	case parsed.Path != "/r/"+host && parsed.Path != "/e/"+host:
+		// Exactly a proxy's route for this host: /r/<host> (registry proxy,
+		// ADR-016) or /e/<host> (egress proxy, ADR-017), at the proxy's root.
+		return fmt.Errorf("%w: %q is not a proxy route for %s", ErrInvalidForwardURL, raw, host)
 	}
 	return nil
 }

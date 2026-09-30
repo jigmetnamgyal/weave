@@ -5,16 +5,14 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); **M5.4d.3a egress proxy and runner wiring built and verified live, awaiting review**; M5.4d.3b admin screen next; M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
-Build M5.4d.3 on `m5.4d3-egress-proxy` (spec
-`context/features-specs/25-egress-proxy-and-runner-wiring.md`). M5.4d.2 merged as
-6a1193a (PR #28). Split in two: **3a** — `services/egress-proxy` (Vercel OIDC,
-per-runner snapshot authorization, forwarding through `guardedhttp`) plus runner
-wiring (`RUNNER_EGRESS_PROXY_URL`, forwarded rules, fail-closed provisioning);
-**3b** — the admin settings screen. 3a first. Spec only so far; no code yet.
+Review M5.4d.3a on `m5.4d3-egress-proxy` (spec
+`context/features-specs/25-egress-proxy-and-runner-wiring.md`): `services/egress-proxy`
+plus runner wiring, verified live on Vercel Hobby. Added hosts now work end to end
+through the guarded proxy. Then M5.4d.3b, the admin screen, completes M5.4d.
 
 ## Product Milestones
 
@@ -519,3 +517,24 @@ tunnel); 3b is the admin screen. Key choices: the proxy authorizes against the
 runner's immutable snapshot in its own tenant, never the live workspace list;
 provisioning fails closed on a missing snapshot, a missing proxy URL, or a host
 that is now reserved; added hosts are never plain rules. **Next:** build 3a.
+
+### M5.4d.3a — egress proxy and runner wiring, built and verified live
+
+New `services/egress-proxy` (Vercel OIDC with a per-host route audience,
+forwarded-header checks, authorization against the runner's own snapshot in its
+own tenant, bounded body, forwarding only through `guardedhttp`, no request-content
+logging). Runner provisioning now reads the snapshot first and fails closed on a
+missing snapshot, added hosts without `RUNNER_EGRESS_PROXY_URL` (required in
+staging/production), a non-canonical or now-reserved host, or unwired snapshots.
+Added hosts become forwarded rules only; `validForwardURL` accepts exactly
+`/r/<host>` or `/e/<host>`. Third dev tunnel and live test added.
+
+Verified: handler, application and PostgreSQL tests; four deliberate mutations
+fail (snapshot check, audience binding, plain rule, guard bypass). Adding the
+cross-route replay case was needed: fixing the audience to one host first slipped
+past the suite. Live on Hobby: added host reachable, snapshot-missing host 403,
+private-address host refused by the guard, unlisted host and subdomain do not
+resolve; registry and backend suites still pass; project empty afterwards.
+Two live lessons, recorded in ADR-017: a loopback name never leaves the sandbox,
+and the quick tunnel rewrites 502 bodies. `make test-integration` (22 packages)
+and all local gates pass. **Next:** PR for 3a, then 3b (admin screen).

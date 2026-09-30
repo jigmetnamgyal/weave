@@ -745,13 +745,16 @@ func TestNoHostsIsDenyAllAndABadRuleIsRefused(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{
-		"http://proxy.example.test/r/registry.npmjs.org",      // not https
-		"https://proxy.example.test/r/registry.npmjs.org?t=1", // a query
-		"https://proxy.example.test/r/registry.npmjs.org#x",   // a fragment
-		"https://u:p@proxy.example.test/r/registry.npmjs.org", // user information
-		"https://proxy.example.test/r/pypi.org",               // another host's route
-		"https://proxy.example.test/",                         // no route at all
-		"proxy.example.test/r/registry.npmjs.org",             // no scheme
+		"http://proxy.example.test/r/registry.npmjs.org",         // not https
+		"https://proxy.example.test/r/registry.npmjs.org?t=1",    // a query
+		"https://proxy.example.test/r/registry.npmjs.org#x",      // a fragment
+		"https://u:p@proxy.example.test/r/registry.npmjs.org",    // user information
+		"https://proxy.example.test/r/pypi.org",                  // another host's route
+		"https://proxy.example.test/",                            // no route at all
+		"proxy.example.test/r/registry.npmjs.org",                // no scheme
+		"https://proxy.example.test/e/pypi.org",                  // the egress route for another host
+		"https://proxy.example.test/prefix/r/registry.npmjs.org", // under a prefix
+		"https://proxy.example.test/x/registry.npmjs.org",        // neither proxy's route
 	} {
 		_, err := buildPolicy([]application.EgressRule{{Host: "registry.npmjs.org", ForwardURL: bad}})
 		if !errors.Is(err, ErrInvalidForwardURL) {
@@ -761,6 +764,10 @@ func TestNoHostsIsDenyAllAndABadRuleIsRefused(t *testing.T) {
 	if _, err := buildPolicy([]application.EgressRule{{Host: "registry.npmjs.org"},
 		{Host: "registry.npmjs.org", ForwardURL: testProxy + "/r/registry.npmjs.org"}}); err == nil {
 		t.Error("a host given once plain and once forwarded was accepted; one of the two would be silently dropped")
+	}
+	// The egress proxy's route (ADR-017) is accepted for its own host only.
+	if _, err := buildPolicy([]application.EgressRule{{Host: "docs.example.com", ForwardURL: testProxy + "/e/docs.example.com"}}); err != nil {
+		t.Errorf("the egress proxy's route for its own host was refused: %v", err)
 	}
 	policy, err = buildPolicy(append([]application.EgressRule{{Host: "github.com"}}, testRules...))
 	if err != nil {

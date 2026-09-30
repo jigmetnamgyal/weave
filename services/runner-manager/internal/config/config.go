@@ -52,6 +52,16 @@ type Config struct {
 	// traffic would pass unrecorded, the gap the proxy exists to close.
 	RegistryProxyURL string
 
+	// EgressProxyURL is the egress proxy's public base URL (M5.4d.3a,
+	// ADR-017): a workspace's added hosts are forwarded there and nowhere
+	// else. Required outside development and test; where unset, a runner with
+	// any added host fails to provision rather than reaching it directly.
+	EgressProxyURL string
+	// EgressReserved are the namespaces no added host may fall under — the
+	// deployment's declaration and its public service hosts — re-checked at
+	// every provisioning against the runner's immutable snapshot.
+	EgressReserved []string
+
 	// NATSSigningKey and NATSAccount mint each runner's broker credential
 	// (M5.5a, ADR-014). The signing key is a secret, read from a path; this
 	// is the only process that holds one.
@@ -158,7 +168,38 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	cfg.EgressProxyURL = strings.TrimSuffix(get("RUNNER_EGRESS_PROXY_URL", ""), "/")
+	if err := validateEgressProxy(cfg.AppEnv, cfg.EgressProxyURL); err != nil {
+		return Config{}, err
+	}
+	urls := map[string]string{
+		"RUNNER_NATS_URL": cfg.RunnerNATSURL, "RUNNER_REGISTRY_PROXY_URL": cfg.RegistryProxyURL,
+		"RUNNER_EGRESS_PROXY_URL": cfg.EgressProxyURL,
+		"API_BASE_URL":            get("API_BASE_URL", ""), "NEXT_PUBLIC_APP_URL": get("NEXT_PUBLIC_APP_URL", ""),
+	}
+	if cfg.EgressReserved, err = application.ParseEgressReservedConfig(strings.ToLower(cfg.AppEnv),
+		get("EGRESS_RESERVED_HOSTS", ""), urls); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// validateEgressProxy holds ADR-017's rule at startup: outside development and
+// test the egress proxy must be configured, so an added host is never granted
+// by a plain rule. The URL follows the registry proxy's rules: https, no path.
+func validateEgressProxy(appEnv, raw string) error {
+	if raw == "" {
+		switch strings.ToLower(strings.TrimSpace(appEnv)) {
+		case "development", "test":
+			return nil
+		}
+		return fmt.Errorf("RUNNER_EGRESS_PROXY_URL is required outside development and test (APP_ENV=%q): "+
+			"workspace-added hosts are reachable only through it (ADR-017)", appEnv)
+	}
+	if err := application.ValidateRegistryProxyURL(raw); err != nil {
+		return fmt.Errorf("RUNNER_EGRESS_PROXY_URL: %w", err)
+	}
+	return nil
 }
 
 // loadVercel reads the Vercel backend's configuration, reporting every

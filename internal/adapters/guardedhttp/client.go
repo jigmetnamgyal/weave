@@ -42,6 +42,15 @@ func New() *Client {
 	return newClient(resolver.LookupNetIP, dialer.DialContext, nil)
 }
 
+// NewWithResolver is New with an injected resolver, for callers' tests that
+// must exercise the real address guard: whatever the resolver answers is still
+// validated in full, and dialing still uses only validated numeric addresses.
+// There is deliberately no exported dialer or TLS seam.
+func NewWithResolver(lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)) *Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	return newClient(lookup, dialer.DialContext, nil)
+}
+
 type lookupFunc func(context.Context, string, string) ([]netip.Addr, error)
 type dialFunc func(context.Context, string, string) (net.Conn, error)
 

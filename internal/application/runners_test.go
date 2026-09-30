@@ -27,6 +27,24 @@ type runnerWorld struct {
 	store   *fakeRunnerStore
 	service *application.RunnerService
 	session domain.Session
+	// added is the host list every runner's snapshot holds; missing makes
+	// the snapshot absent, as a row the database never wrote would be.
+	added   []string
+	missing bool
+}
+
+// fakeSnapshots answers as the trigger-written row would: one snapshot per
+// runner, holding the world's added hosts, or none at all when missing.
+type fakeSnapshots struct{ w *runnerWorld }
+
+func (w *runnerWorld) snapshots() fakeSnapshots { return fakeSnapshots{w} }
+
+func (f fakeSnapshots) Snapshot(_ context.Context, workspaceID, runnerID uuid.UUID) (domain.RunnerEgressSnapshot, error) {
+	if f.w.missing {
+		return domain.RunnerEgressSnapshot{}, application.ErrEgressSnapshotMissing
+	}
+	return domain.RunnerEgressSnapshot{RunnerID: runnerID, WorkspaceID: workspaceID, SessionID: f.w.session.ID,
+		Hosts: append([]string{}, f.w.added...)}, nil
 }
 
 func newRunnerTestWorld(t *testing.T) *runnerWorld {
@@ -42,7 +60,7 @@ func newRunnerTestWorld(t *testing.T) *runnerWorld {
 	w.service = application.NewRunnerService(w.store, fakeSessionReader{w}, w.backend, fakeMinter{},
 		fakeBrokerIssuer{}, "nats://broker.test:4222", fakeAgents{}, w.drain,
 		func(ctx context.Context, _ uuid.UUID) context.Context { return ctx }, "https://github.test",
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+		slog.New(slog.NewTextHandler(io.Discard, nil))).WithEgress(w.snapshots(), "", nil)
 	return w
 }
 
@@ -657,7 +675,7 @@ func leasingWorld(t *testing.T) (*runnerWorld, *leasingBackend, *application.Run
 	service := application.NewRunnerService(w.store, fakeSessionReader{w}, backend, fakeMinter{},
 		fakeBrokerIssuer{}, "nats://broker.test:4222", fakeAgents{}, w.drain,
 		func(ctx context.Context, _ uuid.UUID) context.Context { return ctx }, "https://github.test",
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+		slog.New(slog.NewTextHandler(io.Discard, nil))).WithEgress(w.snapshots(), "", nil)
 	if w.store.sessionStates == nil {
 		w.store.sessionStates = map[uuid.UUID]domain.SessionState{}
 	}

@@ -109,7 +109,13 @@ func run() error {
 
 	runners := application.NewRunnerService(postgres.NewRunnerStore(appPool), postgres.NewSessionStore(appPool),
 		backend, installations, issuer, cfg.RunnerNATSURL, postgres.NewAgentStore(appPool), drain,
-		postgres.WithTenantWorkspace, cfg.GitBaseURL, logger).WithRegistryProxy(cfg.RegistryProxyURL)
+		postgres.WithTenantWorkspace, cfg.GitBaseURL, logger).WithRegistryProxy(cfg.RegistryProxyURL).
+		WithEgress(postgres.NewEgressStore(appPool), cfg.EgressProxyURL, cfg.EgressReserved)
+	if cfg.EgressProxyURL == "" {
+		// Allowed in development only (config refuses it elsewhere). Added
+		// hosts are then never granted: a runner with any fails to provision.
+		logger.Warn("no egress proxy configured: sessions in workspaces with added egress hosts will fail to provision (ADR-017); set RUNNER_EGRESS_PROXY_URL")
+	}
 	if cfg.RegistryProxyURL == "" {
 		// Allowed in development only (config refuses it elsewhere), and said
 		// out loud: registries are reachable and nothing is recorded.

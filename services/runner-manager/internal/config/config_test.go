@@ -71,6 +71,7 @@ func TestTheVercelBackendNeedsItsAccountStated(t *testing.T) {
 		"RUNNER_BACKEND": "vercel", "RUNNER_VERCEL_TOKEN": "", "RUNNER_VERCEL_TEAM_ID": "",
 		"RUNNER_VERCEL_PROJECT_ID": "", "RUNNER_VERCEL_MAX_SESSION": "", "RUNNER_VERCEL_BINARY": "",
 		"RUNNER_VERCEL_REGION": "", "RUNNER_VERCEL_LEASE": "", "RUNNER_NATS_URL": "", "RUNNER_REGISTRY_PROXY_URL": "",
+		"RUNNER_EGRESS_PROXY_URL": "", "EGRESS_RESERVED_HOSTS": "", "API_BASE_URL": "", "NEXT_PUBLIC_APP_URL": "",
 	}
 	set := func(overrides map[string]string) {
 		for k, v := range base {
@@ -140,6 +141,29 @@ func TestStagingAndProductionRefuseToStartWithoutARegistryProxy(t *testing.T) {
 	} {
 		if err := validateRegistryProxy(tc.env, tc.url); (err == nil) != tc.ok {
 			t.Errorf("APP_ENV=%q RUNNER_REGISTRY_PROXY_URL=%q: %v, want ok=%v", tc.env, tc.url, err, tc.ok)
+		}
+	}
+}
+
+// TestStagingAndProductionRefuseToStartWithoutAnEgressProxy (M5.4d.3a,
+// ADR-017): an added host is never granted by a plain rule, so outside
+// development and test the proxy that carries it must be configured.
+func TestStagingAndProductionRefuseToStartWithoutAnEgressProxy(t *testing.T) {
+	for _, tc := range []struct {
+		env, url string
+		ok       bool
+	}{
+		{"development", "", true},
+		{"test", "", true},
+		{"staging", "", false},
+		{"production", "", false},
+		{"production", "https://egress.weave.example", true},
+		{"production", "http://egress.weave.example", false},
+		{"production", "https://egress.weave.example/prefix", false},
+		{"production", "https://u:p@egress.weave.example", false},
+	} {
+		if err := validateEgressProxy(tc.env, tc.url); (err == nil) != tc.ok {
+			t.Errorf("APP_ENV=%q RUNNER_EGRESS_PROXY_URL=%q: %v, want ok=%v", tc.env, tc.url, err, tc.ok)
 		}
 	}
 }

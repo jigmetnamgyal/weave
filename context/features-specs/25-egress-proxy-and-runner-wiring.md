@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d.3 — Egress proxy, runner wiring and admin UI
 
-**Status: specification; no implementation yet.** M5.4d.2 merged as 6a1193a
+**Status: 3a built and verified live on Vercel Hobby, awaiting review; 3b pending.** M5.4d.2 merged as 6a1193a
 (PR #28). Parent: `22-workspace-egress-allowlist.md`; design: ADR-017.
 
 This unit makes a workspace's added hostnames reachable from its runners, and
@@ -135,7 +135,47 @@ Wildcards, ports, private registries, credentials for added hosts, request-conte
 logging for added hosts, immediate revocation of running sessions, and any change
 to default GitHub/registry/ingress rules.
 
+## 3a implementation record
+
+- `internal/application/egress_forward.go`: `EgressForwardURL`, `EgressAuthorizer`
+  (bounded runner lookup, then the snapshot in the runner's own tenant, exact
+  host), and fail-closed `addedEgressRules`.
+- `internal/application/runners.go`: `WithEgress`; provisioning reads the runner's
+  snapshot before minting credentials or calling the backend, and refuses when
+  it is missing, when added hosts have no proxy, when a host is not canonical or
+  is now reserved, and when snapshots were never wired.
+- `internal/adapters/vercelsandbox/policy.go`: a forward URL must be exactly
+  `/r/<host>` or `/e/<host>` for its own host, at the proxy's root.
+- `services/egress-proxy`: config, handler and entry point; ports 8097/8098.
+  Defaults to `guardedhttp.New()`. `guardedhttp.NewWithResolver` added for tests:
+  resolver injection only, no dialer or TLS seam.
+- Runner manager: `RUNNER_EGRESS_PROXY_URL` (required in staging/production) and
+  `EGRESS_RESERVED_HOSTS` via the shared reserved-config parser.
+- `scripts/dev-tunnel.sh` starts a third tunnel; `make test-vercel-live` runs the
+  egress proxy's live test.
+
+## 3a verification record
+
+- Handler tests: every refusal in request order (route, raw-IP route, token
+  missing/for another host/replayed on another authorized route/for the registry
+  route, non-runner sandbox, forwarded host/scheme/port/path mismatch, host not in
+  snapshot, oversized and stalled bodies, authorization failures), clean headers
+  both ways, redirect passthrough, and private answers refused through the real
+  guard with no address in the body.
+- Application tests: forwarded rules; five fail-closed provisioning cases with
+  no backend call; the authorizer's eight refusal cases, read in the runner's own
+  tenant. PostgreSQL: authorization through the real lookup and snapshot, where
+  later removal does not revoke and later addition does not grant.
+- Deliberate mutations fail: snapshot check dropped, audience fixed to one host,
+  added host given a plain rule, default upstream not the guarded transport.
+- Live on Vercel Hobby: an added host returned its real page through the proxy;
+  a forwarded host missing from the snapshot got 403 and never reached upstream;
+  `10.0.0.1.nip.io` was authorized, then refused by the guard (`ErrDestination`);
+  an unlisted host and a subdomain did not resolve. The registry and backend live
+  suites still pass. Afterwards 0 sandboxes, 0 snapshots; no token in any log.
+- `make test-integration` (22 packages), lint, typecheck, test, build, sqlc and
+  contracts checks pass.
+
 ## Next
 
-Build 3a first: it is the security boundary, and the screen is only useful once
-added hosts work. Then 3b. Staging gates from ADR-013 still apply.
+Review and merge 3a. Then 3b, the admin screen. Staging gates from ADR-013 still apply.

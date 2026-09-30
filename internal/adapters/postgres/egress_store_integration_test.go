@@ -108,3 +108,61 @@ func TestEgressAuthorizationAndAuditRollbackIntegration(t *testing.T) {
 		t.Fatalf("missing snapshot: %v", err)
 	}
 }
+
+// TestTheEgressAuthorizerHonorsTheSnapshotIntegration drives the egress
+// proxy's authorization through the real bounded lookup and tenant-scoped
+// snapshot read, on the application role. Changes after a runner exists do not
+// reach it: removal does not revoke, and an addition is not granted.
+func TestTheEgressAuthorizerHonorsTheSnapshotIntegration(t *testing.T) {
+	owner, app := newPool(t), newAppPool(t)
+	f := seedSessionFixture(t, owner, "Egress Authorizer")
+	session, err := f.createSession(t, postgres.NewSessionStore(owner), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.NewEgressStore(app)
+	service, err := application.NewEgressService(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := domain.Membership{WorkspaceID: f.workspace.ID, UserID: f.owner.ID, Role: domain.RoleOwner}
+	docs, err := service.Add(f.ctx, m, "docs.example.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runners := postgres.NewRunnerStore(app)
+	tenant := postgres.WithTenantWorkspace(context.Background(), f.workspace.ID)
+	runner, err := runners.Create(tenant, domain.Runner{ID: uuid.New(), SessionID: session.ID, WorkspaceID: f.workspace.ID, Backend: "vercel-it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizer := application.NewEgressAuthorizer(postgres.NewRegistryStore(app), store, postgres.WithTenantWorkspace, "vercel-")
+	authorize := func(host string) error {
+		_, err := authorizer.Authorize(context.Background(), runner.ID, host)
+		return err
+	}
+	if err := authorize("docs.example.com"); err != nil {
+		t.Fatalf("a snapshot host: %v", err)
+	}
+	if err := service.Remove(f.ctx, m, docs.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Add(f.ctx, m, "later.example.com", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize("docs.example.com"); err != nil {
+		t.Errorf("removal revoked a running runner's snapshot host: %v", err)
+	}
+	if err := authorize("later.example.com"); !errors.Is(err, application.ErrEgressHostNotAuthorized) {
+		t.Errorf("a host added after the runner = %v, want not authorized", err)
+	}
+	if err := authorize("api.docs.example.com"); !errors.Is(err, application.ErrEgressHostNotAuthorized) {
+		t.Errorf("a subdomain = %v, want not authorized", err)
+	}
+	if _, err := runners.End(tenant, runner.ID, f.workspace.ID, domain.RunnerTerminated, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize("docs.example.com"); !errors.Is(err, application.ErrEgressRunnerNotLive) {
+		t.Errorf("an ended runner = %v, want not live", err)
+	}
+}

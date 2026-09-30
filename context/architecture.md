@@ -44,6 +44,8 @@ This design supports an efficient MVP while preserving clear extraction boundari
 7. **Runner** — per-session ephemeral environment containing a repository checkout, provider adapter, policy-enforcing tool proxy, and event emitter.
 8. **Registry proxy** — the second public edge (ADR-016): receives the package-registry requests Vercel's firewall forwards from runner sandboxes, authenticates each by the sandbox OIDC token Vercel signs, records it per session before forwarding it to the registry, and fetches from nothing but its fixed registry list. Separate because it authenticates sandboxes rather than people and fetches from the internet on their behalf; installs depend on it, by design.
 
+9. **Egress proxy** — the third public edge (ADR-017): receives requests Vercel's firewall forwards to a workspace's added hosts, authenticates each by the sandbox OIDC token with an audience bound to the exact host's route, authorizes the host against the runner's own immutable snapshot, and fetches only through the guarded transport — every DNS answer validated, only public numeric addresses dialed, original-host TLS verified, no redirects followed. Separate from the registry proxy because it fetches from admin-chosen hosts rather than a fixed list; added hosts depend on it, by design.
+
 Only the runner manager and workflow workers can provision runners. The browser never connects directly to a runner.
 
 ## System Boundaries
@@ -55,6 +57,7 @@ Only the runner manager and workflow workers can provision runners. The browser 
 - `services/runner-manager` — execution-environment lifecycle and runner health
 - `services/runner` — provider adapters and process supervision inside the sandbox
 - `services/registry-proxy` — records and forwards runner registry requests; treats every forwarded header as a claim, trusting only what Vercel's signed token proves
+- `services/egress-proxy` — forwards runner requests to workspace-added hosts, authorized by the runner's own snapshot and fetched only through `internal/adapters/guardedhttp`; logs no request content
 - `internal/domain` — provider-independent entities, value objects, policies, and state transitions
 - `internal/application` — use cases and transaction boundaries
 - `internal/adapters` — PostgreSQL, Redis, NATS, Temporal, GitHub, Stripe, object storage, and identity implementations
@@ -265,15 +268,17 @@ Production must not use a plain privileged Docker socket or mount the host files
 
 - **Every registry request is recorded before it is forwarded.** Default registry hosts are forwarded by Vercel's firewall to the registry proxy, with no `match` so no request escapes it; the proxy authenticates each by Vercel's sandbox OIDC token (issuer, project, and an audience bound to the exact route), resolves the runner, records method, host and path per session, then fetches — and refuses rather than forwards when it cannot record.
 
-**Decided in ADR-017 — planned, not implemented:** workspace-added destinations
-will use a separate authenticated egress proxy, not plain firewall rules or the
-fixed-list registry proxy. It authorizes against immutable runner snapshots,
-resolves and rejects forbidden IPv4/IPv6 answers on each new connection, and
-dials only validated numeric addresses with original-host TLS verification.
-No redirect following or environment proxy is allowed. This replaces waiting
-for provider DNS-rebinding guarantees for additions; existing default policy is
-unchanged. The new edge's plaintext handling and availability become Weave's
-responsibility. See ADR-017 for the implementation and verification gates.
+**Decided in ADR-017 — implemented in M5.4d.1–3a:** workspace-added
+destinations are forwarded, with no match filter, to a separate authenticated
+egress proxy — never plain firewall rules, never the fixed-list registry proxy.
+The proxy authorizes each request against the runner's immutable snapshot
+(written by a database trigger at runner creation), resolves and rejects
+forbidden IPv4/IPv6 answers on each new connection, and dials only validated
+numeric addresses with original-host TLS verification. No redirect following or
+environment proxy. Provisioning fails closed on a missing snapshot, a missing
+proxy URL, or a host that has since become reserved. Existing default policy is
+unchanged. The edge's plaintext handling and availability are Weave's
+responsibility. The admin screen follows in M5.4d.3b.
 
 ## Reliability and Consistency
 
