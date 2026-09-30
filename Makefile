@@ -168,17 +168,18 @@ runner-binary: ## Build the session runner for Vercel sandboxes (linux/amd64)
 
 # The Vercel backend's live acceptance test (M5.4b): ADR-013's checklist against
 # the real account in .env. Opt-in, never in CI. Needs the development tunnel
-# (scripts/dev-tunnel.sh start) for the event-ingress host. VERCEL_* in .env
+# (scripts/dev-tunnel.sh start) for the event ingress and the registry proxy. VERCEL_* in .env
 # are mapped to the runner manager's names for this command only.
 test-vercel-live: .env runner-binary ## Run the Vercel backend's live acceptance test (creates real sandboxes)
-	@test -s tmp/tunnel/host || (echo "Start the tunnel first: scripts/dev-tunnel.sh start" && exit 1)
+	@test -s tmp/tunnel/host -a -s tmp/tunnel/registry-host || (echo "Start the tunnels first: scripts/dev-tunnel.sh start" && exit 1)
 	@set -a && . ./.env && set +a && \
 		RUNNER_VERCEL_TOKEN="$${RUNNER_VERCEL_TOKEN:-$$VERCEL_TOKEN}" \
 		RUNNER_VERCEL_TEAM_ID="$${RUNNER_VERCEL_TEAM_ID:-$$VERCEL_TEAM_ID}" \
 		RUNNER_VERCEL_PROJECT_ID="$${RUNNER_VERCEL_PROJECT_ID:-$$VERCEL_PROJECT_ID}" \
 		RUNNER_VERCEL_BINARY="$(CURDIR)/bin/runner-linux-amd64" \
 		WEAVE_LIVE_INGRESS_HOST="$$(cat tmp/tunnel/host)" \
-		go test -tags vercel_live -count=1 -v -timeout 20m -run Live ./internal/adapters/vercelsandbox/
+		WEAVE_LIVE_REGISTRY_HOST="$$(cat tmp/tunnel/registry-host)" \
+		go test -tags vercel_live -count=1 -v -timeout 25m -run Live ./internal/adapters/vercelsandbox/ ./services/registry-proxy/internal/proxy/
 
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)
