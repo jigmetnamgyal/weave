@@ -192,3 +192,31 @@ Review and merge. Then M5.4d.3: authenticated egress edge using the guarded
 transport and runner snapshots, match-free runner forwarding, and the admin UI,
 with live forwarding acceptance.
 
+## Implementation record
+
+- Domain: `internal/domain/egress.go` validation and namespace matching.
+- Contract: three OpenAPI operations; generated web types.
+- Database: migration 00015 and `db/queries/egress.sql`; triggers create an explicit
+  immutable snapshot for every runner INSERT, including old-manager syntax.
+- Application/store: `internal/application/egress.go`, `egress_config.go`,
+  `internal/adapters/postgres/egress.go`. Every read and mutation rechecks current
+  `workspace:manage` under the workspace lock; system actors cannot edit policy.
+  Mutation, audit and fenced idempotency completion commit together.
+- API: `services/api/internal/workspaces/egress.go`. Completed replays and key-reuse
+  mismatches recheck current authorization before answering; DELETE replays an
+  empty 204. `EGRESS_RESERVED_HOSTS` plus public service URLs are reserved; the
+  declaration is required in staging/production.
+
+## Verification record
+
+- Domain, application, HTTP and five PostgreSQL egress tests pass with `-race`.
+- Deliberate mutations fail their tests: cap trigger off, snapshot trigger off,
+  snapshot read policy broadened, system-actor guard removed, replay
+  reauthorization removed, reserved-host check removed, audit write removed.
+- Full integration suite: 21 packages pass, none skipped. Run directly because
+  `make test-integration` could not rebuild the Docker runner image (Docker Hub
+  DNS unreachable); the existing `weave-runner:dev` image was used.
+- `make lint`, `typecheck`, `test`, `build`, `sqlc-check`, `contracts-check` pass.
+  `make ci` fails only on formatting of pre-existing untracked `.claude/` files.
+
+No provider/live test: this slice changes no runtime network policy.
