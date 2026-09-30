@@ -1173,7 +1173,7 @@ export interface components {
              * @description Stable, machine-readable identifier. Clients branch on this rather than on `message`.
              * @enum {string}
              */
-            code: "unauthenticated" | "permission_denied" | "not_found" | "conflict" | "invalid_request" | "internal_error";
+            code: "unauthenticated" | "permission_denied" | "not_found" | "conflict" | "invalid_request" | "internal_error" | "egress_host_exists" | "egress_host_limit";
             /** @description Human-readable summary, safe to surface to an end user. */
             message: string;
             /** @description Correlates this response with server-side logs. Also returned in the `X-Request-Id` header. */

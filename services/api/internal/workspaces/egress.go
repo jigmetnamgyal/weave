@@ -138,9 +138,9 @@ func (e *egressRoutes) writeError(ctx context.Context, w http.ResponseWriter, er
 	case errors.Is(err, domain.ErrInvalidEgressHost), errors.Is(err, domain.ErrReservedEgressHost):
 		httpx.WriteError(ctx, w, 400, httpx.CodeInvalidRequest, err.Error())
 	case errors.Is(err, application.ErrEgressHostExists):
-		httpx.WriteError(ctx, w, 409, "egress_host_exists", "This hostname is already configured.")
+		httpx.WriteError(ctx, w, 409, httpx.CodeEgressHostExists, "This hostname is already configured.")
 	case errors.Is(err, application.ErrEgressHostLimit):
-		httpx.WriteError(ctx, w, 409, "egress_host_limit", "At most 20 additional hostnames are allowed.")
+		httpx.WriteError(ctx, w, 409, httpx.CodeEgressHostLimit, "At most 20 additional hostnames are allowed.")
 	case errors.Is(err, application.ErrEgressHostNotFound):
 		e.handler.notFound(ctx, w)
 	default:

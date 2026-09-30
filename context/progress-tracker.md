@@ -495,3 +495,16 @@ transport and snapshots, match-free runner forwarding, admin UI, live acceptance
 Operator decision (M5.4d.2 review): keep the plan — the admin settings screen
 ships with M5.4d.3, not as a separate earlier slice. Until then the additions API
 has no UI and changes no runner network access.
+
+### M5.4d.2 — PR #28 review round
+
+Four findings, all valid, all fixed. (1) `.env.example` now says which namespaces
+`EGRESS_RESERVED_HOSTS` must cover: prefer each parent domain; a per-service list
+must name web, API, event ingress, registry proxy and egress proxy; service URLs
+are only a backstop because an unset URL reserves nothing. (2) New integration
+test races runner creation against an in-flight host add and remove; the runner
+waits and its snapshot reflects the committed state. Disabling the runner-insert
+workspace-lock trigger makes it fail. (3) Parent spec 22 status updated. (4)
+`egress_host_exists`/`egress_host_limit` added to the `Error.code` enum and httpx
+constants; generated types regenerated. lint/typecheck/test/build and
+contracts/sqlc checks pass; all six PostgreSQL egress tests pass with `-race`.

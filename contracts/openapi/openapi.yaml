@@ -1824,6 +1824,8 @@ components:
             - conflict
             - invalid_request
             - internal_error
+            - egress_host_exists
+            - egress_host_limit
         message:
           type: string
           description: Human-readable summary, safe to surface to an end user.

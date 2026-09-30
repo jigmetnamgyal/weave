@@ -26,6 +26,10 @@ const (
 	CodeConflict = "conflict"
 	// CodeInvalidRequest covers malformed bodies and failed validation.
 	CodeInvalidRequest = "invalid_request"
+	// CodeEgressHostExists means the hostname is already configured.
+	CodeEgressHostExists = "egress_host_exists"
+	// CodeEgressHostLimit means the workspace already has 20 additions.
+	CodeEgressHostLimit = "egress_host_limit"
 )
 
 // requestIDHeader is both read from the client and echoed on the response, so

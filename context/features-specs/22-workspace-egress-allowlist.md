@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d — Workspace egress allowlist additions
 
-**Status: ADR-017 accepted; M5.4d.1 merged (43ec4c7, PR #27); M5.4d.2 API/snapshots spec started; edge/UI pending.**
+**Status: ADR-017 accepted; M5.4d.1 merged (43ec4c7, PR #27); M5.4d.2 API, audit, migration and runner snapshots implemented (PR #28); edge/UI pending (M5.4d.3).**
 
 ## Outcome
 
@@ -152,8 +152,11 @@ UI errors preserve entered text and explain that the previous policy is intact.
 
 ## Delivery status
 
-Partial implementation only. Guarded transport built in M5.4d.1 (`23-guarded-egress-transport.md`); not wired
-to runtime. No migration, API contract, public edge, policy changes or UI yet.
+Partial implementation. M5.4d.1 guarded transport (`23-guarded-egress-transport.md`)
+merged. M5.4d.2 (`24-workspace-egress-api-and-snapshots.md`, PR #28) adds the API
+contract, migration 00015, audited idempotent mutations and immutable runner
+snapshots — configuration only. Still pending (M5.4d.3): the public egress edge,
+runner forwarding policy and admin UI; no runtime network access changes yet.
 Staging still requires Vercel Pro, the nine-hour survival test and data-processing
 terms; Hobby results do not close those gates.
 

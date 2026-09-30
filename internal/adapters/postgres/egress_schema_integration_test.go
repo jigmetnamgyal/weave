@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -167,5 +168,76 @@ func TestEgressPersistedShapeAndIsolationIntegration(t *testing.T) {
 	var forced int
 	if err := owner.QueryRow(context.Background(), "SELECT count(*) FROM pg_class WHERE relname IN ('workspace_egress_hosts','runner_egress_snapshots') AND relrowsecurity AND relforcerowsecurity").Scan(&forced); err != nil || forced != 2 {
 		t.Fatalf("forced RLS: %d %v", forced, err)
+	}
+}
+
+// TestEgressSnapshotSerializesWithHostChangesIntegration is review feedback on
+// PR #28: a runner created while a host change is in flight must wait for it,
+// so its snapshot reflects one committed policy state. Without the runner-insert
+// workspace lock, the snapshot would read the pre-change list mid-transaction.
+func TestEgressSnapshotSerializesWithHostChangesIntegration(t *testing.T) {
+	owner, app := newPool(t), newAppPool(t)
+	f := seedSessionFixture(t, owner, "Egress Snapshot Race")
+	session, err := f.createSession(t, postgres.NewSessionStore(owner), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	store := postgres.NewRunnerStore(app)
+	tenant := postgres.WithTenantWorkspace(ctx, f.workspace.ID)
+
+	// change runs one host mutation in an open transaction the way the store
+	// does — workspace lock first — then races a runner creation against it.
+	race := func(t *testing.T, mutate string, args ...any) []string {
+		t.Helper()
+		tx, err := app.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.workspace_id',$1,true)", f.workspace.ID.String()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", f.workspace.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, mutate, args...); err != nil {
+			t.Fatal(err)
+		}
+
+		runner := uuid.New()
+		done := make(chan error, 1)
+		go func() {
+			_, err := store.Create(tenant, domain.Runner{ID: runner, SessionID: session.ID, WorkspaceID: f.workspace.ID, Backend: "test"})
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			t.Fatalf("runner creation did not wait for the in-flight host change (err=%v)", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("runner after commit: %v", err)
+		}
+		hosts, err := egressSnapshot(t, app, f.workspace.ID, runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.End(tenant, runner, f.workspace.ID, domain.RunnerTerminated, ""); err != nil {
+			t.Fatal(err)
+		}
+		return hosts
+	}
+
+	id := uuid.New()
+	if hosts := race(t, `INSERT INTO workspace_egress_hosts(id,workspace_id,hostname,created_by) VALUES($1,$2,$3,$4)`,
+		id, f.workspace.ID, "docs.example.com", f.owner.ID); len(hosts) != 1 || hosts[0] != "docs.example.com" {
+		t.Errorf("snapshot during an add = %v, want the committed addition", hosts)
+	}
+	if hosts := race(t, `DELETE FROM workspace_egress_hosts WHERE id=$1 AND workspace_id=$2`, id, f.workspace.ID); len(hosts) != 0 {
+		t.Errorf("snapshot during a removal = %v, want the committed removal", hosts)
 	}
 }
