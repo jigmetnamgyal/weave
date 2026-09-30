@@ -9,7 +9,7 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Review draft PR #34: M6.1b.2a immutable session input storage on `m6.1b2-session-inputs`
+Review PR #34: M6.1b.2a immutable session input storage on `m6.1b2-session-inputs`
 (spec 28): atomic locked-task title/body capture with existing agent-version pin,
 forced RLS and fail-closed missing reads. Document credential isolation/delivery
 requirements in proposed ADR-018; account/funding and secret-store choices need
@@ -826,7 +826,8 @@ recovery with data. Five security mutations caught: snapshot mutation, tenant
 policy, task locking, pin mutation and explicit workspace filtering. Full unit,
 lint/golangci-lint, typecheck, Go/web build, govulncheck and npm high/critical audit
 pass. Isolated full integration attempted; seven workflows blocked by local
-Temporal not listening on container port 7233. DB/NATS/Docker suite passes when
+host-mapped Temporal connection failures (earlier loopback diagnosis corrected
+below). DB/NATS/Docker suite passes when
 those workflows are explicitly skipped, not claimed as a full integration pass.
 Full format gate flags unrelated local Claude files; changed files pass. All
 test-owned databases and runner containers cleaned, user dev workers untouched.
@@ -838,10 +839,24 @@ and backend secret delivery; keys are long-lived provider capabilities, not
 session tokens. Account/funding (workspace-owned vs Weave-operated project),
 secret-store/hosting and opt-in spend choices require an owner decision. No CLI
 registration, provider key discovery, paid invocation, image or egress change.
-Next: restore local Temporal health/re-run workflows, review this PR, then decide
+Next: review this PR, then decide
 credential ownership before building authenticated input/credential delivery.
 
-Draft PR #34: https://github.com/jigmetnamgyal/weave/pull/34 (implementation
-80fd80c). Remains draft until local Temporal workflow integration can run.
-Ask before restarting the operator's Temporal container; do not stop unrelated
-dev processes or enable paid Claude execution.
+PR #34: https://github.com/jigmetnamgyal/weave/pull/34 (implementation 80fd80c).
+
+### PR #34 workflow verification unblocked
+
+User authorized restarting only the Temporal container. Host RPC connectivity
+recovered, and full isolated-DB race integration passes twice with workflow tests
+enabled. Verbose confirmation shows all seven previously blocked workflow tests
+run and pass. Temporary DBs and runner containers cleaned; other dev workers
+untouched. No paid invocation or runtime activation.
+
+Correction: the earlier inside-container probe used 127.0.0.1, not the image's
+configured service address. `temporal:7233` health reports SERVING; loopback refusal
+was not evidence the server was absent. The observed blocker was host RPC
+connection timeouts, not a proven unhealthy Temporal process.
+
+PR #34 can leave draft and enter review; merge still requires user authorization.
+Credential account/funding and secret-store choices remain pending; next deliverable
+is authenticated input/credential handoff only after those decisions.

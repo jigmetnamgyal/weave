@@ -1,6 +1,6 @@
 # M6.1b.2a — Immutable session inputs
 
-**Status: built for review on `m6.1b2-session-inputs`; full workflow integration is blocked by local Temporal availability.** Credential/runtime activation remains disabled.
+**Status: built for review on `m6.1b2-session-inputs`; full integration passes twice after the authorized local Temporal restart.** Credential/runtime activation remains disabled.
 
 ## Outcome
 
@@ -16,7 +16,7 @@ to the existing append-only agent version, without duplicating that truth.
 - Capture serializes against task edits and validates ready status and repository
   identity. Input/session identity and branch intent cannot be retargeted later.
 - Explicit tenant-scoped sqlc/store reader joins only the session's pinned agent
-  version. No public API, outbox payload, event or default log contains input text.
+  version. No new public API, outbox payload, event or default log exposes snapshot text.
 - Missing snapshots fail closed. Existing sessions remain without snapshots: it
   would be dishonest to reconstruct original task text from today's mutable row.
   Existing fake runs are unaffected; future real-runtime activation must refuse
@@ -43,7 +43,8 @@ by this slice. The fake adapter and M6 runtime activation gates remain unchanged
 ## Verification
 
 Run format, sqlc, unit/race tests, targeted database integration under owner and
-app roles, full integration with dev workers quiescent, lint, typecheck and build.
+app roles, full integration with isolated outbox DB/test-scoped queues and streams
+(or dev workers quiescent), lint, typecheck and build.
 Deliberate mutations must demonstrate snapshot immutability, tenant filtering and
 capture serialization. Report synthetic evidence separately from live CLI proof.
 
@@ -57,12 +58,16 @@ capture serialization. Report synthetic evidence separately from live CLI proof.
   remove task lock; permit pin/intent edits; bypass explicit store workspace filter.
 - Full unit/race tests, lint, golangci-lint, typecheck, Go/web build, govulncheck
   and npm high/critical audit pass. Existing moderate npm findings remain.
-- Full integration attempted with isolated DB and test-scoped queues/streams.
-  It caught a borrowed-repository error translation regression, now fixed while
-  preserving the existing test. Seven workflow tests could not connect to local
-  Temporal: inside-container health confirms nothing listening on port 7233.
-  Re-run with Temporal workflows explicitly skipped passes DB/NATS/Docker tests;
-  **not a full integration pass**. No user dev workers were stopped.
+- Full integration initially found a borrowed-repository error translation
+  regression, fixed while preserving the existing test. Workflow connections
+  through the host-mapped Temporal endpoint timed out. After the user-authorized
+  restart of only the Temporal container, the complete isolated-DB race
+  integration suite passes twice, with workflow tests enabled. Verbose rerun
+  confirms all seven previously blocked workflows actually run and pass.
+- Corrected earlier diagnosis: container loopback is not this image's configured
+  RPC address. Health at `temporal:7233` reports SERVING; loopback refusal was
+  not proof the container server was down. Host connectivity recovered after
+  restart. No other dev worker restarted/stopped; no test-owned DB/container remains.
 - Full format gate flags unrelated local `.claude/settings.local.json` and the
   pre-existing `.claude/worktrees/`; neither changed. Changed-file checks pass.
 - Draft 00016 applied locally; revised function definitions synced atomically
