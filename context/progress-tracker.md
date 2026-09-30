@@ -5,11 +5,11 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport built, awaiting review (PR #27)**; M5.4d.2 API/audit/snapshots and M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots and M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
-Review M5.4d.1, the built guarded resolver/dial transport and deterministic security
+Start M5.4d.2 after merge of M5.4d.1 (43ec4c7, PR #27), whose guarded transport and deterministic security
 tests defined by ADR-017 (`context/features-specs/23-guarded-egress-transport.md`). The operator approved a separate Weave egress proxy for
 workspace additions rather than waiting for provider verification or purchasing
 a DNS/private-network fixture. Approved rules remain: 20 exact ASCII hosts,
@@ -385,7 +385,7 @@ This is design only, not a closed security gate or changed runtime policy.
 setup required for this unit. Then M5.4d.2 contracted API/audit/snapshots, followed
 by M5.4d.3 edge/runner/UI and live forwarding. Existing staging gates still apply.
 
-### M5.4d.1 — guarded transport built, awaiting review
+### M5.4d.1 — guarded transport merged as 43ec4c7 (PR #27)
 
 `internal/adapters/guardedhttp` implements resolve-once, validate-all, numeric-only
 dialing with TLS original-host verification, no redirects/environment proxies,
@@ -413,3 +413,5 @@ current-phase/spec wording distinguishes built transport from pending runtime
 integration. Addressed CodeRabbit's top-level function-documentation warning
 with concise comments on private helpers and security regression tests. No
 runtime changes. Next: finish PR #27 checks/review, then M5.4d.2.
+
+PR #27 merged as 43ec4c7 with all checks green and both inline threads resolved.
