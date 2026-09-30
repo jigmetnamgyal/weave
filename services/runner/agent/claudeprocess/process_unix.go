@@ -3,7 +3,6 @@
 package claudeprocess
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,13 +12,13 @@ import (
 
 const processGroupsSupported = true
 
-// command creates an isolated process group and bounds exec pipe cleanup.
-func command(ctx context.Context, binary string, args []string, dir string, env []string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, binary, args...)
+// command creates a group without an exec context watcher: all numeric group
+// signals must go through the explicitly retired supervisor lease.
+func command(binary string, args []string, dir string, env []string) *exec.Cmd {
+	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return killGroup(cmd) }
 	cmd.WaitDelay = time.Second
 	return cmd
 }

@@ -340,3 +340,119 @@ func TestCancellationDuringFinalFailureDelivery(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+// TestRetiredGroupSignalsCannotTargetReusedIdentity deterministically simulates
+// numeric ID reuse: after retirement a stale callback must never reach the OS.
+func TestRetiredGroupSignalsCannotTargetReusedIdentity(t *testing.T) {
+	calls := 0
+	signals := &groupSignals{send: func() error { calls++; return nil }}
+	if err := signals.signal(); err != nil {
+		t.Fatal(err)
+	}
+	signals.retire()
+	if err := signals.signal(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("error=%v", err)
+	}
+	if calls != 1 {
+		t.Fatal("retired callback signaled a simulated unrelated group")
+	}
+}
+
+// TestRetirementJoinsAnInFlightSignal prevents reaping while a callback still holds the identity.
+func TestRetirementJoinsAnInFlightSignal(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	signals := &groupSignals{send: func() error { close(entered); <-release; return nil }}
+	sent := make(chan struct{})
+	go func() { _ = signals.signal(); close(sent) }()
+	<-entered
+	retired := make(chan struct{})
+	go func() { signals.retire(); close(retired) }()
+	select {
+	case <-retired:
+		close(release)
+		t.Fatal("retired while signal still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	<-sent
+	<-retired
+}
+
+// TestExitObservationRetainsTheChild proves awaitExit does not consume wait status.
+func TestExitObservationRetainsTheChild(t *testing.T) {
+	req := request(t, "ok")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := command(req.Executable, []string{"--version"}, req.Workdir, environment(req.Workdir, ""))
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	signals := &groupSignals{send: func() error { return killGroup(cmd) }}
+	reaped := false
+	defer func() {
+		if !reaped {
+			_ = signals.signal()
+			signals.retire()
+			_ = cmd.Wait()
+		}
+	}()
+	if err := awaitExit(ctx, cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	// Signal zero only while the child is retained. Reaping below consumes it.
+	if err := syscall.Kill(cmd.Process.Pid, 0); err != nil {
+		t.Fatal("exit observation released the owned identity")
+	}
+	_ = signals.signal()
+	signals.retire()
+	err := cmd.Wait()
+	reaped = true
+	if err != nil {
+		t.Fatalf("wait status was consumed or changed: %v", err)
+	}
+}
+
+// TestReapSignalsBeforeRelease checks actual exit status and signal ordering at the shared boundary.
+func TestReapSignalsBeforeRelease(t *testing.T) {
+	req := request(t, "ok")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := command(req.Executable, []string{"--version"}, req.Workdir, environment(req.Workdir, ""))
+	if cmd.Cancel != nil {
+		t.Fatal("hidden exec cancellation watcher bypasses the identity lease")
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	signals := &groupSignals{send: func() error {
+		calls++
+		if cmd.ProcessState != nil {
+			t.Fatal("numeric group signal followed reaping")
+		}
+		return killGroup(cmd)
+	}}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = signals.signal()
+			signals.retire()
+			_ = cmd.Wait()
+		}
+	}()
+	if err := awaitExit(ctx, cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	err := reap(cmd, signals, func() {})
+	waited = true
+	if err != nil {
+		t.Fatalf("exit status lost: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("signals before reaping=%d", calls)
+	}
+	if err := signals.signal(); !errors.Is(err, os.ErrProcessDone) || calls != 1 {
+		t.Fatal("stale callback reached a released identity")
+	}
+}

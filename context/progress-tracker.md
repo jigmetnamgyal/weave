@@ -772,3 +772,24 @@ package installed or actual Claude/model invoked; real-CLI isolation remains
 unverified. Credential ownership/delivery, input snapshots, image pin/terms and
 provider egress are still activation gates; agent.New continues to refuse Claude.
 Next: review/merge M6.1b.1, then resolve those activation boundaries.
+
+### PR #33 review fix — retain process identity until signaling ends
+
+The post-wait group kill could target a reused PGID. Both invocation and version
+probe now observe exit without reaping (Linux waitid/WNOWAIT; macOS kqueue), join
+all cancellation signals, kill remaining group members under a retained child
+identity, retire a mutex-protected signal lease, and only then Wait. No hidden
+exec-context watcher can signal after that boundary. Added reuse simulation,
+in-flight retirement, retained wait-status and signal-order tests. Two lifecycle
+mutations caught; runtime remains disabled. Existing x/sys v0.47.0 became direct,
+with no version/checksum changes.
+
+CI separately failed an existing Clerk test assuming no async fetch could finish
+before New returned. Library docs establish nonblocking registration, not no
+fetch. Replaced the counter race with a blocked-transport construction test;
+production auth behavior unchanged, only comments corrected. Changing registration
+to wait for fetch is caught by the new test. Clerk race suite passes ten repeats;
+process race suite three repeats, full unit suite/lint/Go build pass. Process
+coverage 88.7%; Linux cross-compile passes. Local native Linux Docker test could
+not complete its image pull; no test container remained. Current-head CI must
+verify Linux runtime. Next: finish PR #33 checks/review and obtain merge approval.

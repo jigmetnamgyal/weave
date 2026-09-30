@@ -37,6 +37,7 @@ var (
 	ErrVersion     = errors.New("claude process: unsupported CLI version")
 	ErrStart       = errors.New("claude process: start failed")
 	ErrDelivery    = errors.New("claude process: delivery failed")
+	ErrLifecycle   = errors.New("claude process: exit observation failed")
 	ErrCleanup     = errors.New("claude process: private state cleanup failed")
 	errExitTimeout = errors.New("claude process: exit deadline exceeded")
 )
@@ -105,7 +106,7 @@ func Run(ctx context.Context, req Request, emit func(context.Context, agent.Prov
 	defer deadlineCancel()
 	runCtx, cancel := context.WithCancelCause(deadlineCtx)
 	defer cancel(nil)
-	cmd := command(runCtx, req.Executable, arguments(req.Model), req.Workdir, environment(home, req.APIKey))
+	cmd := command(req.Executable, arguments(req.Model), req.Workdir, environment(home, req.APIKey))
 	cmd.Stdin = strings.NewReader(string(prompt))
 	cmd.Stderr = io.Discard
 	stdout, writer, err := os.Pipe()
@@ -121,17 +122,10 @@ func Run(ctx context.Context, req Request, emit func(context.Context, agent.Prov
 	_ = writer.Close()
 	// Explicitly own this read end, not Cmd.StdoutPipe: Wait must not discard
 	// buffered records. Cancellation also closes a read held open by descendants.
-	watchDone := make(chan struct{})
-	stop := context.AfterFunc(runCtx, func() {
-		defer close(watchDone)
-		_ = killGroup(cmd)
-		_ = stdout.Close()
-	})
-	defer func() {
-		if !stop() {
-			<-watchDone
-		}
-	}()
+	signals := &groupSignals{send: func() error { return killGroup(cmd) }}
+	stopWatch := watchCancellation(runCtx, signals, stdout)
+	defer stopWatch()
+
 	var failure *agent.ProviderEvent
 	deliveryFailed := false
 	result, decodeErr := claudestream.Decode(runCtx, stdout, req.SessionID, func(event agent.ProviderEvent) error {
@@ -149,12 +143,19 @@ func Run(ctx context.Context, req Request, emit func(context.Context, agent.Prov
 	if decodeErr != nil {
 		cancel(decodeErr)
 	}
-	// EOF alone cannot let a still-running process hang indefinitely.
-	timer := time.AfterFunc(ExitGrace, func() { cancel(errExitTimeout) })
-	waitErr := cmd.Wait()
-	timer.Stop()
-	// A child which closed stdout or finished must not leave background work.
-	_ = killGroup(cmd)
+	// Observe exit without reaping: the direct child pins its numeric group
+	// identity until all signal callbacks have joined and the lease is retired.
+	var exitErr error
+	if decodeErr == nil {
+		exitCtx, exitCancel := context.WithTimeout(runCtx, ExitGrace)
+		exitErr = awaitExit(exitCtx, cmd.Process.Pid)
+		exitCancel()
+		if exitErr != nil {
+			cancel(errExitTimeout)
+		}
+	}
+	waitErr := reap(cmd, signals, stopWatch)
+
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
 	}
@@ -166,6 +167,8 @@ func Run(ctx context.Context, req Request, emit func(context.Context, agent.Prov
 	}
 	code := ""
 	switch {
+	case errors.Is(exitErr, ErrLifecycle):
+		code = "claude_exit_observation_failed"
 	case errors.Is(context.Cause(runCtx), errExitTimeout):
 		code = "claude_exit_timeout"
 	case decodeErr != nil:
@@ -258,16 +261,35 @@ func probe(ctx context.Context, binary, home string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
 	output := &cappedOutput{}
-	cmd := command(probeCtx, binary, []string{"--version"}, home, environment(home, ""))
-	cmd.Stdout = output
+	cmd := command(binary, []string{"--version"}, home, environment(home, ""))
 	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	stdout, writer, err := os.Pipe()
+	if err != nil {
 		return ErrVersion
 	}
-	_ = killGroup(cmd)
+	defer func() { _ = stdout.Close() }()
+	cmd.Stdout = writer
+	if cmd.Start() != nil {
+		_ = writer.Close()
+		return ErrVersion
+	}
+	_ = writer.Close()
+	signals := &groupSignals{send: func() error { return killGroup(cmd) }}
+	stopWatch := watchCancellation(probeCtx, signals, stdout)
+	defer stopWatch()
+	_, readErr := io.Copy(output, stdout)
+	var exitErr error
+	if readErr == nil {
+		exitErr = awaitExit(probeCtx, cmd.Process.Pid)
+	}
+	waitErr := reap(cmd, signals, stopWatch)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if probeCtx.Err() != nil || readErr != nil || exitErr != nil || waitErr != nil {
+		return ErrVersion
+	}
+
 	if output.overflow || strings.TrimSpace(string(output.data)) != CLIVersion+" (Claude Code)" {
 		return ErrVersion
 	}

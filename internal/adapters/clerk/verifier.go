@@ -105,10 +105,10 @@ func New(ctx context.Context, cfg Config) (*Verifier, error) {
 
 	// WithWaitReady(false) is load-bearing: Register otherwise performs a
 	// synchronous first fetch and blocks until it succeeds, which would make
-	// this service refuse to start whenever Clerk is unreachable. Registering
-	// lazily means the first Verify populates the cache — under a bounded
-	// timeout — and the cache refreshes in the background from then on, so no
-	// request path waits on a key it already holds.
+	// this service refuse to start whenever Clerk is unreachable. Registration
+	// starts the initial fetch asynchronously, without waiting for it. The first
+	// Verify waits for readiness under its bounded lookup timeout; warm requests
+	// do not wait on a key the cache already holds.
 	if err := cache.Register(ctx, cfg.JWKSURL,
 		jwk.WithMinInterval(cfg.RefreshInterval),
 		jwk.WithWaitReady(false),
@@ -137,7 +137,7 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (application.Ide
 	lookupCtx, cancel := context.WithTimeout(ctx, v.cfg.LookupTimeout)
 	defer cancel()
 
-	// Because registration is lazy, the very first request may arrive before
+	// Because registration does not wait for the async initial fetch, the first request may arrive before
 	// the key set has been fetched. Ready blocks until it lands or the bounded
 	// context expires; once the cache is warm it returns immediately, so this
 	// costs nothing on the steady-state path.

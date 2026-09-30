@@ -43,6 +43,10 @@ CLI isolation remain separate activation gates.
 
 - Linux/macOS process groups, bounded run/probe contexts, group kill on context
   cancellation, decode/delivery refusal or teardown; reap the direct child.
+  Observe exit without reaping (Linux `waitid(WNOWAIT)`, macOS kqueue `NOTE_EXIT`),
+  join/retire all group-signaling callbacks and kill remaining group members
+  while the child PID is still retained, then call `Wait`. No group signal may
+  follow reaping, including in the version probe.
   Descendant termination is group-scoped, not a claim of arbitrary daemon/process
   escape containment (the sandbox owns that boundary).
 - OS stdout pipe ownership stays with the supervisor, so child exit cannot close
@@ -103,6 +107,28 @@ worker or paid-provider test is needed for this isolated primitive.
   bare mode, prompt in argv, ignored nonzero exit and killing only the leader
   instead of its process group. The descendant test explicitly cleans its owned
   synthetic PID even when a mutation disables group termination.
+
+## PR #33 review verification
+
+- Fixed the valid post-wait PID/PGID reuse finding for both runtime and version
+  probe. A mutex-protected signaling lease is retired before reaping; all
+  cancellation callbacks join before identity release. No hidden exec-context
+  watcher can bypass this fence.
+- Tests cover simulated ID reuse/stale callbacks, an in-flight signal joined by
+  retirement, non-reaping native exit observation and pre-reap signal ordering.
+  Mutations allowing retired signals and consuming exit status early are caught.
+- CI also exposed an existing Clerk startup-test race: the JWK cache begins
+  fetching asynchronously with `WithWaitReady(false)`, so a zero-fetch counter
+  at constructor return was not its guarantee. Replaced it with a blocked
+  transport proving construction does not wait for network completion, and
+  corrected comments only; authentication behavior is unchanged. The test catches
+  the mutation to `WithWaitReady(true)`; Clerk race suite passes ten repeats.
+- Process race tests pass three repeats, full unit suite, lint and Go build pass;
+  process coverage 88.7%. Linux cross-compilation passes. A local native Linux
+  Docker attempt could not complete the image pull; no test container remained.
+  Native Linux runtime validation is left to current-head CI.
+- Existing `golang.org/x/sys` v0.47.0 is now a direct import for Linux waitid;
+  no module version or checksum changed.
 
 ## Next
 
