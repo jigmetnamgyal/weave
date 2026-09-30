@@ -133,3 +133,23 @@ UI errors preserve entered text and explain that the previous policy is intact.
 Spec only. No migration, API contract, policy changes or UI implementation yet.
 Staging still requires Vercel Pro, the nine-hour survival test and data-processing
 terms; Hobby results do not close those gates.
+
+## Provider enforcement spike — partial result
+
+Source: https://vercel.com/docs/sandbox/concepts/firewall (checked during M5.4d).
+Vercel documents `subnets.deny` and says denied ranges override domain rules.
+The opt-in `TestLiveDeniedRangesOverrideAllowedHosts` confirms this for IPv4:
+GitHub returns its real server header under an exact hostname rule; the same
+rule with `0.0.0.0/0` denied cannot reach it. Removing the deny makes the test
+fail. The test deliberately forces IPv4; it makes no IPv6 claim.
+
+The create API rejected `::/0` with HTTP 400, `Invalid CIDR "::/0"`.
+Do not ship a deny list that assumes IPv6 CIDRs are accepted. Establish the
+provider's IPv6 connectivity and enforcement contract before choosing the policy.
+Production policy is unchanged: this is a live-only enforcement experiment.
+
+Still needed: a reachable controlled fixture at a forbidden address and a
+controlled authoritative DNS name that changes from public to forbidden answers.
+A connection failure against an address with no server would not prove filtering;
+likewise, curl's `--resolve` does not change the firewall's DNS resolution.
+The private-address/rebinding gate remains open. No feature implementation yet.

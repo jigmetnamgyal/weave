@@ -321,3 +321,16 @@ changes apply only to newly provisioned sandboxes, exact ASCII hostnames. The
 provider security gate remains open: existing live tests prove raw-IP denial and
 proxy-side hostname resolution, not denial of an allowed name resolving to a
 private address or rebinding. Do not treat those tests as proof of this gate.
+
+### M5.4d — provider enforcement spike (partial)
+
+Added live-only `internal/adapters/vercelsandbox/egress_ranges_live_test.go`.
+Confirmed Vercel accepts `subnets.deny` and an IPv4 deny overrides an allowed
+hostname: GitHub reached in the control, not reached with `0.0.0.0/0` denied.
+Mutation removing that deny fails the test. Tagged vet and lint pass. Sandbox
+cleanup checks pass; project listing confirms zero sandboxes and zero snapshots.
+No production policy changed. Vercel rejects IPv6 `::/0` (400 Invalid CIDR),
+so IPv6 enforcement requires investigation. Private-address and rebinding tests
+still need controlled DNS and a reachable forbidden-address fixture; an absent
+server or a `--resolve` probe is not sufficient evidence. Feature implementation
+remains gated on this verification, not on the already-approved policy choices.
