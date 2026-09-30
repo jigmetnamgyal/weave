@@ -9,13 +9,12 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Start M5.4d.2 after merge of M5.4d.1 (43ec4c7, PR #27), whose guarded transport and deterministic security
-tests defined by ADR-017 (`context/features-specs/23-guarded-egress-transport.md`). The operator approved a separate Weave egress proxy for
-workspace additions rather than waiting for provider verification or purchasing
-a DNS/private-network fixture. Approved rules remain: 20 exact ASCII hosts,
-future runner allocations only. M5.4d.2 adds the API/audit/store and immutable
-runner snapshots; M5.4d.3 wires the authenticated edge, runner and admin UI.
-All three are needed before declaring M5.4d complete. The transport is built; no public proxy or runtime wiring yet.
+Specify and build M5.4d.2 on `m5.4d2-allowlist-api` after M5.4d.1 merged as
+43ec4c7 (PR #27). Draft: `context/features-specs/24-workspace-egress-api-and-snapshots.md`.
+Scope: contracted tenant-scoped hostname CRUD, authorization, atomic audit and
+idempotency, concurrent cap enforcement, immutable runner snapshots. Before coding,
+resolve reserved-service configuration and snapshot creation/rolling-deploy details.
+No M5.4d.2 runtime implementation yet; forwarding and UI remain M5.4d.3.
 
 ## Product Milestones
 
@@ -415,3 +414,13 @@ with concise comments on private helpers and security regression tests. No
 runtime changes. Next: finish PR #27 checks/review, then M5.4d.2.
 
 PR #27 merged as 43ec4c7 with all checks green and both inline threads resolved.
+
+### M5.4d.2 — spec started after transport merge
+
+Created `24-workspace-egress-api-and-snapshots.md` against existing workspace
+Actor/AuditEvent and LockWorkspace patterns, runner creation and one-live index,
+and session API idempotency conventions. Defines API operations, error categories,
+cap/audit atomicity, empty-vs-missing snapshots, immutable retry semantics and
+rolling-deploy acceptance. No code/migration yet. Next: inspect reserved-host
+configuration and choose an atomic snapshot creation mechanism before contracting
+and implementing the API/store slice. No operator domain setup needed.

@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d — Workspace egress allowlist additions
 
-**Status: ADR-017 accepted; M5.4d.1 transport built, awaiting review; API/snapshots/edge/UI pending.**
+**Status: ADR-017 accepted; M5.4d.1 merged (43ec4c7, PR #27); M5.4d.2 API/snapshots spec started; edge/UI pending.**
 
 ## Outcome
 
