@@ -2,7 +2,7 @@ Read `CLAUDE.md` and spec `26-claude-code-adapter.md` first.
 
 # M6.1b.1 — Claude process supervisor
 
-**Status: built and verified, awaiting review on `m6.1b1-claude-process`. Runtime selection remains disabled.**
+**Status: merged as 3af964a (PR #33), with native Linux CI passing and review feedback resolved. Runtime selection remains disabled.**
 
 ## Bounded outcome
 
@@ -126,13 +126,13 @@ worker or paid-provider test is needed for this isolated primitive.
 - Process race tests pass three repeats, full unit suite, lint and Go build pass;
   process coverage 88.7%. Linux cross-compilation passes. A local native Linux
   Docker attempt could not complete the image pull; no test container remained.
-  Native Linux runtime validation is left to current-head CI.
+  Native Linux runtime validation subsequently passed in merge-head CI.
 - Existing `golang.org/x/sys` v0.47.0 is now a direct import for Linux waitid;
   no module version or checksum changed.
 
 ## Next
 
-Review the process primitive. Then define immutable task/agent input snapshots
+Define immutable task/agent input snapshots
 and a reviewed credential-delivery boundary; verify the pinned real CLI's
 repository-config isolation and terms/account approval in an explicitly opted-in
 sandbox test before enabling runtime selection or any tools.

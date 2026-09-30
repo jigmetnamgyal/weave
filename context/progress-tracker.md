@@ -5,16 +5,16 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization merged as cf1933c (PR #32)**, including the Next.js 16.3.8 security patch; **M6.1b.1 process supervisor built, awaiting review** on `m6.1b1-claude-process`; no real adapter enabled yet.
+- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization merged as cf1933c (PR #32)**, including the Next.js 16.3.8 security patch; **M6.1b.1 process supervisor merged as 3af964a (PR #33)**; no real adapter enabled yet.
 
 ## Current Goal
 
-Review M6.1b.1 on `m6.1b1-claude-process`: tool-disabled CLI process supervision,
-synthetic subprocess tests and safe lifecycle/exit semantics (spec 27). Then
-refine credential ownership/delivery, immutable task/agent input delivery, image
-pin/terms and real-CLI isolation acceptance before runtime activation. No paid
-invocation or local login reuse is enabled. Live session room/reconnect and its
-cursor pagination gate remain separate M6 slices.
+Define the next M6.1b slice: immutable task/agent input delivery and credential
+ownership/delivery before runtime activation. M6.1b.1 merged as 3af964a (PR #33)
+with native Linux CI passing and all review feedback resolved. Image pin/terms,
+provider egress and real-CLI isolation acceptance also remain activation gates.
+No paid invocation or local login reuse is enabled. Live session room/reconnect
+and its cursor pagination gate remain separate M6 slices.
 
 ## Product Milestones
 
@@ -26,7 +26,7 @@ cursor pagination gate remain separate M6 slices.
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Complete |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Complete in development; staging gates remain |
-| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a merged; M6.1b.1 built, awaiting review |
+| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a and M6.1b.1 merged; input/credential delivery next |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
 | M8 | Codex adapter, commit/pull-request delivery, usage ledger, and quotas | Not started |
 | M9 | Billing, production hardening, security review, runbooks, staging, and launch readiness | Not started |
@@ -793,3 +793,14 @@ process race suite three repeats, full unit suite/lint/Go build pass. Process
 coverage 88.7%; Linux cross-compile passes. Local native Linux Docker test could
 not complete its image pull; no test container remained. Current-head CI must
 verify Linux runtime. Next: finish PR #33 checks/review and obtain merge approval.
+
+### PR #33 merged — M6.1b.1 process supervisor
+
+User authorized the merge. Squash-merged PR #33 as 3af964a after rechecking the
+exact head, all current-head checks passing, no unresolved threads and no orphan
+inline comments. Greptile confirmed the signaling fix and no new blockers.
+Native Linux CI validates the non-reaping waitid path and Clerk startup-test
+repair; macOS race tests validate kqueue and signaling retirement. No actual
+Claude CLI/model run or provider registration was enabled.
+Next: scope immutable task/agent inputs and credential ownership/delivery;
+retain image/terms, provider egress and real-CLI isolation activation gates.

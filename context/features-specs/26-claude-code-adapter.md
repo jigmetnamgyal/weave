@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M6.1 — Claude Code adapter
 
-**Status: M6.1a merged as cf1933c (PR #32); M6.1b.1 process supervisor built, awaiting review (spec 27); no runtime adapter enabled.**
+**Status: M6.1a merged as cf1933c (PR #32); M6.1b.1 process supervisor merged as 3af964a (PR #33, spec 27); no runtime adapter enabled.**
 
 ## Outcome and boundary
 
@@ -168,7 +168,7 @@ select or retrieve one; no local OAuth/subscription login is reused.
 
 ## Next
 
-Review M6.1b.1 (spec 27), then refine authentication/credential ownership,
+Refine authentication/credential ownership,
 isolation from repository configuration, immutable task/agent input delivery and
 tool policy before process wiring or paid acceptance. Do not treat the local
 operator's CLI installation as a production integration.
