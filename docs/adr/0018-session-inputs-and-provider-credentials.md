@@ -1,6 +1,6 @@
 # ADR-018: Session input capture and proposed provider credential delivery
 
-- Status: Input-capture decision implemented for review; credential proposal pending owner decision
+- Status: Input-capture decision merged in PR #34 (2f50688); credential proposal pending owner decision
 - Date: 2026-10-01
 
 ## Context

@@ -9,11 +9,12 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Review PR #34: M6.1b.2a immutable session input storage on `m6.1b2-session-inputs`
-(spec 28): atomic locked-task title/body capture with existing agent-version pin,
-forced RLS and fail-closed missing reads. Document credential isolation/delivery
-requirements in proposed ADR-018; account/funding and secret-store choices need
-an owner decision. No credential retrieval or runtime activation in this slice.
+Decide credential account/funding and managed-secret-store ownership before
+implementing authenticated runner input/credential delivery. M6.1b.2a immutable
+session input storage merged as 2f50688 (PR #34), with review feedback resolved
+and merge-head CI passing. Workspace-owned provider API keys versus Weave-operated
+workspace-specific keys remain an explicit owner decision (proposed ADR-018).
+No secret retrieval, paid invocation or real adapter activation is enabled.
 
 ## Product Milestones
 
@@ -25,7 +26,7 @@ an owner decision. No credential retrieval or runtime activation in this slice.
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Complete |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Complete in development; staging gates remain |
-| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a and M6.1b.1 merged; input/credential delivery next |
+| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a and M6.1b.1 merged; input snapshots merged; credential ownership/delivery next |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
 | M8 | Codex adapter, commit/pull-request delivery, usage ledger, and quotas | Not started |
 | M9 | Billing, production hardening, security review, runbooks, staging, and launch readiness | Not started |
@@ -878,3 +879,15 @@ suite passes three repeats. No timeout/assertion relaxed. Lint/golangci-lint
 passes, sqlc regenerated without drift, no test DB/runner container remains.
 Next: current-head CI and review closeout; ask before merging PR #34. Credential
 account/funding and managed-secret-store choices still require an owner decision.
+
+### PR #34 merged — immutable session inputs
+
+User authorized squash merge. Rechecked exact head 1c3cb01, passing current-head
+CI, all four review surfaces, pagination and no unresolved/orphan comments.
+Merged as 2f50688. CodeRabbit rollback grant fix verified by effective privilege
+lifecycle test; full isolated integration passes with serialized packages and
+workflows enabled. Earlier parallel synthetic CLI probe deadline failures remain
+recorded, not hidden or weakened. Input storage is implemented; delivery and real
+Claude activation remain disabled. Main synchronized; unrelated worktree untouched.
+Next: owner decision on provider key account/funding and managed secret store;
+then authenticated input/credential delivery with allocation/revocation fencing.

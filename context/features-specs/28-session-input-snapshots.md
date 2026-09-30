@@ -1,6 +1,6 @@
 # M6.1b.2a — Immutable session inputs
 
-**Status: built for review on `m6.1b2-session-inputs`; full integration passes twice after the authorized local Temporal restart.** Credential/runtime activation remains disabled.
+**Status: merged as 2f50688 (PR #34), review feedback resolved and merge-head CI passing.** Credential/runtime activation remains disabled.
 
 ## Outcome
 
@@ -88,7 +88,7 @@ passes three repeats. Lint passes; test-owned DB/container cleanup verified.
 
 ## Next
 
-Review this storage slice; decide provider account/credential ownership, then
+Decide provider account/credential ownership and managed secret store, then
 build an authenticated runner input/credential handoff with immutable scope,
 size bounds, secret-store integration and sandbox-safe delivery. Agent instruction
 editing requires an explicit versioned field/contract in a later slice.
