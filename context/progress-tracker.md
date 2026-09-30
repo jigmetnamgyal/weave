@@ -5,15 +5,17 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); M5.4d.3a merged (a5271af, PR #29); workspace-creation fix merged (df55d96, PR #30); **M5.4d.3b admin screen built; user confirmed the walkthrough; PR #31 awaiting final checks and merge authorization**, before M6
+- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization built, awaiting review** on `m6.1-claude-code-adapter`; no real adapter enabled yet.
 
 ## Current Goal
 
-Review M5.4d.3b on `m5.4d3b-egress-admin-ui`: the admin screen for added hosts
-(spec `context/features-specs/25-egress-proxy-and-runner-wiring.md`). M5.4d.3a
-(a5271af, PR #29) and the workspace-creation fix (df55d96, PR #30) are merged. The
-user confirmed the operator walkthrough. Merge PR #31 after final checks and
-user authorization to complete M5.4d; M6 is next.
+PR #32 Next.js dependency repair is built and locally verified; await current-head CI and merge authorization.
+Review M6.1a on `m6.1-claude-code-adapter`: bounded offline Claude stream
+normalization, synthetic fixtures/tests and protocol evidence (spec 26). No
+runtime adapter or paid invocation is enabled. Next, refine M6.1b credential
+ownership/isolation, task/agent input delivery and tool policy before wiring
+process execution. Live session room/reconnect and its cursor pagination gate
+remain separate M6 slices.
 
 ## Product Milestones
 
@@ -24,8 +26,8 @@ user authorization to complete M5.4d; M6 is next.
 | M2 | Authentication, workspaces, membership, authorization matrix, and tenant isolation | Complete |
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Complete |
-| M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | In progress |
-| M6 | Claude Code adapter, normalized events, live session room, and reconnect | Not started |
+| M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Complete in development; staging gates remain |
+| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a built, awaiting review |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
 | M8 | Codex adapter, commit/pull-request delivery, usage ledger, and quotas | Not started |
 | M9 | Billing, production hardening, security review, runbooks, staging, and launch readiness | Not started |
@@ -632,3 +634,96 @@ Recorded as user-reported verification, not an independent browser run by the
 coding agent. PR #31 remains open; no merge authorization has been given yet.
 Next: finish current-head CI/review checks, obtain merge authorization, and
 merge PR #31 to complete M5.4d before beginning M6.
+
+### PR #31 merged; M6.1 started
+
+PR #31 squash-merged as ad8491c after current-head CI passed and all review
+threads were resolved; REST inline comments were cross-checked, with no orphans.
+The operator confirmed the walkthrough and authorized the merge. M5.4d is now
+complete. Started `m6.1-claude-code-adapter` with spec 26: first protocol evidence
+and offline normalization, then separately gated runtime/process wiring.
+Initial inspection found no task-text or provider-credential delivery in the
+current runner. Local Claude Code 2.1.285 help confirms available flag names,
+not wire semantics or security behavior. No paid invocation, model request or
+local login reuse occurred. No real adapter is implemented or enabled yet.
+Next: verify official protocol documentation and implement M6.1a offline tests;
+resolve runtime credentials, task inputs and tool policy before M6.1b.
+
+### M6.1a in progress — verified documentation and decoder boundary
+
+Fetched official headless, TypeScript message reference and streaming-output
+pages on 2026-09-30. The complete assistant stream is per content block; multiple
+records share an API message id, so outer record UUIDs—not API message IDs—will
+identify normalized messages. Spec 26 now defines a bounded single-turn offline
+decoder, complete-text-only emission, strict terminal result, safe failures and
+returned token usage without inventing an unsupported event type. No paid run
+or runtime adapter is enabled. Next: implement the decoder and synthetic tests.
+
+### M6.1a built — offline Claude stream normalization
+
+Implemented `services/runner/agent/claudestream` with bounded NDJSON reads,
+complete-block message identity scoped to the session, deduplication without
+copying deltas/result text, strict single terminal result, stable safe failures,
+usage sum/overflow checks and no raw metadata persistence. All emitted events
+are validated against the existing domain contract in tests. Unknown types and
+truncated/missing results fail closed; errors are fixed categories. No CLI
+execution, credentials or Claude adapter registration were added.
+
+Verification: runner/agent race tests repeated three times, 96.6% decoder
+coverage, a short fuzz run over 200,000 executions, and five deliberate mutations
+caught (result error flag, shared API identity, missing terminal, encoded payload
+cap and identity-count cap). Full unit tests, lint (six existing web warnings),
+build, typecheck, contracts and targeted formatting pass. Synthetic fixtures
+are not represented as live output. Protocol sources/hashes and unsupported
+features are recorded in `docs/runbooks/claude-stream-protocol.md`.
+Next: review/merge M6.1a, then specify M6.1b credential/input/tool boundaries;
+paid runtime execution remains disabled until those gates are verified.
+
+### PR #32 review fixes — terminal failure ordering and block drift
+
+Addressed two Greptile findings: assistant failure is now remembered and emitted
+once only after terminal-result/EOF validation, after all completed messages;
+unknown assistant content-block types are rejected instead of silently dropped.
+Known tool/thinking/redacted-thinking blocks remain ignored. Three regression
+checks fail on 70ab8c9 and pass after the fixes, plus a supported-block guard.
+Added function documentation in response to CodeRabbit's docstring warning.
+Verification: three repeated race runs, full unit suite, Go build, targeted
+lint, 98.3% coverage and a fresh fuzz smoke run over 319,000 executions. No paid
+run or runtime adapter registration. Next: finish PR #32 review/CI, obtain merge
+authorization, then refine M6.1b credential/input/tool boundaries.
+
+### PR #32 CI blocker — critical Next.js dependency advisory
+
+After a588439, the dependency-scan job failed on Next.js 16.3.4:
+GHSA-vcvr-r3jv-pc5j (RCE in next/og ImageResponse; advisory affected range
+16.2.0–16.3.5). npm's audit output recommends 16.3.8, outside the project's
+exact pin. This is not caused by the Go decoder changes and no dependency-gate
+exception was applied. The fifteen moderate transitive advisories remain.
+Next: a bounded dependency-upgrade fix with current Next docs, typecheck/build
+and audit verification before PR #32 can merge; retain all decoder review fixes.
+
+### PR #32 dependency repair in progress
+
+User authorized the critical Next.js advisory fix. Verified npm publishes
+Next.js and eslint-config-next 16.3.8; upgrading both exact 16.3.4 pins together,
+without force-audit changes. Acceptance: clean high/critical audit gate, lockfile
+consistency, lint, web tests, typecheck, production build and contract drift check.
+
+### PR #32 dependency repair built — Next.js 16.3.8
+
+Upgraded exact `next` and matching `eslint-config-next` pins from 16.3.4 to
+16.3.8, regenerated the lockfile, and verified its `npm ci --dry-run
+--ignore-scripts` consistency. Only Next-family package versions changed;
+no force-audit changes or unrelated dependency upgrade. `npm audit
+--audit-level=high` now passes: zero high/critical advisories, no Next advisory;
+the fifteen previously tracked moderate transitive advisories remain.
+
+Web regression tests (ten), lint (six existing warnings), route typegen/typecheck,
+production build and contracts check pass. Installed-version Next guides and
+AGENTS.md's bundled-doc pointers were checked. A separate local production
+server reported ready on 16.3.8, but route smoke requests timed out with Clerk
+connection-reset errors; no successful browser/route verification is claimed.
+That temporary server was stopped and port 3107 verified empty. The user's
+running 16.3.4 dev server was left untouched; restart `make dev` to use the patch.
+Next: current-head CI/review, then merge authorization for PR #32; signed-in
+runtime verification needs the operator's working Clerk session/environment.
