@@ -241,6 +241,13 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path str
 // the request open.
 func (h *Handler) stream(w http.ResponseWriter, body io.Reader, cancel context.CancelFunc) (stalled bool) {
 	control := http.NewResponseController(w)
+	// The write deadline is the connection's, not this response's. Go's HTTP/1
+	// server already clears it after each request (net/http server.go, after
+	// finishRequest), so a reused keep-alive connection is not affected; this
+	// clears it here too so the proxy does not depend on that detail (review
+	// of PR #29). TestAReusedConnectionOutlivesAStreamsWriteDeadline pins the
+	// behaviour either way.
+	defer func() { _ = control.SetWriteDeadline(time.Time{}) }()
 	idle := time.AfterFunc(h.idle, cancel)
 	defer idle.Stop()
 	buf := make([]byte, 32<<10)

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/netip"
 	"strings"
 	"sync"
@@ -400,4 +401,52 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.Write(p)
+}
+
+// TestAReusedConnectionOutlivesAStreamsWriteDeadline follows review feedback on
+// PR #29: the per-chunk write deadline is set on the connection, so a stale one
+// could fail the next response on a reused keep-alive connection. Go's HTTP/1
+// server clears it after each request, and the proxy clears it too; this pins
+// the outcome: two requests, one connection, a pause longer than the idle
+// bound between them, and the second is still answered.
+func TestAReusedConnectionOutlivesAStreamsWriteDeadline(t *testing.T) {
+	w := newWorld(t, nil)
+	w.handler = proxy.New(proxy.Config{PublicBase: base, Verifier: w.verifier, Authorizer: w.authorizer, Upstream: w.upstream,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), IdleTimeout: 150 * time.Millisecond})
+	server := httptest.NewServer(w.handler)
+	t.Cleanup(server.Close)
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 1}}
+	t.Cleanup(client.CloseIdleConnections)
+
+	do := func(path string) (int, bool) {
+		t.Helper()
+		r := forwarded("GET", host, path, w.token(t, host), nil)
+		req, err := http.NewRequest("GET", server.URL+"/e/"+host+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header = r.Header
+		reused := false
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+		}))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode, reused
+	}
+	if code, _ := do("/first"); code != 200 {
+		t.Fatalf("first: %d", code)
+	}
+	time.Sleep(400 * time.Millisecond) // well past the first stream's write deadline
+	code, reused := do("/second")
+	if !reused {
+		t.Fatal("the second request did not reuse the connection; the test proves nothing")
+	}
+	if code != 200 {
+		t.Errorf("second on the reused connection: %d, want 200", code)
+	}
 }

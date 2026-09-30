@@ -553,3 +553,12 @@ production composition; the live test stays Vercel-focused. (4) Refusals logged
 the cause's text, which can carry the sandbox name: they now log a category.
 Each fix's test fails when the fix is reverted. All local gates,
 `make test-integration` and the egress live test pass; project empty afterwards.
+
+PR #29, second review round: Greptile (P1) reported that the streaming write
+deadline outlives the response and would fail the next response on a reused
+keep-alive connection. Checked against Go 1.26: the HTTP/1 server clears the write
+deadline after every request itself, so the failure does not occur; a new test
+reusing one connection past the deadline passes even with the proxy's own clear
+removed. Kept an explicit clear as a safeguard, with an accurate comment, and the
+test as a regression check. Thread left open for a maintainer, since the claimed
+bug was not reproduced.
