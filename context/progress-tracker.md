@@ -9,7 +9,13 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Specify M5.4d workspace allowlist additions (`context/features-specs/22-workspace-egress-allowlist.md`) on branch `m5.4d-workspace-allowlist`. M5.4c is merged. The operator approved a cap of 20 additional hosts, future-provisioning-only changes and exact ASCII hostnames. Before implementation, verify Vercel enforces forbidden resolved addresses and DNS rebinding.
+Implement M5.4d.1, the guarded resolver/dial transport and deterministic security
+tests defined by ADR-017. The operator approved a separate Weave egress proxy for
+workspace additions rather than waiting for provider verification or purchasing
+a DNS/private-network fixture. Approved rules remain: 20 exact ASCII hosts,
+future runner allocations only. M5.4d.2 adds the API/audit/store and immutable
+runner snapshots; M5.4d.3 wires the authenticated edge, runner and admin UI.
+All three are needed before declaring M5.4d complete. No proxy implementation yet.
 
 ## Product Milestones
 
@@ -363,3 +369,18 @@ paid infrastructure, support submission or new live tests performed in this step
 A quick tunnel alone cannot supply a controlled rebinding fixture. The feature
 remains gated; resume with provider-supported evidence or a controlled reachable
 fixture, not an assumed private-address timeout.
+
+### M5.4d — guarded proxy approach approved and specified
+
+ADR-017 (`docs/adr/0017-workspace-egress-proxy.md`) records the operator's decision
+to enforce additions through a separate proxy instead of waiting for Vercel
+support or obtaining a domain. Updated M5.4d spec, architecture and ADR-013.
+Only added hosts use this new edge; default registry logging remains fixed-list.
+Authorize against immutable per-runner snapshots to preserve future-only changes;
+resolve, validate all answers, and dial numeric addresses with original-host TLS.
+Plaintext handling, resource bounds and deterministic rebinding tests are explicit.
+This is design only, not a closed security gate or changed runtime policy.
+
+**Next:** M5.4d.1 guarded transport and regression/mutation tests. No operator DNS
+setup required for this unit. Then M5.4d.2 contracted API/audit/snapshots, followed
+by M5.4d.3 edge/runner/UI and live forwarding. Existing staging gates still apply.

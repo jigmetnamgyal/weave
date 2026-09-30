@@ -2,6 +2,13 @@
 
 ## Status
 
+**Superseded prerequisite:** the operator approved ADR-017's Weave-enforced proxy
+for added hosts. Buying a domain, configuring a private fixture or waiting for
+Vercel support is no longer required to start M5.4d.1. The setup instructions
+below are retained for optional provider investigation, not the current critical
+path. Next: deterministic guarded resolver/dial tests; later, live authenticated
+forwarding through development quick tunnels. No enforcement is implemented yet.
+
 The hostname-additions feature is not implemented. The approved product rules
 are in `context/features-specs/22-workspace-egress-allowlist.md`. This runbook
 tracks the remaining provider-enforcement gate, not a production incident.

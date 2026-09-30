@@ -118,7 +118,13 @@ allowlist. Everything else Weave runs stays refused.)_
 **Workspace additions are self-serve for admins** — `workspace:manage`, the
 permission that already governs agent profiles — audited, capped in number,
 and hostname-only (no wildcards across a registrable domain). An addition
-applies to that workspace's sessions only.
+applies to that workspace's sessions only. ADR-017 extends this decision:
+additions are forwarded through a separate guarded Weave egress proxy, authorized
+against an immutable per-runner snapshot, rather than plainly allowed. The proxy
+validates resolved IPv4/IPv6 addresses and dials only validated numeric addresses
+with verified origin TLS. Approved policy: at most 20 additions, exact ASCII
+hostnames, changes affect new runner allocations only. This is a planned boundary;
+implementation and security acceptance remain pending.
 
 ## Consequences
 

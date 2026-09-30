@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d — Workspace egress allowlist additions
 
-**Status: policy rules approved by the operator; provider security verification pending before implementation.**
+**Status: operator-approved policy and proxy approach; ADR-017 accepted, implementation pending.**
 
 ## Outcome
 
@@ -10,6 +10,22 @@ Workspace owners and admins can authorize additional exact HTTPS destinations fo
 that workspace's runners, see the current additions, and remove them. Every
 change is attributable and audited. M5.4c remains intact: no addition can replace
 a default registry's forwarding rule or broaden the registry proxy's upstreams.
+
+## Enforcement approach — ADR-017
+
+Workspace-added hosts are forwarded, without match filters, to a separate
+`services/egress-proxy`. It authenticates Vercel OIDC, authorizes the exact host
+against an immutable runner provisioning snapshot, and resolves/validates/dials
+only public addresses with TLS hostname verification. No redirect following,
+environment proxy, hostname redial or plain-rule fallback is allowed. The
+registry proxy remains fixed-list and unchanged. Deterministic injected resolver
+and dial tests replace the need for a purchased domain/private-network fixture;
+real Vercel forwarding remains an opt-in end-to-end check.
+
+See `docs/adr/0017-workspace-egress-proxy.md` for the threat model, plaintext
+handling, resource bounds and snapshot semantics. Delivery is split into
+M5.4d.1 guarded transport, M5.4d.2 additions API/audit/snapshots, and M5.4d.3
+authenticated edge/runner/UI. None is independently the complete additions feature.
 
 ## Sources and existing boundary
 
@@ -37,7 +53,8 @@ in PostgreSQL, per ADR-009; do not introduce Clerk Organizations.
    and writes; mutations and audit rows commit in the same transaction.
 5. A bounded read at runner provisioning to compose additions with existing rules,
    without modifying registry forwarding or trusting a client-supplied policy.
-6. A workspace Security settings surface: list, add form, removal confirmation,
+6. The separate authenticated proxy and guarded transport described in ADR-017.
+7. A workspace Security settings surface: list, add form, removal confirmation,
    cap display, permission-denied, empty, loading, offline and retry states.
 
 Implementation should first contract and verify the store/API boundary, then
@@ -76,18 +93,21 @@ Approved by the operator after explanation of the tradeoffs:
 
 1. **Cap:** 20 additional hostnames per workspace (defaults excluded).
 2. **Effective time:** changes affect future provisioning only, including
-   retries that create a new sandbox. Existing sandboxes retain their policy until
+   new runner allocations. A retry for the same runner retains its immutable
+   snapshot. Existing sandboxes retain their policy until
    teardown. Removing a hostname does not immediately revoke active connections;
    the UI must say this and offer the existing session cancellation path.
 3. **Canonicalization:** lowercase ASCII hostnames, no trailing dot, no
    Unicode/IDN input, no wildcard; reject reserved/internal names. Document the
    exact reserved list from deployment configuration before implementation.
-## Remaining security gate
+## Security gate — revised by the operator-approved proxy approach
 
-**Private-destination guarantee:** demonstrate Vercel's firewall blocks public
-   names resolving to forbidden ranges, including rebinding. If it does not,
-   stop and select an enforcing design in an ADR; do not ship a DNS-check-only
-   workaround or claim compliance with ADR-013.
+Provider private-address/rebinding guarantees are no longer the prerequisite
+for workspace-added hosts. ADR-017 requires our guarded transport to enforce
+address validation and numeric dialing on every new upstream connection,
+including IPv6. The prior provider experiments remain observations, not guarantees.
+The implementation gate is now deterministic security verification, snapshot
+authorization and real forwarding acceptance. Do not claim it closed before tests.
 
 ## Failure behavior
 
@@ -121,8 +141,10 @@ UI errors preserve entered text and explain that the previous policy is intact.
   idempotency and concurrent cap enforcement.
 - Runner tests for tenant-scoped composition, registry-rule precedence and failed
   reads. Mutation checks remove each security guard and demonstrate test failures.
-- Opt-in Vercel acceptance: allow one controlled public test host, deny its
-  subdomain, test forbidden DNS answers and rebinding, and re-run the registry
+- Guarded-transport tests: changing DNS answers, forbidden/mixed address sets,
+  numeric-only dialing, TLS verification, redirects and canceled/timed-out reads.
+- Opt-in Vercel acceptance: forward one benign public host, deny its
+  subdomain, verify token/snapshot authorization, and re-run the registry
   forwarding matrix. Never run paid/live checks in CI. Stop `make dev` workers
   before integration/live session checks; tear down all sandboxes and snapshots.
 - Repository gates: `make ci`, `make test-integration`, `make test-vercel-live`
@@ -130,7 +152,7 @@ UI errors preserve entered text and explain that the previous policy is intact.
 
 ## Delivery status
 
-Spec only. No migration, API contract, policy changes or UI implementation yet.
+Spec only. No migration, API contract, guarded transport, policy changes or UI implementation yet.
 Staging still requires Vercel Pro, the nine-hour survival test and data-processing
 terms; Hobby results do not close those gates.
 
@@ -152,7 +174,9 @@ Still needed: a reachable controlled fixture at a forbidden address and a
 controlled authoritative DNS name that changes from public to forbidden answers.
 A connection failure against an address with no server would not prove filtering;
 likewise, curl's `--resolve` does not change the firewall's DNS resolution.
-The private-address/rebinding gate remains open. No feature implementation yet.
+That provider-dependent path is superseded by ADR-017 for added hosts; these
+observations are retained as history. The guarded-proxy implementation gate
+remains open. No feature implementation yet.
 
 ### IPv6 connectivity snapshot
 

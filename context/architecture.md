@@ -265,6 +265,16 @@ Production must not use a plain privileged Docker socket or mount the host files
 
 - **Every registry request is recorded before it is forwarded.** Default registry hosts are forwarded by Vercel's firewall to the registry proxy, with no `match` so no request escapes it; the proxy authenticates each by Vercel's sandbox OIDC token (issuer, project, and an audience bound to the exact route), resolves the runner, records method, host and path per session, then fetches — and refuses rather than forwards when it cannot record.
 
+**Decided in ADR-017 — planned, not implemented:** workspace-added destinations
+will use a separate authenticated egress proxy, not plain firewall rules or the
+fixed-list registry proxy. It authorizes against immutable runner snapshots,
+resolves and rejects forbidden IPv4/IPv6 answers on each new connection, and
+dials only validated numeric addresses with original-host TLS verification.
+No redirect following or environment proxy is allowed. This replaces waiting
+for provider DNS-rebinding guarantees for additions; existing default policy is
+unchanged. The new edge's plaintext handling and availability become Weave's
+responsibility. See ADR-017 for the implementation and verification gates.
+
 ## Reliability and Consistency
 
 - PostgreSQL is the source of truth for product state.
