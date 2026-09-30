@@ -7,11 +7,14 @@
 package config
 
 import (
-	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
-
 	"fmt"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"time"
+
+	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
 )
 
 // Config is what the runner manager needs to run.
@@ -29,14 +32,18 @@ type Config struct {
 	// GitBaseURL is where repositories are cloned from.
 	GitBaseURL string
 
-	// Backend names the RunnerBackend. Only "dev-docker" exists until M5.4b,
-	// and it is refused in staging and production.
+	// Backend names the RunnerBackend: "dev-docker", refused outside
+	// development and test, or "vercel" (M5.4b).
 	Backend      string
 	DockerSocket string
 	RunnerImage  string
 	// RunnerScope labels this manager's runners, so two managers — a
 	// developer's and a test's — never reconcile each other's away.
 	RunnerScope string
+
+	// Vercel is the Vercel Sandbox backend's configuration (M5.4b), read
+	// only when Backend is "vercel".
+	Vercel VercelConfig
 
 	// NATSSigningKey and NATSAccount mint each runner's broker credential
 	// (M5.5a, ADR-014). The signing key is a secret, read from a path; this
@@ -51,6 +58,26 @@ type Config struct {
 	// information and nothing else (ADR-014).
 	NATSURL   string
 	NATSCreds string
+}
+
+// VercelConfig is what the Vercel backend needs. The token is a secret: it
+// can create sandboxes that reach the internet, lives only in the runner
+// manager (like the NATS signing key), and is never logged.
+type VercelConfig struct {
+	Token     string
+	TeamID    string
+	ProjectID string
+	// Region is where sandboxes run: iad1 until Open Question 8 (initial
+	// hosting region) is answered.
+	Region string
+	// MaxSession is the plan's cap on one sandbox's life: 45m on Hobby, 24h
+	// on Pro. Stated, never defaulted: it is a fact about the account.
+	MaxSession time.Duration
+	// Lease overrides the backend's default lease; zero keeps it.
+	Lease time.Duration
+	// RunnerBinary is the runner built for the sandbox (linux/amd64), by
+	// `make runner-binary`.
+	RunnerBinary string
 }
 
 // Load reads the environment, reporting every missing value at once.
@@ -88,7 +115,7 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("RUNNER_NATS_ACCOUNT: %w", err)
 		}
 	}
-	cfg.RunnerNATSURL = get("RUNNER_NATS_URL", runnerReachable(get("NATS_URL", "")))
+	cfg.RunnerNATSURL = get("RUNNER_NATS_URL", runnerReachable(get("NATS_WEBSOCKET_URL", "")))
 	cfg.NATSURL = get("NATS_URL", "")
 	if cfg.AppEnv != "" {
 		if cfg.NATSCreds, err = natsauth.ResolvePath(cfg.AppEnv, get("RUNNER_MANAGER_NATS_CREDS", ""),
@@ -101,9 +128,9 @@ func Load() (Config, error) {
 	for key, value := range map[string]string{
 		"APP_ENV": cfg.AppEnv, "APP_DATABASE_URL": cfg.AppDatabaseURL, "TEMPORAL_HOST_PORT": cfg.TemporalHostPort,
 		"REDIS_URL": cfg.RedisURL, "GITHUB_APP_ID": cfg.GitHubAppID,
-		"GITHUB_APP_PRIVATE_KEY_PATH":   cfg.GitHubAppPrivateKeyPath,
-		"RUNNER_NATS_URL (or NATS_URL)": cfg.RunnerNATSURL,
-		"NATS_URL":                      cfg.NATSURL,
+		"GITHUB_APP_PRIVATE_KEY_PATH":             cfg.GitHubAppPrivateKeyPath,
+		"RUNNER_NATS_URL (or NATS_WEBSOCKET_URL)": cfg.RunnerNATSURL,
+		"NATS_URL": cfg.NATSURL,
 	} {
 		if value == "" {
 			missing = append(missing, key)
@@ -112,7 +139,84 @@ func Load() (Config, error) {
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
 	}
+	if err := validateRunnerNATSURL(cfg.AppEnv, cfg.RunnerNATSURL); err != nil {
+		return Config{}, err
+	}
+	if cfg.Backend == "vercel" {
+		if cfg.Vercel, err = loadVercel(cfg.AppEnv, get); err != nil {
+			return Config{}, err
+		}
+	}
 	return cfg, nil
+}
+
+// loadVercel reads the Vercel backend's configuration, reporting every
+// missing value at once. The runner binary defaults to the `make` output in
+// development and test only; anywhere else it is stated.
+func loadVercel(appEnv string, get func(key, fallback string) string) (VercelConfig, error) {
+	binaryDefault := ""
+	switch strings.ToLower(strings.TrimSpace(appEnv)) {
+	case "development", "test":
+		binaryDefault = "bin/runner-linux-amd64"
+	}
+	v := VercelConfig{
+		Token:        get("RUNNER_VERCEL_TOKEN", ""),
+		TeamID:       get("RUNNER_VERCEL_TEAM_ID", ""),
+		ProjectID:    get("RUNNER_VERCEL_PROJECT_ID", ""),
+		Region:       get("RUNNER_VERCEL_REGION", "iad1"),
+		RunnerBinary: get("RUNNER_VERCEL_BINARY", binaryDefault),
+	}
+	var missing []string
+	for key, value := range map[string]string{
+		"RUNNER_VERCEL_TOKEN": v.Token, "RUNNER_VERCEL_TEAM_ID": v.TeamID,
+		"RUNNER_VERCEL_PROJECT_ID": v.ProjectID, "RUNNER_VERCEL_BINARY": v.RunnerBinary,
+		"RUNNER_VERCEL_MAX_SESSION": get("RUNNER_VERCEL_MAX_SESSION", ""),
+	} {
+		if value == "" {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return VercelConfig{}, fmt.Errorf("RUNNER_BACKEND=vercel needs %s", strings.Join(missing, ", "))
+	}
+	var err error
+	if v.MaxSession, err = time.ParseDuration(get("RUNNER_VERCEL_MAX_SESSION", "")); err != nil || v.MaxSession <= 0 {
+		return VercelConfig{}, fmt.Errorf("RUNNER_VERCEL_MAX_SESSION must be a positive duration such as 45m or 24h")
+	}
+	if lease := get("RUNNER_VERCEL_LEASE", ""); lease != "" {
+		if v.Lease, err = time.ParseDuration(lease); err != nil || v.Lease <= 0 {
+			return VercelConfig{}, fmt.Errorf("RUNNER_VERCEL_LEASE must be a positive duration")
+		}
+	}
+	return v, nil
+}
+
+// validateRunnerNATSURL holds ADR-015's rule at startup: a runner reaches NATS
+// only through its WebSocket listener, and outside development and test only
+// over TLS. A nats:// URL is refused rather than left to fail later — a runner
+// credential cannot use the standard port, so every session would fail
+// broker_refused, which reads like a credential fault rather than a
+// misconfiguration.
+func validateRunnerNATSURL(appEnv, raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("RUNNER_NATS_URL %q is not a URL", raw)
+	}
+	switch parsed.Scheme {
+	case "wss":
+		return nil
+	case "ws":
+		switch strings.ToLower(strings.TrimSpace(appEnv)) {
+		case "development", "test":
+			return nil
+		}
+		return fmt.Errorf("RUNNER_NATS_URL must be wss:// outside development and test (APP_ENV=%q): "+
+			"runner events cross the internet (ADR-015)", appEnv)
+	default:
+		return fmt.Errorf("RUNNER_NATS_URL must be NATS's WebSocket listener (ws:// or wss://), not %q: "+
+			"runner credentials are refused on the standard port (ADR-015)", parsed.Scheme+"://")
+	}
 }
 
 // runnerReachable turns the host's NATS URL into one a local container can

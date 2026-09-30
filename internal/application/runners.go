@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +31,29 @@ var (
 	ErrRunnerBrokerRefused = errors.New("the runner's event broker credential did not work as scoped")
 	// ErrRunnerNotReady: readiness did not arrive within the allowed time.
 	ErrRunnerNotReady = errors.New("the runner did not become ready in time")
+	// ErrRunnerBackendRefused: the runner backend refused to create or start
+	// the environment — credentials rejected, a plan limit reached, or a
+	// request it will not accept. Retrying the same request cannot fix it, and
+	// the session's reason names the backend rather than GitHub or a checkout
+	// (M5.4b).
+	ErrRunnerBackendRefused = errors.New("the runner backend refused to start the session's environment")
 )
+
+// DefaultEgressHosts is ADR-013's default allowlist, as exact hostnames: git
+// over HTTPS to GitHub and the public package registries. The model
+// provider's host is M6's to add; the fake provider needs none. Workspace
+// additions are M5.4c's. Every host is exact — no wildcards — because a
+// hostname-enforcing firewall matches on the TLS SNI and a wildcard over a
+// shared domain reaches whatever else is behind it.
+var DefaultEgressHosts = []string{
+	"github.com", "codeload.github.com",
+	"registry.npmjs.org",
+	"pypi.org", "files.pythonhosted.org",
+	"proxy.golang.org", "sum.golang.org",
+	"crates.io", "static.crates.io", "index.crates.io",
+	"rubygems.org",
+	"repo1.maven.org", "repo.maven.apache.org",
+}
 
 // Exit codes the runner uses, so the backend's status can say *why* it
 // stopped without the control plane reading anything the runner wrote.
@@ -75,6 +100,12 @@ type RunnerSpec struct {
 	// from the session's pinned agent version.
 	Provider domain.Provider
 	Model    string
+	// EgressHosts is every hostname the environment may reach, exactly:
+	// DefaultEgressHosts plus the event ingress the runner publishes to
+	// (ADR-015). Built by the runner manager, never from input. A backend
+	// that enforces egress allows these and nothing else; the dev backend
+	// enforces nothing and is refused outside development (ADR-013).
+	EgressHosts []string
 }
 
 // RunnerCredentials is a runner's NATS identity.
@@ -137,6 +168,30 @@ type RunnerBackend interface {
 	// List returns every environment this backend holds.
 	List(ctx context.Context) ([]BackendRunner, error)
 }
+
+// RunnerLeaser is a backend whose environments stop on their own unless kept
+// alive: each is created with a short lease the runner manager extends while
+// its runner is live (M5.4b). A runner manager that stops extends nothing, so
+// its environments stop within one lease — teardown on lost heartbeat, from
+// the provider's side. Optional: the dev backend has no leases.
+type RunnerLeaser interface {
+	// ExtendLease pushes the runner's environment's expiry to a lease from
+	// now, never past the backend's hard cap. **By runner id**, not handle:
+	// the lease starts when the environment is created, before provisioning
+	// has recorded any handle, and must be renewable from then (review of
+	// PR #24). An environment already stopped or gone is not an error: there
+	// is nothing left to keep alive.
+	ExtendLease(ctx context.Context, runnerID uuid.UUID) error
+}
+
+// LeaseInterval is how often ExtendLeases runs. A tenth of the Vercel
+// backend's five-minute lease, so several passes can fail before one lapses.
+const LeaseInterval = 30 * time.Second
+
+// leaseWorkers bounds how many extensions run at once. A pass costs about
+// (live runners / leaseWorkers) × one API round trip: a thousand runners at
+// 100 ms is under 15 seconds, far inside a lease.
+const leaseWorkers = 8
 
 // RunnerToReconcile is a live runner seen across every workspace.
 type RunnerToReconcile struct {
@@ -363,11 +418,24 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 		NATS:        natsCreds,
 		Provider:    version.Provider,
 		Model:       version.Model,
+		EgressHosts: egressHosts(s.natsURL),
 	})
 	if err != nil {
 		return domain.Runner{}, fmt.Errorf("provision runner: %w", err)
 	}
 	return s.runners.SetHandle(ctx, runner.ID, workspaceID, handle)
+}
+
+// egressHosts is what a runner may reach: ADR-013's defaults and the event
+// ingress it publishes to, which ADR-015 makes the one Weave-operated host on
+// every allowlist. Only the hostname: the port is the firewall's business,
+// and the ingress is 443 wherever it is enforced.
+func egressHosts(natsURL string) []string {
+	hosts := append([]string(nil), DefaultEgressHosts...)
+	if parsed, err := url.Parse(natsURL); err == nil && parsed.Hostname() != "" {
+		hosts = append(hosts, strings.ToLower(parsed.Hostname()))
+	}
+	return hosts
 }
 
 // create inserts the runner row before anything exists in the backend.
@@ -657,23 +725,9 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 	// of the oldest, so a backlog of healthy old runners hid every newer one
 	// — including ended sessions and lost environments — and a full batch
 	// switched the orphan sweep off for good.
-	var (
-		live     []RunnerToReconcile
-		cursor   ReconcileCursor
-		complete bool
-	)
-	for page := 0; page < reconcileMaxPages; page++ {
-		batch, err := s.runners.ListToReconcile(ctx, ReconcileBatch, cursor)
-		if err != nil {
-			return 0, fmt.Errorf("list live runners: %w", err)
-		}
-		live = append(live, batch...)
-		if len(batch) < ReconcileBatch {
-			complete = true
-			break
-		}
-		last := batch[len(batch)-1].Runner
-		cursor = ReconcileCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	live, complete, err := s.listLive(ctx)
+	if err != nil {
+		return 0, err
 	}
 	cleaned := 0
 	known := make(map[uuid.UUID]bool, len(live))
@@ -757,6 +811,101 @@ func (s *RunnerService) Reconcile(ctx context.Context) (int, error) {
 	return cleaned, nil
 }
 
+// ExtendLeases keeps every live runner's environment alive for another
+// lease, on a backend that has leases (M5.4b). Run on its own ticker
+// (LeaseInterval), apart from Reconcile.
+//
+// **Apart, because Reconcile is slow by design and a lease is not.** The
+// first version extended each lease inside the reconcile pass, just before
+// that runner's status check — and a status check on Vercel waits up to two
+// seconds on a running command. A pass grew by that for every live runner,
+// the gap between two extensions of the same lease grew with it, and at a
+// hundred and fifty runners one pass outlasted the five-minute lease: healthy
+// sandboxes late in the pass would have stopped (review of PR #24). This pass
+// makes no status calls at all, and extends with bounded concurrency.
+//
+// Which runners: this backend's, provisioning or running, of a session that
+// has not ended. **With or without a handle** — a sandbox's lease starts at
+// its creation, and provisioning records the handle only after uploading,
+// installing and starting the runner, and across retries; a lease left
+// unrenewed through that would stop a sandbox a healthy workflow is still
+// provisioning. Terminating runners are being destroyed on purpose, and a
+// halted runner's environment is already gone.
+//
+// Failures are logged per runner, never fatal: a lease has several passes'
+// slack. It returns how many leases were extended.
+func (s *RunnerService) ExtendLeases(ctx context.Context) (int, error) {
+	leaser, ok := s.backend.(RunnerLeaser)
+	if !ok {
+		return 0, nil
+	}
+	live, _, err := s.listLive(ctx)
+	if err != nil {
+		return 0, err
+	}
+	due := make(chan domain.Runner)
+	var (
+		mu       sync.Mutex
+		extended int
+		wg       sync.WaitGroup
+	)
+	for range leaseWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for runner := range due {
+				if err := leaser.ExtendLease(ctx, runner.ID); err != nil {
+					s.logger.WarnContext(ctx, "could not extend a runner's lease",
+						slog.String("runner_id", runner.ID.String()), slog.String("error", err.Error()))
+					continue
+				}
+				mu.Lock()
+				extended++
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, item := range live {
+		runner := item.Runner
+		if runner.Backend != s.backend.Name() || item.SessionState.Terminal() ||
+			(runner.State != domain.RunnerProvisioning && runner.State != domain.RunnerRunning) {
+			continue
+		}
+		select {
+		case due <- runner:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	close(due)
+	wg.Wait()
+	return extended, ctx.Err()
+}
+
+// listLive reads every live runner across every workspace, a page at a time,
+// and reports whether the set is complete (false only past reconcileMaxPages).
+func (s *RunnerService) listLive(ctx context.Context) ([]RunnerToReconcile, bool, error) {
+	var (
+		live   []RunnerToReconcile
+		cursor ReconcileCursor
+	)
+	for page := 0; page < reconcileMaxPages; page++ {
+		batch, err := s.runners.ListToReconcile(ctx, ReconcileBatch, cursor)
+		if err != nil {
+			return nil, false, fmt.Errorf("list live runners: %w", err)
+		}
+		live = append(live, batch...)
+		if len(batch) < ReconcileBatch {
+			return live, true, nil
+		}
+		last := batch[len(batch)-1].Runner
+		cursor = ReconcileCursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+	return live, false, nil
+}
+
 // RunnerFailure is why a session's runner could not serve it, as a stable
 // code carried through workflow history. Like BranchFailure, only this
 // package's own words become the reason people read.
@@ -773,6 +922,7 @@ const (
 	RunnerFailureProviderUnavailable RunnerFailure = "provider_unavailable"
 	RunnerFailureEventsUnconfirmed   RunnerFailure = "events_unconfirmed"
 	RunnerFailureEventsNotDrained    RunnerFailure = "events_not_drained"
+	RunnerFailureBackendRefused      RunnerFailure = "backend_refused"
 	// RunnerFailureNoProvider is how every session ends until M5.5: the
 	// runner came up with a verified checkout, and there is no provider
 	// adapter to run in it yet.
@@ -793,6 +943,8 @@ func ClassifyRunnerFailure(err error) (RunnerFailure, bool) {
 		return RunnerFailureNoBranch, true
 	case errors.Is(err, ErrRunnerBrokerRefused):
 		return RunnerFailureBrokerRefused, true
+	case errors.Is(err, ErrRunnerBackendRefused):
+		return RunnerFailureBackendRefused, true
 	default:
 		return "", false
 	}
@@ -804,6 +956,8 @@ func SessionFailureReason(cause string) string {
 	switch RunnerFailure(cause) {
 	case RunnerFailureUnavailable:
 		return "the session's runner could not be started"
+	case RunnerFailureBackendRefused:
+		return "the runner backend refused to start the session's environment"
 	case RunnerFailureLost:
 		return "the session's runner stopped before it was ready"
 	case RunnerFailureNotReady:

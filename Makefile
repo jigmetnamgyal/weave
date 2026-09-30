@@ -31,13 +31,14 @@ APP_DATABASE_URL := $(shell . ./.env 2>/dev/null && echo $$APP_DATABASE_URL)
 TEMPORAL_HOST_PORT := $(shell . ./.env 2>/dev/null && echo $$TEMPORAL_HOST_PORT)
 # The event-ingestion tests run against a real JetStream; without this they skip.
 NATS_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_URL)
+NATS_WEBSOCKET_URL := $(shell . ./.env 2>/dev/null && echo $$NATS_WEBSOCKET_URL)
 
 .DEFAULT_GOAL := help
 
 .PHONY: help check-prereqs setup dev up down restart health logs clean \
         fmt fmt-check lint lint-go typecheck test test-integration build ci tidy tidy-check \
         migrate-up migrate-down migrate-status db-app-role sqlc sqlc-check \
-        contracts contracts-check runner-image nats-auth
+        contracts contracts-check runner-image runner-binary test-vercel-live nats-auth
 
 help: ## Show available commands
 	@echo "Weave — available commands:"
@@ -71,8 +72,8 @@ setup: check-prereqs .env ## Install dependencies and prepare the workspace
 dev: ## Start dependencies, the Go API and the web shell (one command)
 	@./scripts/dev.sh
 
-nats-auth: ## Generate local NATS credentials if missing (M5.5a)
-	@go run ./services/nats-setup -out infra/nats/generated
+nats-auth: .env ## Generate local NATS credentials if missing or outdated, restarting NATS onto them
+	@./scripts/nats-setup.sh
 
 up: .env nats-auth ## Start the dependency containers and wait until healthy
 	@$(COMPOSE) up --detach --wait
@@ -143,8 +144,9 @@ test-integration: .env runner-image ## Run integration tests against the local d
 	@test -n "$(APP_DATABASE_URL)" || (echo "APP_DATABASE_URL is empty, so the row-level-security tests would skip. Add it to .env — see .env.example." && exit 1)
 	@test -n "$(TEMPORAL_HOST_PORT)" || (echo "TEMPORAL_HOST_PORT is empty, so the session-workflow tests would skip. Add it to .env — see .env.example." && exit 1)
 	@test -n "$(NATS_URL)" || (echo "NATS_URL is empty, so the event-ingestion tests would skip. Add it to .env — see .env.example." && exit 1)
+	@test -n "$(NATS_WEBSOCKET_URL)" || (echo "NATS_WEBSOCKET_URL is empty, so runners have no way to reach NATS (ADR-015). Add it to .env — see .env.example." && exit 1)
 	@TEST_DATABASE_URL="$(DATABASE_URL)" TEST_APP_DATABASE_URL="$(APP_DATABASE_URL)" \
-		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" TEST_NATS_URL="$(NATS_URL)" \
+		TEST_TEMPORAL_HOST_PORT="$(TEMPORAL_HOST_PORT)" TEST_NATS_URL="$(NATS_URL)" TEST_NATS_WEBSOCKET_URL="$(NATS_WEBSOCKET_URL)" \
 		TEST_DOCKER_SOCKET="$${RUNNER_DOCKER_SOCKET:-/var/run/docker.sock}" \
 		TEST_NATS_AUTH_DIR="$(CURDIR)/infra/nats/generated" \
 		go test -race -count=1 -run 'Integration|Test' $(GO_PKGS)
@@ -155,6 +157,28 @@ runner-image: ## Build the local session runner image (dev backend)
 		go build -trimpath -o bin/runner-image/weave-runner ./services/runner
 	@docker build -q -t weave-runner:dev -f infra/runner/Dockerfile bin/runner-image >/dev/null
 	@echo "Built weave-runner:dev"
+
+# The runner for Vercel sandboxes (M5.4b). Always linux/amd64 — the default
+# sandbox image is x86_64, measured with `uname -m` — whatever this machine is.
+# The Vercel backend uploads it at provision and checks its SHA-256 there.
+runner-binary: ## Build the session runner for Vercel sandboxes (linux/amd64)
+	@mkdir -p bin
+	@GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/runner-linux-amd64 ./services/runner
+	@echo "Built bin/runner-linux-amd64"
+
+# The Vercel backend's live acceptance test (M5.4b): ADR-013's checklist against
+# the real account in .env. Opt-in, never in CI. Needs the development tunnel
+# (scripts/dev-tunnel.sh start) for the event-ingress host. VERCEL_* in .env
+# are mapped to the runner manager's names for this command only.
+test-vercel-live: .env runner-binary ## Run the Vercel backend's live acceptance test (creates real sandboxes)
+	@test -s tmp/tunnel/host || (echo "Start the tunnel first: scripts/dev-tunnel.sh start" && exit 1)
+	@set -a && . ./.env && set +a && \
+		RUNNER_VERCEL_TOKEN="$${RUNNER_VERCEL_TOKEN:-$$VERCEL_TOKEN}" \
+		RUNNER_VERCEL_TEAM_ID="$${RUNNER_VERCEL_TEAM_ID:-$$VERCEL_TEAM_ID}" \
+		RUNNER_VERCEL_PROJECT_ID="$${RUNNER_VERCEL_PROJECT_ID:-$$VERCEL_PROJECT_ID}" \
+		RUNNER_VERCEL_BINARY="$(CURDIR)/bin/runner-linux-amd64" \
+		WEAVE_LIVE_INGRESS_HOST="$$(cat tmp/tunnel/host)" \
+		go test -tags vercel_live -count=1 -v -timeout 20m -run Live ./internal/adapters/vercelsandbox/
 
 build: ## Build the API binary and the web application (CI gate)
 	@go build $(GO_PKGS)

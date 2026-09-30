@@ -28,7 +28,6 @@ import (
 	temporalclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/jigmetnamgyal/weave/internal/adapters/devdocker"
 	"github.com/jigmetnamgyal/weave/internal/adapters/eventstream"
 	githubadapter "github.com/jigmetnamgyal/weave/internal/adapters/github"
 	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
@@ -36,6 +35,7 @@ import (
 	weaveredis "github.com/jigmetnamgyal/weave/internal/adapters/redis"
 	weavetemporal "github.com/jigmetnamgyal/weave/internal/adapters/temporal"
 	"github.com/jigmetnamgyal/weave/internal/application"
+	runnerbackend "github.com/jigmetnamgyal/weave/services/runner-manager/internal/backend"
 	"github.com/jigmetnamgyal/weave/services/runner-manager/internal/config"
 )
 
@@ -62,7 +62,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backend, err := newBackend(cfg)
+	backend, err := runnerbackend.New(cfg)
 	if err != nil {
 		return err
 	}
@@ -116,6 +116,30 @@ func run() error {
 		return fmt.Errorf("connect to temporal at %s: %w", cfg.TemporalHostPort, err)
 	}
 	defer temporalClient.Close()
+
+	// Leases on their own ticker, never inside a reconcile pass: a pass's
+	// status reads wait on running commands, and lease renewal must not grow
+	// with them (review of PR #24). Once now, too — a restarted runner
+	// manager's sandboxes may be close to the end of their lease. Started before
+	// startup reconciliation, which reads every runner's status and can be slow.
+	go func() {
+		renew := func() {
+			if _, err := runners.ExtendLeases(ctx); err != nil && ctx.Err() == nil {
+				logger.Warn("lease renewal failed", slog.String("error", err.Error()))
+			}
+		}
+		renew()
+		ticker := time.NewTicker(application.LeaseInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renew()
+			}
+		}
+	}()
 
 	// Before taking work: finish what a previous instance left behind.
 	if cleaned, err := runners.Reconcile(ctx); err != nil {
@@ -185,23 +209,6 @@ func run() error {
 		return nil
 	case err := <-healthFailed:
 		return fmt.Errorf("runner-manager health server: %w", err)
-	}
-}
-
-// newBackend builds the configured RunnerBackend.
-//
-// Only the dev backend exists until M5.4b, and devdocker.New refuses staging
-// and production — so a deployment without a production backend fails to
-// start rather than running untrusted code in a container.
-func newBackend(cfg config.Config) (application.RunnerBackend, error) {
-	switch cfg.Backend {
-	case devdocker.BackendName:
-		return devdocker.New(devdocker.Config{
-			AppEnv: cfg.AppEnv, Socket: cfg.DockerSocket, Image: cfg.RunnerImage, Scope: cfg.RunnerScope,
-		})
-	default:
-		return nil, fmt.Errorf("unknown RUNNER_BACKEND %q; only %q exists until the production backend (M5.4b)",
-			cfg.Backend, devdocker.BackendName)
 	}
 }
 

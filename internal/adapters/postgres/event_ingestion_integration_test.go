@@ -156,8 +156,9 @@ func (b testBroker) ingest(t *testing.T, store application.EventStore) {
 func runnerBroker(t *testing.T) testBroker {
 	t.Helper()
 	url, dir := os.Getenv("TEST_NATS_URL"), os.Getenv("TEST_NATS_AUTH_DIR")
-	if url == "" || dir == "" {
-		t.Skip("TEST_NATS_URL and TEST_NATS_AUTH_DIR are not set; run `make test-integration`")
+	wsURL := os.Getenv("TEST_NATS_WEBSOCKET_URL")
+	if url == "" || dir == "" || wsURL == "" {
+		t.Skip("TEST_NATS_URL, TEST_NATS_WEBSOCKET_URL and TEST_NATS_AUTH_DIR are not set; run `make test-integration`")
 	}
 	conn, err := nats.Connect(url, testNATSAuth()...)
 	if err != nil {
@@ -178,7 +179,9 @@ func runnerBroker(t *testing.T) testBroker {
 	if err != nil {
 		t.Fatalf("load issuer: %v", err)
 	}
-	fromContainer := strings.Replace(strings.Replace(url, "://localhost:", "://host.docker.internal:", 1),
+	// Runners reach NATS only through its WebSocket listener (ADR-015): their
+	// credentials are refused on the standard port the test itself uses.
+	fromContainer := strings.Replace(strings.Replace(wsURL, "://localhost:", "://host.docker.internal:", 1),
 		"://127.0.0.1:", "://host.docker.internal:", 1)
 	return testBroker{issuer: issuer, natsURL: fromContainer, cfg: cfg, js: js}
 }

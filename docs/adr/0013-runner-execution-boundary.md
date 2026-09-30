@@ -3,7 +3,8 @@
 - Status: Accepted
 - Date: 2026-09-28 (decided before M5.4, the first unit to run customer code)
 - Amended: 2026-09-29 by ADR-015 (runner event ingress); provider selected
-  the same day (see "Provider selection" below)
+  the same day (see "Provider selection" below); 2026-09-30 by M5.4b's
+  implementation (see "Threat model after M5.4b" below)
 
 ## Context
 
@@ -157,3 +158,47 @@ applies to that workspace's sessions only.
 gVisor); per-minute cost exceeds a cluster's at measured load; a customer
 requires source to stay in their own cloud account (bring-your-own-runner);
 or install times breach the first-session goal (per-workspace cache).
+
+## Threat model after M5.4b (2026-09-30)
+
+M5.4b changed the egress policy and secret injection, which the project's
+protected-files rule requires to be recorded here. What moved, what was
+verified live on Vercel Hobby, and what M6 inherits:
+
+- **Where untrusted code runs.** On Vercel's Firecracker microVMs, not a
+  container on a shared kernel. Weave's only inbound surface from a sandbox
+  is the event ingress (ADR-015); a runner credential is refused on the
+  internal NATS port and every service credential on the public listener,
+  verified through the development tunnel.
+- **Egress, enforced and measured.** Every sandbox gets an explicit policy of
+  exact hostnames — the defaults above plus the ingress — never `allow-all`
+  and never a wildcard; an empty policy is `deny-all`. Live: the defaults and
+  the ingress answered; an unlisted host, an unlisted subdomain of an allowed
+  one, port 80, a raw IP, cloud metadata, a private address and port 22 did
+  not; an unlisted name did not resolve; and an allowlisted SNI aimed at
+  another address still reached the real host.
+- **Secret injection.** The git token and the broker credential travel in
+  exactly one API request — the runner's start command's own environment —
+  never in the sandbox's create-time environment (inherited by every later
+  command), never in arguments (returned by the API), never in an error
+  message. They transit Vercel's API, which is accepted: the provider already
+  holds the environment they are used in. A search of the whole filesystem,
+  as root, found neither.
+- **Privilege inside the sandbox.** Vercel's default user has passwordless
+  sudo. The runner runs as `weave-runner`, created without it, entered
+  through `setpriv --no-new-privs`: live, `sudo` failed for it with and
+  without no-new-privs, and it held no capabilities. **M6 must run the agent
+  as a third user, neither the default user nor the runner's**, so the agent
+  can neither sudo nor read the runner's credentials.
+- **Retention.** Sandboxes are created `persistent: false`; teardown verifies
+  and removes any snapshot. Live: none after a lapsed lease, an explicit stop,
+  or deletion, and none in the project after a full session.
+- **Teardown on lost heartbeat.** A sandbox lives on a five-minute lease the
+  runner manager extends; live, an unextended one-minute lease stopped its
+  sandbox at 59 seconds.
+- **Found live, not in the reference:** a command's exit is reported only to
+  a read with `wait=true`; the adapter reads it that way, bounded, so a
+  finished runner is never mistaken for a running one.
+- **Open, on the staging gate:** a command's optional timeout is capped at
+  five hours, and a session may run eight. The runner is started without one;
+  the nine-hour survival run must show it is not killed at five.

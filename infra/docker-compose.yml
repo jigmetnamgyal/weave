@@ -67,14 +67,16 @@ services:
     # file holds public JWTs only; the seeds stay on the host. `make up`
     # generates it with services/nats-setup when it is missing.
     #
-    # -sd points at a storage directory of its own for operator mode. A volume
-    # from before M5.5a holds a stream created in the unauthenticated default
-    # account ($G), which does not exist in operator mode: NATS cannot recover
-    # it and reports unhealthy, so an upgraded stack would not start. A fresh
-    # directory starts clean without anyone deleting a volume. What is left in
-    # /data/jetstream is un-ingested development events only — the session
-    # history lives in PostgreSQL — and is ignored, not destroyed.
-    command: ["-js", "-sd", "/data/operator", "-m", "8222", "-c", "/etc/nats/weave.conf"]
+    # JetStream's storage directory is set by the generated configuration,
+    # keyed on the application account (M5.4b). A stream belongs to its
+    # account, and NATS cannot recover one whose account it no longer knows —
+    # $G's from before M5.5a, or a previous setup's after regeneration — and
+    # reports unhealthy, so an upgraded stack would not start. A directory per
+    # setup starts clean without anyone deleting a volume. What older
+    # directories hold is un-ingested development events only — the session
+    # history lives in PostgreSQL — and is ignored, not destroyed; `make clean`
+    # removes the volume.
+    command: ["-js", "-m", "8222", "-c", "/etc/nats/weave.conf"]
     ports:
       # Bound to loopback by default. Runner containers reach it through
       # host.docker.internal, which Docker Desktop (macOS, Windows) routes to
@@ -83,6 +85,12 @@ services:
       # to the bridge address (typically 172.17.0.1) and RUNNER_NATS_URL to
       # match. See .env.example.
       - "${NATS_BIND:-127.0.0.1}:${NATS_PORT:-54222}:4222"
+      # The WebSocket listener (ADR-015, M5.4b): the only way a runner
+      # reaches NATS, on every backend. Runner credentials are refused on the
+      # standard port above, and service credentials here. Plain ws:// on
+      # loopback in development; a Cloudflare tunnel fronts it with TLS for
+      # Vercel sandboxes. Same NATS_BIND caveat on Linux as above.
+      - "${NATS_BIND:-127.0.0.1}:${NATS_WEBSOCKET_PORT:-54280}:8080"
       - "127.0.0.1:${NATS_MONITORING_PORT:-58222}:8222"
     volumes:
       - nats-data:/data

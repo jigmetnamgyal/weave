@@ -42,12 +42,12 @@ type SessionWorkflowInput struct {
 // and a workflow retrying that for a minute before failing helps nobody.
 func activityOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
+		StartToCloseTimeout: defaultActivityStartToClose,
 		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    time.Second,
-			BackoffCoefficient: 2,
-			MaximumInterval:    30 * time.Second,
-			MaximumAttempts:    5,
+			InitialInterval:    retryInitialInterval,
+			BackoffCoefficient: retryBackoffCoefficient,
+			MaximumInterval:    retryMaximumInterval,
+			MaximumAttempts:    defaultActivityAttempts,
 			NonRetryableErrorTypes: []string{
 				ErrorTypeNotFound,
 				ErrorTypeTransitionNotAllowed,
@@ -231,15 +231,22 @@ func branchFailureCause(err error, exhausted string) (string, bool) {
 // runner it had started. Three attempts: provisioning is idempotent, but a
 // backend that fails three times is not going to succeed on the fourth.
 func runnerActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
+	return provisionActivityOptions(RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName))
+}
+
+// provisionActivityOptions are runnerActivityOptions for a known queue, so the
+// bound MaxRunnerLifetime counts can be checked against the options
+// themselves without a workflow context.
+func provisionActivityOptions(queue string) workflow.ActivityOptions {
 	return workflow.ActivityOptions{
-		TaskQueue:           RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
-		StartToCloseTimeout: RunnerReadyTimeout + time.Minute,
+		TaskQueue:           queue,
+		StartToCloseTimeout: RunnerReadyTimeout + provisionOverhead,
 		HeartbeatTimeout:    30 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    time.Second,
-			BackoffCoefficient: 2,
-			MaximumInterval:    30 * time.Second,
-			MaximumAttempts:    3,
+			InitialInterval:    retryInitialInterval,
+			BackoffCoefficient: retryBackoffCoefficient,
+			MaximumInterval:    retryMaximumInterval,
+			MaximumAttempts:    provisionAttempts,
 			NonRetryableErrorTypes: []string{
 				ErrorTypeNotFound, ErrorTypeTransitionNotAllowed, ErrorTypeRunnerRefused,
 			},
@@ -373,8 +380,13 @@ const DrainScheduleToClose = application.DrainTimeout + 5*time.Minute
 // drainActivityOptions govern halting and draining: short, heartbeating, and
 // retried, since both are idempotent.
 func drainActivityOptions(ctx workflow.Context) workflow.ActivityOptions {
+	return drainActivityOptionsFor(RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName))
+}
+
+// drainActivityOptionsFor are drainActivityOptions for a known queue.
+func drainActivityOptionsFor(queue string) workflow.ActivityOptions {
 	return workflow.ActivityOptions{
-		TaskQueue:              RunnerTaskQueue(workflow.GetInfo(ctx).TaskQueueName),
+		TaskQueue:              queue,
 		ScheduleToCloseTimeout: DrainScheduleToClose,
 		StartToCloseTimeout:    application.DrainTimeout + 2*time.Minute,
 		HeartbeatTimeout:       time.Minute,
