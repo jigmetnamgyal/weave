@@ -5,15 +5,16 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1 Claude Code adapter planning in progress** on `m6.1-claude-code-adapter`; no real adapter enabled yet.
+- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization built, awaiting review** on `m6.1-claude-code-adapter`; no real adapter enabled yet.
 
 ## Current Goal
 
-Start M6.1a: verify Claude Code's current official stream protocol, then build
-bounded offline normalization and tests against the existing runner-side adapter
-contract. Spec: `context/features-specs/26-claude-code-adapter.md`. Runtime
-credential delivery, task/agent input delivery and tool permissions are separate
-M6.1b gates; do not run paid sessions or reuse the operator's local login yet.
+Review M6.1a on `m6.1-claude-code-adapter`: bounded offline Claude stream
+normalization, synthetic fixtures/tests and protocol evidence (spec 26). No
+runtime adapter or paid invocation is enabled. Next, refine M6.1b credential
+ownership/isolation, task/agent input delivery and tool policy before wiring
+process execution. Live session room/reconnect and its cursor pagination gate
+remain separate M6 slices.
 
 ## Product Milestones
 
@@ -25,7 +26,7 @@ M6.1b gates; do not run paid sessions or reuse the operator's local login yet.
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Complete |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Complete in development; staging gates remain |
-| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1 planning |
+| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a built, awaiting review |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
 | M8 | Codex adapter, commit/pull-request delivery, usage ledger, and quotas | Not started |
 | M9 | Billing, production hardening, security review, runbooks, staging, and launch readiness | Not started |
@@ -646,3 +647,33 @@ not wire semantics or security behavior. No paid invocation, model request or
 local login reuse occurred. No real adapter is implemented or enabled yet.
 Next: verify official protocol documentation and implement M6.1a offline tests;
 resolve runtime credentials, task inputs and tool policy before M6.1b.
+
+### M6.1a in progress — verified documentation and decoder boundary
+
+Fetched official headless, TypeScript message reference and streaming-output
+pages on 2026-09-30. The complete assistant stream is per content block; multiple
+records share an API message id, so outer record UUIDs—not API message IDs—will
+identify normalized messages. Spec 26 now defines a bounded single-turn offline
+decoder, complete-text-only emission, strict terminal result, safe failures and
+returned token usage without inventing an unsupported event type. No paid run
+or runtime adapter is enabled. Next: implement the decoder and synthetic tests.
+
+### M6.1a built — offline Claude stream normalization
+
+Implemented `services/runner/agent/claudestream` with bounded NDJSON reads,
+complete-block message identity scoped to the session, deduplication without
+copying deltas/result text, strict single terminal result, stable safe failures,
+usage sum/overflow checks and no raw metadata persistence. All emitted events
+are validated against the existing domain contract in tests. Unknown types and
+truncated/missing results fail closed; errors are fixed categories. No CLI
+execution, credentials or Claude adapter registration were added.
+
+Verification: runner/agent race tests repeated three times, 96.6% decoder
+coverage, a short fuzz run over 200,000 executions, and five deliberate mutations
+caught (result error flag, shared API identity, missing terminal, encoded payload
+cap and identity-count cap). Full unit tests, lint (six existing web warnings),
+build, typecheck, contracts and targeted formatting pass. Synthetic fixtures
+are not represented as live output. Protocol sources/hashes and unsupported
+features are recorded in `docs/runbooks/claude-stream-protocol.md`.
+Next: review/merge M6.1a, then specify M6.1b credential/input/tool boundaries;
+paid runtime execution remains disabled until those gates are verified.
