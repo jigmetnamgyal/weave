@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # The development edges for Vercel sandboxes: the event ingress (M5.4b,
-# ADR-015) and the registry proxy (M5.4c, ADR-016).
+# ADR-015), the registry proxy (M5.4c, ADR-016) and the egress proxy
+# (M5.4d.3a, ADR-017).
 #
 # A Vercel sandbox cannot reach a laptop, so testing the Vercel runner backend
 # against a local stack needs public 443 hostnames: one forwarded to NATS's
@@ -12,9 +13,9 @@
 # ADR-015 allows in development only, with synthetic or operator-owned
 # repositories.
 #
-#   scripts/dev-tunnel.sh start   start both tunnels, wait until each is usable,
-#                                 print RUNNER_NATS_URL and the registry proxy's
-#                                 public URL
+#   scripts/dev-tunnel.sh start   start the three tunnels, wait until each is
+#                                 usable, print RUNNER_NATS_URL and the two
+#                                 proxies' public URLs
 #   scripts/dev-tunnel.sh stop    stop them
 #
 # **Start first, and wait for the name to resolve publicly.** A new quick-tunnel
@@ -49,10 +50,13 @@ ORIGIN="http://${ORIGIN_HOST}:${PORT}"
 # The registry proxy's public listener (REGISTRY_PROXY_ADDR), on loopback.
 REGISTRY_PORT="$(set -a; [ -f "${REPO_ROOT}/.env" ] && . "${REPO_ROOT}/.env"; addr="${REGISTRY_PROXY_ADDR:-:8095}"; echo "${addr##*:}")"
 REGISTRY_ORIGIN="http://127.0.0.1:${REGISTRY_PORT}"
+# The egress proxy's public listener (EGRESS_PROXY_ADDR), on loopback.
+EGRESS_PORT="$(set -a; [ -f "${REPO_ROOT}/.env" ] && . "${REPO_ROOT}/.env"; addr="${EGRESS_PROXY_ADDR:-:8097}"; echo "${addr##*:}")"
+EGRESS_ORIGIN="http://127.0.0.1:${EGRESS_PORT}"
 
 # Each tunnel keeps its state under tmp/tunnel: <name>.log, <name>.pid, and
 # the hostname in a file — "host" for the events tunnel (kept for M5.4b's
-# tooling), "registry-host" for the registry proxy's.
+# tooling), "registry-host" and "egress-host" for the two proxies'.
 hostfile() { if [ "$1" = events ]; then echo "${STATE}/host"; else echo "${STATE}/$1-host"; fi; }
 
 stop_one() {
@@ -67,6 +71,7 @@ stop_one() {
 stop() {
   stop_one events
   stop_one registry
+  stop_one egress
   # The single-tunnel state M5.4b's first version wrote.
   if [ -f "${STATE}/cloudflared.pid" ] && kill -0 "$(cat "${STATE}/cloudflared.pid")" 2>/dev/null; then
     kill "$(cat "${STATE}/cloudflared.pid")"
@@ -111,9 +116,12 @@ start() {
   mkdir -p "${STATE}"
   start_one events "${ORIGIN}" || { stop >/dev/null; exit 1; }
   start_one registry "${REGISTRY_ORIGIN}" || { stop >/dev/null; exit 1; }
+  start_one egress "${EGRESS_ORIGIN}" || { stop >/dev/null; exit 1; }
   echo "RUNNER_NATS_URL=wss://$(cat "$(hostfile events)")"
   echo "RUNNER_REGISTRY_PROXY_URL=https://$(cat "$(hostfile registry)")"
   echo "REGISTRY_PROXY_PUBLIC_URL=https://$(cat "$(hostfile registry)")"
+  echo "RUNNER_EGRESS_PROXY_URL=https://$(cat "$(hostfile egress)")"
+  echo "EGRESS_PROXY_PUBLIC_URL=https://$(cat "$(hostfile egress)")"
 }
 
 case "${1:-}" in

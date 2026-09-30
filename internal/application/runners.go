@@ -313,7 +313,18 @@ type RunnerService struct {
 	// registryProxy is the registry proxy's public base URL (ADR-016), or
 	// empty.
 	registryProxy string
-	logger        *slog.Logger
+	// egress holds the workspace-addition wiring (M5.4d.3a, ADR-017). Nil
+	// means none was wired, and provisioning refuses: a runner's snapshot must
+	// always be read, never assumed empty.
+	egress *runnerEgress
+	logger *slog.Logger
+}
+
+// runnerEgress is what provisioning needs to honor a runner's added hosts.
+type runnerEgress struct {
+	snapshots EgressSnapshotReader
+	proxyBase string
+	reserved  []string
 }
 
 // NewRunnerService wires the service.
@@ -399,6 +410,13 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 	}
 	// Minted per runner, at the moment it is needed, and never stored: the
 	// runner holds the only copy, and it expires on its own (ADR-014).
+	// The runner's own immutable snapshot, read before anything is started.
+	// Missing, unreadable or unbuildable fails provisioning: an added host is
+	// forwarded through the egress proxy or not granted at all (ADR-017).
+	added, err := s.addedEgress(ctx, workspaceID, runner.ID)
+	if err != nil {
+		return domain.Runner{}, err
+	}
 	natsCreds, err := s.nats.IssueRunner(runner.ID, sessionID)
 	if err != nil {
 		return domain.Runner{}, fmt.Errorf("issue runner broker credential: %w", err)
@@ -415,7 +433,7 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 		NATS:        natsCreds,
 		Provider:    version.Provider,
 		Model:       version.Model,
-		Egress:      egressRules(s.natsURL, s.registryProxy),
+		Egress:      append(egressRules(s.natsURL, s.registryProxy), added...),
 	})
 	if err != nil {
 		return domain.Runner{}, fmt.Errorf("provision runner: %w", err)
@@ -454,6 +472,30 @@ func egressRules(natsURL, registryProxy string) []EgressRule {
 func (s *RunnerService) WithRegistryProxy(base string) *RunnerService {
 	s.registryProxy = base
 	return s
+}
+
+// WithEgress wires workspace-added destinations (ADR-017): the snapshot
+// reader, the egress proxy's public base URL (empty only where no added host
+// may be granted), and the deployment's reserved namespaces, re-checked at
+// every provisioning.
+func (s *RunnerService) WithEgress(snapshots EgressSnapshotReader, proxyBase string, reserved []string) *RunnerService {
+	s.egress = &runnerEgress{snapshots: snapshots, proxyBase: proxyBase, reserved: append([]string(nil), reserved...)}
+	return s
+}
+
+// addedEgress reads the runner's snapshot and builds its forwarded rules.
+func (s *RunnerService) addedEgress(ctx context.Context, workspaceID, runnerID uuid.UUID) ([]EgressRule, error) {
+	if s.egress == nil || s.egress.snapshots == nil {
+		return nil, fmt.Errorf("%w: egress snapshots are not wired", ErrEgressConfiguration)
+	}
+	snapshot, err := s.egress.snapshots.Snapshot(ctx, workspaceID, runnerID)
+	if err != nil {
+		return nil, fmt.Errorf("read the runner's egress snapshot: %w", err)
+	}
+	if snapshot.RunnerID != runnerID || snapshot.WorkspaceID != workspaceID {
+		return nil, fmt.Errorf("%w: the snapshot belongs to another runner", ErrEgressConfiguration)
+	}
+	return addedEgressRules(snapshot, s.egress.proxyBase, s.egress.reserved)
 }
 
 // create inserts the runner row before anything exists in the backend.
@@ -941,6 +983,10 @@ const (
 	RunnerFailureEventsUnconfirmed   RunnerFailure = "events_unconfirmed"
 	RunnerFailureEventsNotDrained    RunnerFailure = "events_not_drained"
 	RunnerFailureBackendRefused      RunnerFailure = "backend_refused"
+	// RunnerFailureEgressRefused: the runner's added egress hosts cannot be
+	// granted safely — no snapshot, no egress proxy configured, or a host that
+	// has since become reserved (ADR-017). Retrying cannot change any of them.
+	RunnerFailureEgressRefused RunnerFailure = "egress_refused"
 	// RunnerFailureNoProvider is how every session ends until M5.5: the
 	// runner came up with a verified checkout, and there is no provider
 	// adapter to run in it yet.
@@ -963,6 +1009,10 @@ func ClassifyRunnerFailure(err error) (RunnerFailure, bool) {
 		return RunnerFailureBrokerRefused, true
 	case errors.Is(err, ErrRunnerBackendRefused):
 		return RunnerFailureBackendRefused, true
+	// A missing snapshot and an unbuildable policy are terminal; a database
+	// error reading the snapshot is not, and stays retryable.
+	case errors.Is(err, ErrEgressConfiguration), errors.Is(err, ErrEgressSnapshotMissing):
+		return RunnerFailureEgressRefused, true
 	default:
 		return "", false
 	}
@@ -976,6 +1026,9 @@ func SessionFailureReason(cause string) string {
 		return "the session's runner could not be started"
 	case RunnerFailureBackendRefused:
 		return "the runner backend refused to start the session's environment"
+	case RunnerFailureEgressRefused:
+		return "the workspace's added egress hosts could not be granted safely: the runner's host snapshot is missing, " +
+			"no egress proxy is configured, or a host is now reserved"
 	case RunnerFailureLost:
 		return "the session's runner stopped before it was ready"
 	case RunnerFailureNotReady:

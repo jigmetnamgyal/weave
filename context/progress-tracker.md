@@ -5,15 +5,14 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots built, awaiting review; M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); **M5.4d.3a egress proxy and runner wiring built and verified live, awaiting review**; M5.4d.3b admin screen next; M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
-Review M5.4d.2 (`context/features-specs/24-workspace-egress-api-and-snapshots.md`)
-on branch `m5.4d2-allowlist-api`: contracted hostname CRUD, current-authority
-rechecks, atomic audit and fenced idempotency, database-enforced cap and immutable
-runner snapshots. Configuration only: no runtime network access changes until
-M5.4d.3 wires the authenticated edge, runner forwarding and admin UI.
+Review M5.4d.3a on `m5.4d3-egress-proxy` (spec
+`context/features-specs/25-egress-proxy-and-runner-wiring.md`): `services/egress-proxy`
+plus runner wiring, verified live on Vercel Hobby. Added hosts now work end to end
+through the guarded proxy. Then M5.4d.3b, the admin screen, completes M5.4d.
 
 ## Product Milestones
 
@@ -508,6 +507,70 @@ workspace-lock trigger makes it fail. (3) Parent spec 22 status updated. (4)
 `egress_host_exists`/`egress_host_limit` added to the `Error.code` enum and httpx
 constants; generated types regenerated. lint/typecheck/test/build and
 contracts/sqlc checks pass; all six PostgreSQL egress tests pass with `-race`.
+
+### M5.4d.2 merged; M5.4d.3 specified
+
+PR #28 merged as 6a1193a with all checks green and all four review threads
+resolved. Wrote spec 25 for M5.4d.3 and split it: 3a is the egress proxy and
+runner wiring (the security boundary, with live Vercel acceptance through a third
+tunnel); 3b is the admin screen. Key choices: the proxy authorizes against the
+runner's immutable snapshot in its own tenant, never the live workspace list;
+provisioning fails closed on a missing snapshot, a missing proxy URL, or a host
+that is now reserved; added hosts are never plain rules. **Next:** build 3a.
+
+### M5.4d.3a — egress proxy and runner wiring, built and verified live
+
+New `services/egress-proxy` (Vercel OIDC with a per-host route audience,
+forwarded-header checks, authorization against the runner's own snapshot in its
+own tenant, bounded body, forwarding only through `guardedhttp`, no request-content
+logging). Runner provisioning now reads the snapshot first and fails closed on a
+missing snapshot, added hosts without `RUNNER_EGRESS_PROXY_URL` (required in
+staging/production), a non-canonical or now-reserved host, or unwired snapshots.
+Added hosts become forwarded rules only; `validForwardURL` accepts exactly
+`/r/<host>` or `/e/<host>`. Third dev tunnel and live test added.
+
+Verified: handler, application and PostgreSQL tests; four deliberate mutations
+fail (snapshot check, audience binding, plain rule, guard bypass). Adding the
+cross-route replay case was needed: fixing the audience to one host first slipped
+past the suite. Live on Hobby: added host reachable, snapshot-missing host 403,
+private-address host refused by the guard, unlisted host and subdomain do not
+resolve; registry and backend suites still pass; project empty afterwards.
+Two live lessons, recorded in ADR-017: a loopback name never leaves the sandbox,
+and the quick tunnel rewrites 502 bodies. `make test-integration` (22 packages)
+and all local gates pass. **Next:** PR for 3a, then 3b (admin screen).
+
+### M5.4d.3a — PR #29 review round
+
+Four findings, all acted on. (1) Egress configuration failures were retried and
+then reported only as "could not be started": now terminal, with a new
+`egress_refused` cause and a reason naming egress; a transient snapshot read error
+stays retryable. (2) A stalled origin response could hold a request open: the
+proxy now cuts off a stream that makes no progress for 60s (reads and writes each
+reset it), without bounding size or total time. (3) The live test uses an
+in-memory authorizer: `postgres.NewEgressAuthorizer` is now the one constructor
+the service and its integration test both use, so the DB test covers the exact
+production composition; the live test stays Vercel-focused. (4) Refusals logged
+the cause's text, which can carry the sandbox name: they now log a category.
+Each fix's test fails when the fix is reverted. All local gates,
+`make test-integration` and the egress live test pass; project empty afterwards.
+
+PR #29, second review round: Greptile (P1) reported that the streaming write
+deadline outlives the response and would fail the next response on a reused
+keep-alive connection. Checked against Go 1.26: the HTTP/1 server clears the write
+deadline after every request itself, so the failure does not occur; a new test
+reusing one connection past the deadline passes even with the proxy's own clear
+removed. Kept an explicit clear as a safeguard, with an accurate comment, and the
+test as a regression check. Thread left open for a maintainer, since the claimed
+bug was not reproduced.
+
+PR #29, third review round: Greptile agreed the write-deadline finding does not
+occur on Go 1.26 (thread resolved). Two new findings fixed: (1) the origin's idle
+clock was reset when a chunk was read, so a slow write to the sandbox followed by
+an origin pause could cut off a stream still making progress — the clock now
+starts once the chunk is delivered; (2) a failed flush (sandbox gone) was ignored,
+so an undelivered response was logged `forwarded` — it is now `incomplete`
+(`http.ErrNotSupported` from a non-flushing writer is not a failure). Both tests
+fail with their fix reverted; the first needed its timings corrected before it did.
 
 ### Fix — workspace creation failed under row-level security (since M3.0)
 

@@ -1,6 +1,6 @@
 # ADR-017: Workspace-added destinations use a guarded egress proxy
 
-- Status: Accepted approach; implementation and security verification pending
+- Status: Accepted; implemented in M5.4d.1 (guarded transport), M5.4d.2 (API, audit, snapshots) and M5.4d.3a (edge and runner wiring), verified live on Vercel Hobby. Admin screen: M5.4d.3b.
 - Date: 2026-09-30
 - Extends: ADR-013 and ADR-016
 - Operator approved the proxy approach after the provider-enforcement investigation.
@@ -150,3 +150,15 @@ Split M5.4d into bounded implementation units:
 
 All are required before declaring additions complete. Provider deployment/staging
 requirements in ADR-013 remain unchanged. No runtime behavior changes in this ADR.
+
+## Implementation notes (M5.4d.3a)
+
+- Live verification needs a private-address host whose traffic leaves the
+  sandbox: a loopback name (tried first with `localtest.me`) is dialed by the
+  sandbox itself and never reaches the firewall. `10.0.0.1.nip.io` does reach
+  the proxy and is refused by the guard with `ErrDestination`.
+- The development quick tunnel replaces an origin's 502 body with its own error
+  page, so the sandbox cannot see why a request failed; the live test records
+  the guarded transport's outcome directly instead.
+- The proxy reuses the registry proxy's bounded runner lookup
+  (`weave_runner_for_registry_request`): one id in, at most one row out.

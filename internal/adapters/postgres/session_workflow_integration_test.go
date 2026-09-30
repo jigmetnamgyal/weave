@@ -112,7 +112,8 @@ func startHarness(t *testing.T) harness {
 	broker.ingest(t, slowEventStore{EventStore: postgres.NewEventStore(pool), delay: 250 * time.Millisecond})
 	runners := application.NewRunnerService(postgres.NewRunnerStore(pool), sessionStore, backend, installations,
 		broker.issuer, broker.natsURL, postgres.NewAgentStore(pool), broker.drain(),
-		postgres.WithTenantWorkspace, gitBase, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		postgres.WithTenantWorkspace, gitBase, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithEgress(postgres.NewEgressStore(pool), "", nil)
 	runnerActivities := weavetemporal.NewRunnerActivities(runners)
 	rw := worker.New(client, weavetemporal.RunnerTaskQueue(queue), worker.Options{})
 	rw.RegisterActivityWithOptions(runnerActivities.ProvisionRunner,

@@ -199,7 +199,7 @@ func newRunnerWorldWith(t *testing.T, name string, override func(*natsauth.Issue
 	service := application.NewRunnerService(postgres.NewRunnerStore(appPool), postgres.NewSessionStore(appPool),
 		backend, installationServiceFor(t, appPool, github), issuer, broker.natsURL,
 		postgres.NewAgentStore(appPool), broker.drain(), postgres.WithTenantWorkspace, gitBase,
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+		slog.New(slog.NewTextHandler(io.Discard, nil))).WithEgress(postgres.NewEgressStore(appPool), "", nil)
 	return &runnerWorld{ownerPool: ownerPool, appPool: appPool, fixture: fixture, session: session,
 		commit: commit, backend: backend, service: service, tenant: tenant}
 }

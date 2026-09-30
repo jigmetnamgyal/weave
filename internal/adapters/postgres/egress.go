@@ -149,3 +149,11 @@ func authorizeEgressActor(ctx context.Context, q *postgresdb.Queries, workspace 
 	}
 	return authorizeActor(ctx, q, workspace, actor)
 }
+
+// NewEgressAuthorizer is the egress proxy's authorizer as production wires it:
+// the bounded runner lookup, then the runner's snapshot in its own tenant, on
+// the application role. One constructor for the service and its integration
+// test, so the test covers the composition the proxy actually runs.
+func NewEgressAuthorizer(pool *pgxpool.Pool, backendPrefix string) *application.EgressAuthorizer {
+	return application.NewEgressAuthorizer(NewRegistryStore(pool), NewEgressStore(pool), WithTenantWorkspace, backendPrefix)
+}
