@@ -9,7 +9,7 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-PR #32 merge is blocked by the critical Next.js advisory recorded below.
+PR #32 Next.js dependency repair is built and locally verified; await current-head CI and merge authorization.
 Review M6.1a on `m6.1-claude-code-adapter`: bounded offline Claude stream
 normalization, synthetic fixtures/tests and protocol evidence (spec 26). No
 runtime adapter or paid invocation is enabled. Next, refine M6.1b credential
@@ -701,3 +701,29 @@ exact pin. This is not caused by the Go decoder changes and no dependency-gate
 exception was applied. The fifteen moderate transitive advisories remain.
 Next: a bounded dependency-upgrade fix with current Next docs, typecheck/build
 and audit verification before PR #32 can merge; retain all decoder review fixes.
+
+### PR #32 dependency repair in progress
+
+User authorized the critical Next.js advisory fix. Verified npm publishes
+Next.js and eslint-config-next 16.3.8; upgrading both exact 16.3.4 pins together,
+without force-audit changes. Acceptance: clean high/critical audit gate, lockfile
+consistency, lint, web tests, typecheck, production build and contract drift check.
+
+### PR #32 dependency repair built — Next.js 16.3.8
+
+Upgraded exact `next` and matching `eslint-config-next` pins from 16.3.4 to
+16.3.8, regenerated the lockfile, and verified its `npm ci --dry-run
+--ignore-scripts` consistency. Only Next-family package versions changed;
+no force-audit changes or unrelated dependency upgrade. `npm audit
+--audit-level=high` now passes: zero high/critical advisories, no Next advisory;
+the fifteen previously tracked moderate transitive advisories remain.
+
+Web regression tests (ten), lint (six existing warnings), route typegen/typecheck,
+production build and contracts check pass. Installed-version Next guides and
+AGENTS.md's bundled-doc pointers were checked. A separate local production
+server reported ready on 16.3.8, but route smoke requests timed out with Clerk
+connection-reset errors; no successful browser/route verification is claimed.
+That temporary server was stopped and port 3107 verified empty. The user's
+running 16.3.4 dev server was left untouched; restart `make dev` to use the patch.
+Next: current-head CI/review, then merge authorization for PR #32; signed-in
+runtime verification needs the operator's working Clerk session/environment.
