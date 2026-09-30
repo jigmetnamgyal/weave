@@ -49,6 +49,119 @@ security:
   - bearerAuth: []
 
 paths:
+  /v1/workspaces/{workspaceId}/egress-hosts:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      operationId: listEgressHosts
+      tags: [workspaces]
+      summary: List additional runner destinations
+      description: Requires workspace:manage. Configuration only until guarded proxy integration is deployed.
+      responses:
+        "200":
+          description: Entries ordered by canonical hostname; built-in hosts excluded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: "#/components/schemas/EgressHost" }
+                  limit: { type: integer, const: 20 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    post:
+      operationId: addEgressHost
+      tags: [workspaces]
+      summary: Configure an additional exact HTTPS destination
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      description: |
+        Requires workspace:manage. Lowercase ASCII canonicalization; no URLs,
+        wildcards, IPs, IDN, local/internal names or reserved service destinations.
+        At most 20 additional hosts per workspace. Writes configuration and audit
+        atomically. Existing runner snapshots are unchanged. This API alone does
+        not enable connectivity; guarded proxy integration is a separate unit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [hostname]
+              properties:
+                hostname: { type: string, minLength: 1, maxLength: 253 }
+      responses:
+        "201":
+          description: The configuration entry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EgressHost" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409":
+          description: egress_host_exists, egress_host_limit, or conflict for an in-flight idempotency claim.
+          headers:
+            Retry-After:
+              description: Seconds to wait for an in-flight claim, when present.
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: invalid_request; the idempotency key was reused for different canonical input.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/workspaces/{workspaceId}/egress-hosts/{egressHostId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - name: egressHostId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: removeEgressHost
+      tags: [workspaces]
+      summary: Remove an additional destination from future runner snapshots
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      description: |
+        Requires workspace:manage. Audited atomically. Does not revoke existing
+        runner snapshots; cancel existing sessions for immediate revocation.
+        Completed replays recheck current authorization and return no body.
+      responses:
+        "204": { description: Removed; empty response body. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404":
+          description: The workspace or entry was not found, including foreign IDs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: An idempotent request is still in flight.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: invalid_request; the idempotency key was reused for another entry ID.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/me:
     get:
       operationId: getCurrentUser
@@ -1189,6 +1302,17 @@ components:
         as `Authorization: Bearer <token>`.
 
   schemas:
+    EgressHost:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, hostname, created_by, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        hostname: { type: string, maxLength: 253 }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
     Task:
       type: object
       required: [id, title, body, status, created_by, created_at, updated_at]
@@ -1700,6 +1824,8 @@ components:
             - conflict
             - invalid_request
             - internal_error
+            - egress_host_exists
+            - egress_host_limit
         message:
           type: string
           description: Human-readable summary, safe to surface to an end user.

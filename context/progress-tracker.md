@@ -5,17 +5,15 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots and M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots built, awaiting review; M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
-Start M5.4d.2 after merge of M5.4d.1 (43ec4c7, PR #27), whose guarded transport and deterministic security
-tests defined by ADR-017 (`context/features-specs/23-guarded-egress-transport.md`). The operator approved a separate Weave egress proxy for
-workspace additions rather than waiting for provider verification or purchasing
-a DNS/private-network fixture. Approved rules remain: 20 exact ASCII hosts,
-future runner allocations only. M5.4d.2 adds the API/audit/store and immutable
-runner snapshots; M5.4d.3 wires the authenticated edge, runner and admin UI.
-All three are needed before declaring M5.4d complete. The transport is built; no public proxy or runtime wiring yet.
+Review M5.4d.2 (`context/features-specs/24-workspace-egress-api-and-snapshots.md`)
+on branch `m5.4d2-allowlist-api`: contracted hostname CRUD, current-authority
+rechecks, atomic audit and fenced idempotency, database-enforced cap and immutable
+runner snapshots. Configuration only: no runtime network access changes until
+M5.4d.3 wires the authenticated edge, runner forwarding and admin UI.
 
 ## Product Milestones
 
@@ -415,3 +413,98 @@ with concise comments on private helpers and security regression tests. No
 runtime changes. Next: finish PR #27 checks/review, then M5.4d.2.
 
 PR #27 merged as 43ec4c7 with all checks green and both inline threads resolved.
+
+### M5.4d.2 — spec started after transport merge
+
+Created `24-workspace-egress-api-and-snapshots.md` against existing workspace
+Actor/AuditEvent and LockWorkspace patterns, runner creation and one-live index,
+and session API idempotency conventions. Defines API operations, error categories,
+cap/audit atomicity, empty-vs-missing snapshots, immutable retry semantics and
+rolling-deploy acceptance. No code/migration yet. Next: inspect reserved-host
+configuration and choose an atomic snapshot creation mechanism before contracting
+and implementing the API/store slice. No operator domain setup needed.
+
+### M5.4d.2 — detailed spec and domain validation
+
+Expanded spec 24: shared `EGRESS_RESERVED_HOSTS` deployment declaration plus
+configured public service URLs; explicit environment requirements and namespace
+reservation. Selected BEFORE runner-insert workspace locking and AFTER-insert
+snapshot creation for compatibility with old managers; backfill empty snapshots
+only for pre-additions runners. Narrow trigger privilege and tenant checks are
+required. Corrected replay design to existing optional keys, canonical fingerprint,
+422 mismatch and fenced transactional completion; completed responses must undergo
+current authorization recheck, and DELETE replay must have an empty 204 body.
+These are specified requirements, not implemented database/API behavior yet.
+
+Added domain EgressHost/RunnerEgressSnapshot types, approved cap/UUIDv7 identity,
+ASCII hostname validation and reserved namespace matching. Domain race tests and
+package lint pass. Two deliberate mutations fail: punycode guard removal and
+reserved-descendant matching removal. No DNS lookup, new dependency or runtime
+network policy change. Next: OpenAPI, migration/sqlc, atomic store/API and integration
+verification; do not declare this partial domain work the complete unit.
+
+### M5.4d.2 — contract and database boundary implemented (unit incomplete)
+
+Added three OpenAPI operations and generated API types; no HTTP handlers yet.
+Added migration 00015, egress queries and regenerated sqlc. Migration applied to
+local development successfully. Workspace host entries have forced RLS, canonical
+shape/unique constraints, insert/delete-only app grants and a workspace-serialized
+DB cap. Runner BEFORE INSERT locks verified tenant workspace; AFTER INSERT creates
+an explicit immutable sorted snapshot through a narrow trigger owned by the
+existing NOLOGIN bypass role. Existing runner backfill is empty, not current config.
+App cannot insert snapshots; composite FK binds runner/session/workspace.
+Updated the event-test runner fixture to use tenant-scoped runner-store creation
+rather than an owner INSERT with absent context.
+
+Three new application-role DB integration tests pass with race detection: unchanged
+runner INSERT, empty/current/future snapshots, immutable mutation refusal/cascades,
+tenant isolation, canonical SQL shape and concurrent cap. Three DB mutations fail:
+cap trigger disabled (12 succeed instead of one), snapshot trigger disabled (missing
+row), snapshot read policy broadened (foreign read succeeds). All restored, tests
+pass again. Local `make lint-go`, `go build ./...`, generators and diff check pass.
+
+`make test-integration` ran: all database/adapter packages pass; the API contract
+coverage test fails because the three new operations lack handlers. This is an
+unfinished-slice gate, not waived or fixed with stubs. **Next:** implement the real
+application/store/API configuration and authorization/idempotency wiring, add
+rollback/replay/demotion/failure-path tests, then rerun the full gates. Do not open
+this partial unit for merge or claim M5.4d.2 complete.
+
+### M5.4d.2 — built and verified locally, awaiting review
+
+Application service/store and three real HTTP handlers complete the slice; the
+route-contract coverage gate now passes. Store rechecks workspace:manage under the
+workspace lock for list/add/remove and refuses system actors. Mutation, audit and
+fenced idempotency completion commit atomically; render, fence and audit failures
+roll back. Replays and key-reuse mismatches recheck current authority, so a demoted
+admin cannot replay; DELETE replay returns an empty 204. Reserved hosts combine
+built-ins, `EGRESS_RESERVED_HOSTS` (required in staging/production) and public
+service URLs, without echoing URL values in errors.
+
+Tests: domain, application config, HTTP role/validation/replay, and five PostgreSQL
+integration tests. Seven deliberate mutations fail (cap, snapshot trigger, snapshot
+RLS, system-actor guard, replay reauthorization, reserved check, audit write).
+Full integration suite 21 packages pass, none skipped — run directly because
+Docker Hub DNS blocked the runner image rebuild in `make test-integration`.
+lint/typecheck/test/build/sqlc-check/contracts-check pass; `make ci` formatting
+flags only pre-existing untracked `.claude/` files.
+
+**Next:** open/review PR; after merge, M5.4d.3 (authenticated edge using the guarded
+transport and snapshots, match-free runner forwarding, admin UI, live acceptance).
+
+Operator decision (M5.4d.2 review): keep the plan — the admin settings screen
+ships with M5.4d.3, not as a separate earlier slice. Until then the additions API
+has no UI and changes no runner network access.
+
+### M5.4d.2 — PR #28 review round
+
+Four findings, all valid, all fixed. (1) `.env.example` now says which namespaces
+`EGRESS_RESERVED_HOSTS` must cover: prefer each parent domain; a per-service list
+must name web, API, event ingress, registry proxy and egress proxy; service URLs
+are only a backstop because an unset URL reserves nothing. (2) New integration
+test races runner creation against an in-flight host add and remove; the runner
+waits and its snapshot reflects the committed state. Disabling the runner-insert
+workspace-lock trigger makes it fail. (3) Parent spec 22 status updated. (4)
+`egress_host_exists`/`egress_host_limit` added to the `Error.code` enum and httpx
+constants; generated types regenerated. lint/typecheck/test/build and
+contracts/sqlc checks pass; all six PostgreSQL egress tests pass with `-race`.

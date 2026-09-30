@@ -4,6 +4,61 @@
  */
 
 export interface paths {
+    "/v1/workspaces/{workspaceId}/egress-hosts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * List additional runner destinations
+         * @description Requires workspace:manage. Configuration only until guarded proxy integration is deployed.
+         */
+        get: operations["listEgressHosts"];
+        put?: never;
+        /**
+         * Configure an additional exact HTTPS destination
+         * @description Requires workspace:manage. Lowercase ASCII canonicalization; no URLs,
+         *     wildcards, IPs, IDN, local/internal names or reserved service destinations.
+         *     At most 20 additional hosts per workspace. Writes configuration and audit
+         *     atomically. Existing runner snapshots are unchanged. This API alone does
+         *     not enable connectivity; guarded proxy integration is a separate unit.
+         */
+        post: operations["addEgressHost"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/egress-hosts/{egressHostId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                egressHostId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove an additional destination from future runner snapshots
+         * @description Requires workspace:manage. Audited atomically. Does not revoke existing
+         *     runner snapshots; cancel existing sessions for immediate revocation.
+         *     Completed replays recheck current authorization and return no body.
+         */
+        delete: operations["removeEgressHost"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/me": {
         parameters: {
             query?: never;
@@ -695,6 +750,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        EgressHost: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            workspace_id: string;
+            hostname: string;
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+        };
         Task: {
             /** Format: uuid */
             id: string;
@@ -1107,7 +1173,7 @@ export interface components {
              * @description Stable, machine-readable identifier. Clients branch on this rather than on `message`.
              * @enum {string}
              */
-            code: "unauthenticated" | "permission_denied" | "not_found" | "conflict" | "invalid_request" | "internal_error";
+            code: "unauthenticated" | "permission_denied" | "not_found" | "conflict" | "invalid_request" | "internal_error" | "egress_host_exists" | "egress_host_limit";
             /** @description Human-readable summary, safe to surface to an end user. */
             message: string;
             /** @description Correlates this response with server-side logs. Also returned in the `X-Request-Id` header. */
@@ -1245,6 +1311,155 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listEgressHosts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entries ordered by canonical hostname; built-in hosts excluded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["EgressHost"][];
+                        /** @constant */
+                        limit: 20;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            404: components["responses"]["WorkspaceNotFound"];
+        };
+    };
+    addEgressHost: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description A caller-chosen string making this request safe to retry. Scoped by
+                 *     workspace, user and operation, so two callers may pick the same string
+                 *     without colliding. Retrying with the same key returns the first
+                 *     response; reusing it for a different request is refused.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    hostname: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The configuration entry. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EgressHost"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            404: components["responses"]["WorkspaceNotFound"];
+            /** @description egress_host_exists, egress_host_limit, or conflict for an in-flight idempotency claim. */
+            409: {
+                headers: {
+                    /** @description Seconds to wait for an in-flight claim, when present. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description invalid_request; the idempotency key was reused for different canonical input. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    removeEgressHost: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description A caller-chosen string making this request safe to retry. Scoped by
+                 *     workspace, user and operation, so two callers may pick the same string
+                 *     without colliding. Retrying with the same key returns the first
+                 *     response; reusing it for a different request is refused.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                egressHostId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed; empty response body. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["PermissionDenied"];
+            /** @description The workspace or entry was not found, including foreign IDs. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description An idempotent request is still in flight. */
+            409: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description invalid_request; the idempotency key was reused for another entry ID. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getCurrentUser: {
         parameters: {
             query?: never;

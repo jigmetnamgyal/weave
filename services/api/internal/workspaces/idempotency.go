@@ -53,6 +53,11 @@ func (i *idempotency) claim(
 	scope domain.IdempotencyScope,
 	fingerprintFields []string,
 ) (claimed, bool) {
+	return i.claimChecked(ctx, w, r, handler, scope, fingerprintFields, nil)
+}
+
+// claimChecked requires a fresh authorization decision before response replay.
+func (i *idempotency) claimChecked(ctx context.Context, w http.ResponseWriter, r *http.Request, handler *Handler, scope domain.IdempotencyScope, fingerprintFields []string, checkReplay func() error) (claimed, bool) {
 	raw := r.Header.Get(idempotencyHeader)
 	if raw == "" {
 		return claimed{proceed: true}, true
@@ -89,10 +94,22 @@ func (i *idempotency) claim(
 		}, true
 
 	case application.IdempotencyComplete:
+		if checkReplay != nil {
+			if err := checkReplay(); err != nil {
+				handler.writeError(ctx, w, err, "authorize replay")
+				return claimed{}, false
+			}
+		}
 		i.replay(ctx, w, existing)
 		return claimed{}, false
 
 	case application.IdempotencyMismatch:
+		if checkReplay != nil {
+			if err := checkReplay(); err != nil {
+				handler.writeError(ctx, w, err, "authorize replay")
+				return claimed{}, false
+			}
+		}
 		httpx.WriteError(ctx, w, http.StatusUnprocessableEntity, httpx.CodeInvalidRequest,
 			"This idempotency key was already used for a different request. Use a new key.")
 		return claimed{}, false
@@ -126,8 +143,12 @@ func (i *idempotency) replay(ctx context.Context, w http.ResponseWriter, record 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	if record.Response.Status == http.StatusNoContent {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(record.Response.Status)
 	if _, err := w.Write(record.Response.Body); err != nil {
 		// The status line is already sent, so this can only be recorded.

@@ -5,6 +5,7 @@ package config
 
 import (
 	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
+	"github.com/jigmetnamgyal/weave/internal/application"
 
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 
 // Config holds the validated runtime configuration for the API service.
 type Config struct {
+	// EgressReservedHosts are declared/derived service namespaces unavailable to additions.
+	EgressReservedHosts []string
 	// AppEnv names the deployment environment (development, test, staging, production).
 	AppEnv string
 	// HTTPAddr is the listen address for the HTTP server.
@@ -177,6 +180,14 @@ func Load() (Config, error) {
 		)
 	}
 
+	urls := map[string]string{}
+	for _, key := range []string{"API_BASE_URL", "NEXT_PUBLIC_APP_URL", "RUNNER_NATS_URL", "NATS_WEBSOCKET_URL", "RUNNER_REGISTRY_PROXY_URL", "RUNNER_EGRESS_PROXY_URL"} {
+		urls[key] = os.Getenv(key)
+	}
+	cfg.EgressReservedHosts, err = application.ParseEgressReservedConfig(cfg.AppEnv, os.Getenv("EGRESS_RESERVED_HOSTS"), urls)
+	if err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
