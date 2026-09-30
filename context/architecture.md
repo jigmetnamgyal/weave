@@ -165,7 +165,9 @@ Session task title/body is captured atomically at session creation in
 append-only `agent_versions`. Legacy sessions have no reconstructed input and
 future real-runtime delivery must refuse them (ADR-018, spec 28). Neither input
 text nor provider credentials are carried in workflow/outbox metadata. Credential
-account/funding and managed-secret-store choices remain proposed, not enabled.
+ownership is BYOK: workspace-supplied provider API keys, billed directly by the
+provider. Managed-secret-store and authenticated delivery remain proposed, not
+enabled (ADR-018); no platform key or local subscription/login fallback.
 
 Every tenant-owned table includes `workspace_id`. Repository functions require workspace scope explicitly; there is no unscoped `GetByID` for tenant data. PostgreSQL row-level security is enabled as defense in depth for high-risk tables, with the application setting the verified tenant context per transaction.
 

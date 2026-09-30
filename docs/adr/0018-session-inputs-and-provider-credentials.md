@@ -1,6 +1,6 @@
 # ADR-018: Session input capture and proposed provider credential delivery
 
-- Status: Input-capture decision merged in PR #34 (2f50688); credential proposal pending owner decision
+- Status: Input capture merged in PR #34 (2f50688); BYOK ownership accepted by owner; delivery/secret-store proposal pending
 - Date: 2026-10-01
 
 ## Context
@@ -27,9 +27,27 @@ There is no historical backfill from current tasks. Missing input is a stable
 refusal, not a fallback. Old fake sessions remain executable because this slice
 does not yet require inputs in provisioning. Future real adapters require them.
 
+## Credential ownership decision — BYOK
+
+The owner selected BYOK: each workspace supplies a provider API key from its own
+provider account and pays the provider directly. Weave does not supply a shared
+platform key, resell model usage or assume responsibility for provider charges.
+This is an ownership decision, not permission to invoke a model or access a key.
+
+Workspace owners/admins manage the Weave credential binding; the customer retains
+provider-account billing and provider-side key rotation/revocation authority.
+Prefer a dedicated key per workspace/provider. Claude subscription/login tokens
+are not API keys and will not be discovered or reused. Initial secret onboarding
+remains out-of-band into the chosen managed secret store; no key-entry/readback
+UI or credential ingestion endpoint is authorized or implemented by this decision.
+
+Weave must disable/fence a revoked binding and terminate affected runners;
+provider-side revocation is also needed to invalidate an already-delivered API
+key. Keys remain long-lived provider capabilities, not session-scoped tokens.
+
 ## Credential proposal — not enabled
 
-Required isolation rules, independent of who funds the provider account:
+Required isolation rules for workspace-owned BYOK credentials:
 
 - One explicitly configured binding to **workspace + provider**. No global-key
   fallback, local Claude login discovery, subscription token reuse or silently
@@ -58,12 +76,9 @@ Required isolation rules, independent of who funds the provider account:
 
 ## Owner decisions still required
 
-1. Customer/workspace-owned API projects with out-of-band secret onboarding, or
-   Weave-operated per-workspace provider projects? This changes billing, terms,
-   rotation authority and onboarding. No shared platform key is assumed.
-2. Managed secret store/KMS and hosting/workload identity choice. No production
+1. Managed secret store/KMS and hosting/workload identity choice. No production
    infrastructure or credential store is selected/created by this implementation.
-3. Rotation/revocation policy, budget enforcement and explicitly authorized
+2. Rotation/revocation implementation, budget enforcement and explicitly authorized
    sandbox acceptance spending before any provider call.
 
 ## Threat model and alternatives

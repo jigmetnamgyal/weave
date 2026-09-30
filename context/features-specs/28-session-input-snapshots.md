@@ -36,8 +36,8 @@ are not proof of fitting the supervisor's 128-KiB encoded-input cap; future
 assembly must explicitly reject oversize input without truncation or launching.
 Agent capabilities and tool policy are pinned metadata, not approval grants.
 
-Credential ownership/delivery requirements and unresolved account/funding choice
-are recorded in proposed ADR-018. No real key is discovered, stored or delivered
+Credential ownership is now accepted as BYOK in ADR-018; managed-secret-store
+selection and delivery implementation remain proposed. No real key is discovered, stored or delivered
 by this slice. The fake adapter and M6 runtime activation gates remain unchanged.
 
 ## Verification
@@ -88,7 +88,7 @@ passes three repeats. Lint passes; test-owned DB/container cleanup verified.
 
 ## Next
 
-Decide provider account/credential ownership and managed secret store, then
+Select the managed secret store and workload identity for accepted BYOK ownership, then
 build an authenticated runner input/credential handoff with immutable scope,
 size bounds, secret-store integration and sandbox-safe delivery. Agent instruction
 editing requires an explicit versioned field/contract in a later slice.

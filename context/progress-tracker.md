@@ -9,12 +9,12 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Decide credential account/funding and managed-secret-store ownership before
-implementing authenticated runner input/credential delivery. M6.1b.2a immutable
-session input storage merged as 2f50688 (PR #34), with review feedback resolved
-and merge-head CI passing. Workspace-owned provider API keys versus Weave-operated
-workspace-specific keys remain an explicit owner decision (proposed ADR-018).
-No secret retrieval, paid invocation or real adapter activation is enabled.
+BYOK ownership accepted: workspace-supplied provider API keys, paid directly to
+the provider by the customer. Select managed secret store/KMS and control-plane
+hosting/workload identity before implementing authenticated runner credential
+delivery (ADR-018). Immutable input storage is merged as 2f50688 (PR #34).
+No key ingestion/retrieval, subscription/login reuse, paid model invocation or
+real adapter activation is enabled by this ownership decision.
 
 ## Product Milestones
 
@@ -891,3 +891,16 @@ recorded, not hidden or weakened. Input storage is implemented; delivery and rea
 Claude activation remain disabled. Main synchronized; unrelated worktree untouched.
 Next: owner decision on provider key account/funding and managed secret store;
 then authenticated input/credential delivery with allocation/revocation fencing.
+
+### BYOK ownership accepted
+
+Owner explicitly chose BYOK. ADR-018 and architecture now record workspace-owned
+provider API keys with direct customer/provider billing, no shared Weave key or
+local Claude subscription/login fallback. Initial onboarding remains out-of-band;
+no browser key ingestion/readback or paid invocation authorized. Workspace
+owner/admin controls binding configuration; provider-side rotation/revocation
+remains the customer's authority. Delivery must fence revoked bindings and tear
+down affected runners; memory-held long-lived keys need provider-side revocation.
+This records ownership only, not working credential delivery.
+Next decision: managed secret store/KMS and where API/runner manager will run,
+so retrieval can use scoped workload identity rather than a broad static key.
