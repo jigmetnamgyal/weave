@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M6.1 — Claude Code adapter
 
-**Status: M6.1a merged as cf1933c (PR #32); M6.1b next; no runtime adapter enabled.**
+**Status: M6.1a merged as cf1933c (PR #32); M6.1b.1 process supervisor built, awaiting review (spec 27); no runtime adapter enabled.**
 
 ## Outcome and boundary
 
@@ -157,9 +157,18 @@ assistant UUID, scoped to the Weave session, not that shared API ID.
 - Race tests repeated three times, full unit suite, Go build and targeted
   golangci-lint pass. Coverage 98.3%; fresh fuzz smoke run over 319,000 executions.
 
+## M6.1b delivery refinement
+
+M6.1b splits into bounded slices. First, the tool-disabled process primitive in
+`27-claude-process-supervisor.md`, tested with synthetic subprocesses only.
+Credential ownership/delivery, immutable task/agent inputs, pinned CLI image
+artifact/terms, provider egress and real-CLI isolation acceptance remain later
+activation work. The primitive accepts a trusted caller's key but does not
+select or retrieve one; no local OAuth/subscription login is reused.
+
 ## Next
 
-Refine M6.1b: authentication/credential ownership,
+Review M6.1b.1 (spec 27), then refine authentication/credential ownership,
 isolation from repository configuration, immutable task/agent input delivery and
 tool policy before process wiring or paid acceptance. Do not treat the local
 operator's CLI installation as a production integration.

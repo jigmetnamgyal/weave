@@ -343,20 +343,26 @@ func TestNewRequiresIssuer(t *testing.T) {
 	}
 }
 
-// TestNewDoesNotFetchAtStartup proves construction never depends on the
-// identity provider being reachable.
-func TestNewDoesNotFetchAtStartup(t *testing.T) {
-	_, _, server := newSigningKey(t)
+// blockedStartupTransport cannot finish the initial fetch while construction
+// succeeds: it only returns when the cache lifetime is cancelled.
+type blockedStartupTransport struct{}
 
-	if _, err := New(context.Background(), Config{
+// RoundTrip deliberately blocks without reaching any external identity provider.
+func (blockedStartupTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+// TestNewDoesNotWaitForStartupFetch proves startup is independent of network
+// completion. WithWaitReady(false) starts an async fetch; a zero-fetch counter
+// immediately after New is a scheduler race, not the library's guarantee.
+func TestNewDoesNotWaitForStartupFetch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := New(ctx, Config{
 		Issuer:     testIssuer,
-		JWKSURL:    server.URL,
-		HTTPClient: server.Client(),
+		HTTPClient: &http.Client{Transport: blockedStartupTransport{}},
 	}); err != nil {
-		t.Fatalf("New() returned error: %v", err)
-	}
-
-	if fetches := server.fetches.Load(); fetches != 0 {
-		t.Errorf("JWKS fetched %d times during construction, want 0", fetches)
+		t.Fatalf("New waited for unavailable startup keys: %v", err)
 	}
 }
