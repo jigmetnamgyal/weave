@@ -5,15 +5,16 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization merged as cf1933c (PR #32)**, including the Next.js 16.3.8 security patch; no real adapter enabled yet.
+- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization merged as cf1933c (PR #32)**, including the Next.js 16.3.8 security patch; **M6.1b.1 process supervisor built, awaiting review** on `m6.1b1-claude-process`; no real adapter enabled yet.
 
 ## Current Goal
 
-Refine M6.1b credential ownership/isolation, immutable task/agent input delivery
-and tool policy before process wiring or paid acceptance (spec 26). M6.1a merged
-as cf1933c (PR #32) after all current-head CI checks passed and all review threads
-were resolved. No runtime adapter or paid invocation is enabled. Live session
-room/reconnect and its cursor pagination gate remain separate M6 slices.
+Review M6.1b.1 on `m6.1b1-claude-process`: tool-disabled CLI process supervision,
+synthetic subprocess tests and safe lifecycle/exit semantics (spec 27). Then
+refine credential ownership/delivery, immutable task/agent input delivery, image
+pin/terms and real-CLI isolation acceptance before runtime activation. No paid
+invocation or local login reuse is enabled. Live session room/reconnect and its
+cursor pagination gate remain separate M6 slices.
 
 ## Product Milestones
 
@@ -25,7 +26,7 @@ room/reconnect and its cursor pagination gate remain separate M6 slices.
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Complete |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Complete in development; staging gates remain |
-| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a merged; M6.1b next |
+| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a merged; M6.1b.1 built, awaiting review |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
 | M8 | Codex adapter, commit/pull-request delivery, usage ledger, and quotas | Not started |
 | M9 | Billing, production hardening, security review, runbooks, staging, and launch readiness | Not started |
@@ -737,3 +738,37 @@ limited by Clerk connection resets, as recorded above; no claim of a successful
 post-upgrade browser walk. Restart the user's dev stack to load the patch.
 Next: refine M6.1b credential/input/tool boundaries before enabling paid runtime
 execution. The real Claude adapter remains disabled.
+
+### M6.1b.1 process supervisor in progress
+
+Started `m6.1b1-claude-process`, spec 27. Building a tool-disabled process
+primitive over the merged decoder: stdin-only bounded inputs, an explicit child
+environment/private home, version probe, process-group cancellation, direct-child
+reaping and terminal-result/exit precedence. Synthetic subprocess tests only;
+no credential discovery, paid invocation or runtime registration. Headless/CLI
+reference docs confirm bare-mode API-key authentication and tool flags, not
+verified CLI isolation. Credential ownership/input snapshots and activation
+remain separate gates. Next: finish implementation and adversarial lifecycle tests.
+
+### M6.1b.1 built — tool-disabled CLI process supervisor
+
+Added `services/runner/agent/claudeprocess`: trusted pinned-version executable,
+stdin-only bounded JSON task/instructions, explicit child environment, private
+home outside checkout/symlink aliases, no inherited secrets/override variables,
+no tool or permission bypass, group cancellation and direct-child reaping.
+Stdout ownership preserves buffered terminal output; stderr is discarded. A
+validated terminal result, zero OS exit and uncancelled context are all required
+for success. One final failure combines stream and exit evidence. Callback
+contexts are bounded; arbitrary callbacks must honor cancellation. Private-state
+cleanup errors are reported, not silently ignored.
+
+Synthetic subprocess tests cover policy flags, input/environment boundaries,
+version refusal, failures/nonzero exit, floods, hangs, backpressure, inherited-pipe
+descendants and cleanup. Race tests pass three runs, process coverage 89.5%,
+full unit suite, lint (existing web warnings), Go build, typecheck, contracts and
+targeted formatting pass. Five mutations caught: inherited environment, omitted bare
+mode, argv prompt, ignored exit failure and leader-only termination. No CLI
+package installed or actual Claude/model invoked; real-CLI isolation remains
+unverified. Credential ownership/delivery, input snapshots, image pin/terms and
+provider egress are still activation gates; agent.New continues to refuse Claude.
+Next: review/merge M6.1b.1, then resolve those activation boundaries.
