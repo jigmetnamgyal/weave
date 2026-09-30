@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 #
-# The development event ingress for Vercel sandboxes (M5.4b, ADR-015).
+# The development edges for Vercel sandboxes: the event ingress (M5.4b,
+# ADR-015) and the registry proxy (M5.4c, ADR-016).
 #
 # A Vercel sandbox cannot reach a laptop, so testing the Vercel runner backend
-# against a local stack needs a public 443 hostname forwarded to NATS's local
-# WebSocket listener. A Cloudflare *quick* tunnel provides one with no account
+# against a local stack needs public 443 hostnames: one forwarded to NATS's
+# local WebSocket listener, and one to the registry proxy. A Cloudflare *quick* tunnel provides one with no account
 # or domain — the decision recorded in the tracker: the hostname changes every
 # start, so this script captures it and hands it over, and the runner manager
 # reads it from configuration each run. Cloudflare terminates TLS, which
 # ADR-015 allows in development only, with synthetic or operator-owned
 # repositories.
 #
-#   scripts/dev-tunnel.sh start   start the tunnel, wait until it is usable,
-#                                 print RUNNER_NATS_URL
-#   scripts/dev-tunnel.sh stop    stop it
+#   scripts/dev-tunnel.sh start   start both tunnels, wait until each is usable,
+#                                 print RUNNER_NATS_URL and the registry proxy's
+#                                 public URL
+#   scripts/dev-tunnel.sh stop    stop them
 #
 # **Start first, and wait for the name to resolve publicly.** A new quick-tunnel
 # hostname takes seconds to appear in DNS, and a lookup made before then is
@@ -26,10 +28,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${REPO_ROOT}/tmp/tunnel"
-LOG="${STATE}/cloudflared.log"
-PIDFILE="${STATE}/cloudflared.pid"
-HOSTFILE="${STATE}/host"
-
 # The local WebSocket listener, where Compose publishes it: NATS_WEBSOCKET_PORT
 # on NATS_BIND. On Linux, .env.example has NATS_BIND set to the bridge address,
 # and the listener is then not on loopback at all — so the tunnel's origin
@@ -48,13 +46,62 @@ case "${NATS_BIND:-}" in
   *) ORIGIN_HOST="${NATS_BIND}" ;;
 esac
 ORIGIN="http://${ORIGIN_HOST}:${PORT}"
+# The registry proxy's public listener (REGISTRY_PROXY_ADDR), on loopback.
+REGISTRY_PORT="$(set -a; [ -f "${REPO_ROOT}/.env" ] && . "${REPO_ROOT}/.env"; addr="${REGISTRY_PROXY_ADDR:-:8095}"; echo "${addr##*:}")"
+REGISTRY_ORIGIN="http://127.0.0.1:${REGISTRY_PORT}"
+
+# Each tunnel keeps its state under tmp/tunnel: <name>.log, <name>.pid, and
+# the hostname in a file — "host" for the events tunnel (kept for M5.4b's
+# tooling), "registry-host" for the registry proxy's.
+hostfile() { if [ "$1" = events ]; then echo "${STATE}/host"; else echo "${STATE}/$1-host"; fi; }
+
+stop_one() {
+  local name="$1" pidfile="${STATE}/$1.pid"
+  if [ -f "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
+    kill "$(cat "${pidfile}")"
+    echo "Tunnel ${name} stopped."
+  fi
+  rm -f "${pidfile}" "$(hostfile "$1")"
+}
 
 stop() {
-  if [ -f "${PIDFILE}" ] && kill -0 "$(cat "${PIDFILE}")" 2>/dev/null; then
-    kill "$(cat "${PIDFILE}")"
-    echo "Tunnel stopped."
+  stop_one events
+  stop_one registry
+  # The single-tunnel state M5.4b's first version wrote.
+  if [ -f "${STATE}/cloudflared.pid" ] && kill -0 "$(cat "${STATE}/cloudflared.pid")" 2>/dev/null; then
+    kill "$(cat "${STATE}/cloudflared.pid")"
   fi
-  rm -f "${PIDFILE}" "${HOSTFILE}"
+  rm -f "${STATE}/cloudflared.pid"
+}
+
+start_one() {
+  local name="$1" origin="$2" log="${STATE}/$1.log" pidfile="${STATE}/$1.pid"
+  : > "${log}"
+  cloudflared tunnel --no-autoupdate --url "${origin}" > "${log}" 2>&1 &
+  echo $! > "${pidfile}"
+
+  local host="" registered="" deadline=$((SECONDS + 60))
+  while [ ${SECONDS} -lt ${deadline} ]; do
+    host="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "${log}" | head -1 | sed 's|https://||' || true)"
+    registered="$(grep -m1 'Registered tunnel connection' "${log}" || true)"
+    [ -n "${host}" ] && [ -n "${registered}" ] && break
+    kill -0 "$(cat "${pidfile}")" 2>/dev/null || { echo "cloudflared (${name}) exited; see ${log}" >&2; return 1; }
+    sleep 1
+  done
+  if [ -z "${host}" ] || [ -z "${registered}" ]; then
+    echo "The ${name} tunnel did not register within 60s; see ${log}" >&2
+    return 1
+  fi
+
+  # Public DNS only: a local negative-cache entry would poison every later
+  # lookup on this machine, and the sandbox resolves through Vercel anyway.
+  deadline=$((SECONDS + 120))
+  until [ -n "$(dig +short @1.1.1.1 "${host}" A 2>/dev/null)" ]; do
+    [ ${SECONDS} -lt ${deadline} ] || { echo "${host} did not resolve publicly within 120s" >&2; return 1; }
+    sleep 2
+  done
+  echo "${host}" > "$(hostfile "${name}")"
+  echo "Tunnel ${name} ready: https://${host} -> ${origin}"
 }
 
 start() {
@@ -62,34 +109,11 @@ start() {
   command -v dig >/dev/null || { echo "dig is required to check public DNS" >&2; exit 1; }
   stop >/dev/null
   mkdir -p "${STATE}"
-  : > "${LOG}"
-  cloudflared tunnel --no-autoupdate --url "${ORIGIN}" > "${LOG}" 2>&1 &
-  echo $! > "${PIDFILE}"
-
-  local host="" registered="" deadline=$((SECONDS + 60))
-  while [ ${SECONDS} -lt ${deadline} ]; do
-    host="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "${LOG}" | head -1 | sed 's|https://||' || true)"
-    registered="$(grep -m1 'Registered tunnel connection' "${LOG}" || true)"
-    [ -n "${host}" ] && [ -n "${registered}" ] && break
-    kill -0 "$(cat "${PIDFILE}")" 2>/dev/null || { echo "cloudflared exited; see ${LOG}" >&2; exit 1; }
-    sleep 1
-  done
-  if [ -z "${host}" ] || [ -z "${registered}" ]; then
-    echo "The tunnel did not register within 60s; see ${LOG}" >&2
-    stop >/dev/null; exit 1
-  fi
-
-  # Public DNS only: a local negative-cache entry would poison every later
-  # lookup on this machine, and the sandbox resolves through Vercel anyway.
-  deadline=$((SECONDS + 120))
-  until [ -n "$(dig +short @1.1.1.1 "${host}" A 2>/dev/null)" ]; do
-    [ ${SECONDS} -lt ${deadline} ] || { echo "${host} did not resolve publicly within 120s" >&2; stop >/dev/null; exit 1; }
-    sleep 2
-  done
-
-  echo "${host}" > "${HOSTFILE}"
-  echo "Tunnel ready: wss://${host} -> ${ORIGIN/http:/ws:}"
-  echo "RUNNER_NATS_URL=wss://${host}"
+  start_one events "${ORIGIN}" || { stop >/dev/null; exit 1; }
+  start_one registry "${REGISTRY_ORIGIN}" || { stop >/dev/null; exit 1; }
+  echo "RUNNER_NATS_URL=wss://$(cat "$(hostfile events)")"
+  echo "RUNNER_REGISTRY_PROXY_URL=https://$(cat "$(hostfile registry)")"
+  echo "REGISTRY_PROXY_PUBLIC_URL=https://$(cat "$(hostfile registry)")"
 }
 
 case "${1:-}" in

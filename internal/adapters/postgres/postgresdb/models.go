@@ -103,6 +103,18 @@ type OutboxEvent struct {
 	TerminatedAt pgtype.Timestamptz
 }
 
+// Every package-registry request a runner made, recorded before the registry proxy forwarded it (ADR-016). Append-only.
+type RegistryRequest struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	SessionID   uuid.UUID
+	RunnerID    uuid.UUID
+	Host        string
+	Method      string
+	Path        string
+	RequestedAt pgtype.Timestamptz
+}
+
 type Repository struct {
 	ID                 uuid.UUID
 	WorkspaceID        uuid.UUID

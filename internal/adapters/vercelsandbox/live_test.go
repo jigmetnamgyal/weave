@@ -63,11 +63,11 @@ func ingressHost(t *testing.T) string {
 
 // sandbox creates a runner sandbox with the production policy and the runner
 // installed, destroyed at the end of the test.
-func sandbox(t *testing.T, b *Backend, hosts []string) (uuid.UUID, string) {
+func sandbox(t *testing.T, b *Backend, rules []application.EgressRule) (uuid.UUID, string) {
 	t.Helper()
 	ctx := context.Background()
 	id := uuid.New()
-	policy, err := buildPolicy(hosts)
+	policy, err := buildPolicy(rules)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +95,15 @@ func destroyAndConfirm(t *testing.T, b *Backend, id uuid.UUID) {
 	if snaps, err := b.snapshotsOf(ctx, b.sandboxName(id)); err != nil || len(snaps) != 0 {
 		t.Errorf("%s: snapshots after teardown = %v, %v; want none", b.sandboxName(id), snaps, err)
 	}
+}
+
+// plainRules allows hosts with no forwarding.
+func plainRules(hosts ...string) []application.EgressRule {
+	rules := make([]application.EgressRule, 0, len(hosts))
+	for _, host := range hosts {
+		rules = append(rules, application.EgressRule{Host: host})
+	}
+	return rules
 }
 
 func isNotFound(err error) bool { return errors.Is(err, errNotFound) }
@@ -126,8 +135,7 @@ func reaches(url string, extra ...string) string {
 func TestLiveEgressIsExactlyThePolicy(t *testing.T) {
 	b := liveBackend(t, "live"+uuid.NewString()[:6], DefaultLease)
 	ingress := ingressHost(t)
-	hosts := append(append([]string(nil), application.DefaultEgressHosts...), ingress)
-	_, session := sandbox(t, b, hosts)
+	_, session := sandbox(t, b, plainRules(append(append([]string(nil), application.DefaultEgressHosts...), ingress)...))
 
 	if sh(t, b, session, false, "command -v curl && command -v getent") != 0 {
 		t.Fatal("curl or getent is missing from the image; the checks below would prove nothing")
@@ -211,7 +219,7 @@ func TestLiveTheRunnerStartsAndItsSecretsStayOffDisk(t *testing.T) {
 		NATS: application.RunnerCredentials{Creds: marker + "-nats",
 			Subject: "weave.session." + sessionID.String() + ".events", InboxPrefix: "_INBOX_x"},
 		Provider: "fake", Model: "deterministic-v1",
-		EgressHosts: append(append([]string(nil), application.DefaultEgressHosts...), ingressHost(t)),
+		Egress: plainRules(append(append([]string(nil), application.DefaultEgressHosts...), ingressHost(t))...),
 	}
 	handle, err := b.Provision(ctx, spec)
 	t.Cleanup(func() { destroyAndConfirm(t, b, spec.RunnerID) })

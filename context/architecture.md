@@ -42,6 +42,7 @@ This design supports an efficient MVP while preserving clear extraction boundari
 5. **Event ingestor** — consumes runner events from NATS JetStream, then validates, deduplicates, sequences and persists them to `session_events`, quarantining what it refuses. Separate from the workflow workers because it scales with runner output rather than with sessions, and because neither may stall the other: a poison event must not hold up workflows, and a Temporal outage must not stop ingestion. Its readiness is PostgreSQL and NATS only.
 6. **Runner manager** — provisions, monitors, and terminates isolated runners; it does not make product authorization decisions.
 7. **Runner** — per-session ephemeral environment containing a repository checkout, provider adapter, policy-enforcing tool proxy, and event emitter.
+8. **Registry proxy** — the second public edge (ADR-016): receives the package-registry requests Vercel's firewall forwards from runner sandboxes, authenticates each by the sandbox OIDC token Vercel signs, records it per session before forwarding it to the registry, and fetches from nothing but its fixed registry list. Separate because it authenticates sandboxes rather than people and fetches from the internet on their behalf; installs depend on it, by design.
 
 Only the runner manager and workflow workers can provision runners. The browser never connects directly to a runner.
 
@@ -53,6 +54,7 @@ Only the runner manager and workflow workers can provision runners. The browser 
 - `services/ingestor` — the session event consumer; treats every field of a runner event as an untrusted claim, checked against rows the runner did not supply
 - `services/runner-manager` — execution-environment lifecycle and runner health
 - `services/runner` — provider adapters and process supervision inside the sandbox
+- `services/registry-proxy` — records and forwards runner registry requests; treats every forwarded header as a claim, trusting only what Vercel's signed token proves
 - `internal/domain` — provider-independent entities, value objects, policies, and state transitions
 - `internal/application` — use cases and transaction boundaries
 - `internal/adapters` — PostgreSQL, Redis, NATS, Temporal, GitHub, Stripe, object storage, and identity implementations
@@ -258,6 +260,10 @@ Production must not use a plain privileged Docker socket or mount the host files
 **Decided in ADR-015** (`docs/adr/0015-runner-event-ingress.md`):
 
 - **Runners reach NATS only through a public WebSocket listener**, TLS on 443 at one dedicated hostname — the one Weave-operated destination on every sandbox's allowlist. The standard client port is never exposed. Runner credentials may connect only over WebSocket and service credentials only over the standard port, so neither is usable on the other's listener.
+
+**Decided in ADR-016** (`docs/adr/0016-registry-request-logging.md`):
+
+- **Every registry request is recorded before it is forwarded.** Default registry hosts are forwarded by Vercel's firewall to the registry proxy, with no `match` so no request escapes it; the proxy authenticates each by Vercel's sandbox OIDC token (issuer, project, and an audience bound to the exact route), resolves the runner, records method, host and path per session, then fetches — and refuses rather than forwards when it cannot record.
 
 ## Reliability and Consistency
 

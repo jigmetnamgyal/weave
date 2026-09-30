@@ -309,7 +309,7 @@ type createRequest struct {
 	Timeout       int64             `json:"timeout"`
 	Region        string            `json:"region"`
 	Resources     resources         `json:"resources"`
-	NetworkPolicy networkPolicy     `json:"networkPolicy"`
+	NetworkPolicy any               `json:"networkPolicy"`
 	Tags          map[string]string `json:"tags"`
 }
 
@@ -336,7 +336,7 @@ type commandRequest struct {
 // guarded inside the sandbox by an atomic marker, so a second start exits
 // without running. A runner whose sandbox has already stopped is lost.
 func (b *Backend) Provision(ctx context.Context, spec application.RunnerSpec) (string, error) {
-	policy, err := buildPolicy(spec.EgressHosts)
+	policy, err := buildPolicy(spec.Egress)
 	if err != nil {
 		return "", err
 	}
@@ -442,7 +442,7 @@ func runnerEnv(spec application.RunnerSpec) map[string]string {
 	}
 }
 
-func (b *Backend) create(ctx context.Context, name string, spec application.RunnerSpec, policy networkPolicy) (sandboxResponse, error) {
+func (b *Backend) create(ctx context.Context, name string, spec application.RunnerSpec, policy any) (sandboxResponse, error) {
 	var created sandboxResponse
 	err := b.api.do(ctx, request{
 		method: http.MethodPost, path: "/v4/sandboxes",

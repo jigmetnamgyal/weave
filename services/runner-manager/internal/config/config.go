@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/natsauth"
+	"github.com/jigmetnamgyal/weave/internal/application"
 )
 
 // Config is what the runner manager needs to run.
@@ -44,6 +45,12 @@ type Config struct {
 	// Vercel is the Vercel Sandbox backend's configuration (M5.4b), read
 	// only when Backend is "vercel".
 	Vercel VercelConfig
+
+	// RegistryProxyURL is the registry proxy's public base URL (M5.4c,
+	// ADR-016): every registry request from a runner is forwarded there and
+	// recorded. Required outside development and test — unset, registry
+	// traffic would pass unrecorded, the gap the proxy exists to close.
+	RegistryProxyURL string
 
 	// NATSSigningKey and NATSAccount mint each runner's broker credential
 	// (M5.5a, ADR-014). The signing key is a secret, read from a path; this
@@ -142,6 +149,10 @@ func Load() (Config, error) {
 	if err := validateRunnerNATSURL(cfg.AppEnv, cfg.RunnerNATSURL); err != nil {
 		return Config{}, err
 	}
+	cfg.RegistryProxyURL = strings.TrimSuffix(get("RUNNER_REGISTRY_PROXY_URL", ""), "/")
+	if err := validateRegistryProxy(cfg.AppEnv, cfg.RegistryProxyURL); err != nil {
+		return Config{}, err
+	}
 	if cfg.Backend == "vercel" {
 		if cfg.Vercel, err = loadVercel(cfg.AppEnv, get); err != nil {
 			return Config{}, err
@@ -235,4 +246,21 @@ func runnerReachable(hostURL string) string {
 		}
 	}
 	return hostURL
+}
+
+// validateRegistryProxy refuses to start without a registry proxy outside
+// development and test, and refuses a proxy URL Vercel would not accept.
+func validateRegistryProxy(appEnv, raw string) error {
+	if raw == "" {
+		switch strings.ToLower(strings.TrimSpace(appEnv)) {
+		case "development", "test":
+			return nil
+		}
+		return fmt.Errorf("RUNNER_REGISTRY_PROXY_URL is required outside development and test (APP_ENV=%q): "+
+			"without it runners' registry requests are not recorded (ADR-016)", appEnv)
+	}
+	if err := application.ValidateRegistryProxyURL(raw); err != nil {
+		return fmt.Errorf("RUNNER_REGISTRY_PROXY_URL: %w", err)
+	}
+	return nil
 }

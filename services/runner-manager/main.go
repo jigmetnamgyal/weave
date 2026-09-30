@@ -109,7 +109,12 @@ func run() error {
 
 	runners := application.NewRunnerService(postgres.NewRunnerStore(appPool), postgres.NewSessionStore(appPool),
 		backend, installations, issuer, cfg.RunnerNATSURL, postgres.NewAgentStore(appPool), drain,
-		postgres.WithTenantWorkspace, cfg.GitBaseURL, logger)
+		postgres.WithTenantWorkspace, cfg.GitBaseURL, logger).WithRegistryProxy(cfg.RegistryProxyURL)
+	if cfg.RegistryProxyURL == "" {
+		// Allowed in development only (config refuses it elsewhere), and said
+		// out loud: registries are reachable and nothing is recorded.
+		logger.Warn("no registry proxy configured: runners reach package registries directly and no registry request is recorded (ADR-016); set RUNNER_REGISTRY_PROXY_URL")
+	}
 
 	temporalClient, err := temporalclient.Dial(temporalclient.Options{HostPort: cfg.TemporalHostPort, Logger: logger})
 	if err != nil {

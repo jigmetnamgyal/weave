@@ -140,6 +140,9 @@ type Querier interface {
 	// workspace identifiers cannot be probed.
 	GetWorkspaceForMember(ctx context.Context, arg GetWorkspaceForMemberParams) (Workspace, error)
 	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
+	// Recorded before the proxy forwards the request. Runs in the tenant context
+	// of the runner's workspace; RLS refuses any other.
+	InsertRegistryRequest(ctx context.Context, arg InsertRegistryRequestParams) error
 	// What the workspace currently has connected. Removed installations are kept
 	// for their repository history but are not connections any more.
 	ListActiveInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error)
@@ -156,6 +159,8 @@ type Querier interface {
 	// going to notice a boolean nobody will ever clear. The claim itself lands in
 	// M5 as a single conditional UPDATE, so that two claimers cannot both win.
 	ListPendingOutboxEvents(ctx context.Context, workspaceID uuid.UUID) ([]OutboxEvent, error)
+	// A session's registry requests, oldest first. Tenant-scoped.
+	ListRegistryRequests(ctx context.Context, arg ListRegistryRequestsParams) ([]RegistryRequest, error)
 	// Withdrawn repositories are returned too, with granted = false, so the
 	// interface can say "access was removed" rather than silently dropping a
 	// repository someone was using yesterday.

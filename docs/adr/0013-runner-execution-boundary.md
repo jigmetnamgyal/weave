@@ -4,7 +4,8 @@
 - Date: 2026-09-28 (decided before M5.4, the first unit to run customer code)
 - Amended: 2026-09-29 by ADR-015 (runner event ingress); provider selected
   the same day (see "Provider selection" below); 2026-09-30 by M5.4b's
-  implementation (see "Threat model after M5.4b" below)
+  implementation (see "Threat model after M5.4b" below); 2026-09-30 by M5.4c
+  (see "Registry requests after M5.4c" below, and ADR-016)
 
 ## Context
 
@@ -202,3 +203,29 @@ verified live on Vercel Hobby, and what M6 inherits:
 - **Open, on the staging gate:** a command's optional timeout is capped at
   five hours, and a session may run eight. The runner is started without one;
   the nine-hour survival run must show it is not killed at five.
+
+## Registry requests after M5.4c (2026-09-30)
+
+The control above — every registry request logged by package path, per
+session — is built (ADR-016), and changed the egress policy again:
+
+- **Registry hosts are forwarded, not merely allowed.** The sandbox's policy
+  is now Vercel's rules format. Git and the event ingress are plainly allowed.
+  **Every default registry host is forwarded** to the registry proxy, with no
+  `match`: a request no rule matches would go straight to the origin,
+  unrecorded, as the spike showed. Deny-by-default under this format was
+  re-verified live with the full egress matrix.
+- **Vercel's firewall terminates TLS for registry traffic.** Tools in the
+  sandbox trust its interception through the image's CA-bundle variables. So
+  Vercel sees registry requests in plaintext: public content for the default
+  registries, and a reason private registries are deferred to M5.4d and M6.
+- **Recorded before fetched, and fail closed.** The proxy authenticates each
+  request by the OIDC token Vercel signs for the sandbox (issuer, project,
+  and an audience bound to the exact route), resolves its runner, and writes
+  `registry_requests` before any fetch. A request it cannot authenticate,
+  attribute or record is refused. Live: `npm view` and `npm pack` succeeded
+  through it and were recorded, tarball path included, and a pip query string
+  was not stored. From outside, no token and a made-up token were refused.
+- **The record is not yet the alert.** Comparing fetched packages with a
+  repository's manifests is the next step. What this unit guarantees is that
+  nothing is fetched without a record.

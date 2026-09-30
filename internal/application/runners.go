@@ -39,21 +39,13 @@ var (
 	ErrRunnerBackendRefused = errors.New("the runner backend refused to start the session's environment")
 )
 
-// DefaultEgressHosts is ADR-013's default allowlist, as exact hostnames: git
-// over HTTPS to GitHub and the public package registries. The model
-// provider's host is M6's to add; the fake provider needs none. Workspace
-// additions are M5.4c's. Every host is exact — no wildcards — because a
-// hostname-enforcing firewall matches on the TLS SNI and a wildcard over a
-// shared domain reaches whatever else is behind it.
-var DefaultEgressHosts = []string{
-	"github.com", "codeload.github.com",
-	"registry.npmjs.org",
-	"pypi.org", "files.pythonhosted.org",
-	"proxy.golang.org", "sum.golang.org",
-	"crates.io", "static.crates.io", "index.crates.io",
-	"rubygems.org",
-	"repo1.maven.org", "repo.maven.apache.org",
-}
+// DefaultEgressHosts is ADR-013's default allowlist as exact hostnames: git
+// over HTTPS to GitHub, then the public package registries. The model
+// provider's host is M6's to add; workspace additions are M5.4d's. Every host
+// is exact — no wildcards — because a hostname-enforcing firewall matches on
+// the TLS SNI and a wildcard over a shared domain reaches whatever else is
+// behind it.
+var DefaultEgressHosts = append(append([]string(nil), GitHubEgressHosts...), RegistryHosts...)
 
 // Exit codes the runner uses, so the backend's status can say *why* it
 // stopped without the control plane reading anything the runner wrote.
@@ -100,12 +92,14 @@ type RunnerSpec struct {
 	// from the session's pinned agent version.
 	Provider domain.Provider
 	Model    string
-	// EgressHosts is every hostname the environment may reach, exactly:
-	// DefaultEgressHosts plus the event ingress the runner publishes to
-	// (ADR-015). Built by the runner manager, never from input. A backend
-	// that enforces egress allows these and nothing else; the dev backend
-	// enforces nothing and is refused outside development (ADR-013).
-	EgressHosts []string
+	// Egress is every host the environment may reach, exactly, and which of
+	// them are forwarded to the registry proxy (M5.4c): DefaultEgressHosts
+	// plus the event ingress the runner publishes to (ADR-015). Built by the
+	// runner manager, never from input. A backend that enforces egress allows
+	// these and nothing else, and forwards every request to a forwarded host;
+	// the dev backend enforces nothing and is refused outside development
+	// (ADR-013).
+	Egress []EgressRule
 }
 
 // RunnerCredentials is a runner's NATS identity.
@@ -316,7 +310,10 @@ type RunnerService struct {
 	// gitBase is where repositories are cloned from: https://github.com in
 	// production, a local git server in tests.
 	gitBase string
-	logger  *slog.Logger
+	// registryProxy is the registry proxy's public base URL (ADR-016), or
+	// empty.
+	registryProxy string
+	logger        *slog.Logger
 }
 
 // NewRunnerService wires the service.
@@ -418,7 +415,7 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 		NATS:        natsCreds,
 		Provider:    version.Provider,
 		Model:       version.Model,
-		EgressHosts: egressHosts(s.natsURL),
+		Egress:      egressRules(s.natsURL, s.registryProxy),
 	})
 	if err != nil {
 		return domain.Runner{}, fmt.Errorf("provision runner: %w", err)
@@ -426,16 +423,37 @@ func (s *RunnerService) Provision(ctx context.Context, workspaceID, sessionID uu
 	return s.runners.SetHandle(ctx, runner.ID, workspaceID, handle)
 }
 
-// egressHosts is what a runner may reach: ADR-013's defaults and the event
-// ingress it publishes to, which ADR-015 makes the one Weave-operated host on
-// every allowlist. Only the hostname: the port is the firewall's business,
-// and the ingress is 443 wherever it is enforced.
-func egressHosts(natsURL string) []string {
-	hosts := append([]string(nil), DefaultEgressHosts...)
-	if parsed, err := url.Parse(natsURL); err == nil && parsed.Hostname() != "" {
-		hosts = append(hosts, strings.ToLower(parsed.Hostname()))
+// egressRules is what a runner may reach: git to GitHub and the event ingress
+// it publishes to (ADR-015), plainly; and every default registry, **forwarded
+// to the registry proxy** when one is configured (ADR-016), so each request is
+// recorded before it reaches the registry. Without a proxy — allowed in
+// development only; the runner manager refuses to start without one anywhere
+// else — registries are plainly allowed and nothing is recorded.
+func egressRules(natsURL, registryProxy string) []EgressRule {
+	rules := make([]EgressRule, 0, len(DefaultEgressHosts)+1)
+	for _, host := range GitHubEgressHosts {
+		rules = append(rules, EgressRule{Host: host})
 	}
-	return hosts
+	for _, host := range RegistryHosts {
+		rule := EgressRule{Host: host}
+		if registryProxy != "" {
+			rule.ForwardURL = RegistryForwardURL(registryProxy, host)
+		}
+		rules = append(rules, rule)
+	}
+	if parsed, err := url.Parse(natsURL); err == nil && parsed.Hostname() != "" {
+		rules = append(rules, EgressRule{Host: strings.ToLower(parsed.Hostname())})
+	}
+	return rules
+}
+
+// WithRegistryProxy sets the registry proxy's public base URL (ADR-016): every
+// registry request from a runner is then forwarded there. Empty leaves
+// registries plainly allowed, which the runner manager permits in development
+// only.
+func (s *RunnerService) WithRegistryProxy(base string) *RunnerService {
+	s.registryProxy = base
+	return s
 }
 
 // create inserts the runner row before anything exists in the backend.

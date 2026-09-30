@@ -565,23 +565,36 @@ func TestAnAbandonedHaltedRunnerIsFinishedAfterTheGrace(t *testing.T) {
 	}
 }
 
-// TestARunnerMayReachExactlyTheDefaultsAndItsIngress: the egress list a
-// backend enforces is ADR-013's defaults plus the event ingress the runner
-// publishes to (ADR-015) — exact hostnames, no port, no wildcard, and nothing
-// from the session or its repository.
+// TestARunnerMayReachExactlyTheDefaultsAndItsIngress: the egress a backend
+// enforces is ADR-013's defaults plus the event ingress (ADR-015) — exact
+// hostnames, nothing from the session or its repository. With a registry
+// proxy (ADR-016), **every** registry host is forwarded to its own route on
+// it; git and the ingress never are. Without one, nothing is forwarded.
 func TestARunnerMayReachExactlyTheDefaultsAndItsIngress(t *testing.T) {
-	w := newRunnerTestWorld(t)
-	if _, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID); err != nil {
-		t.Fatal(err)
-	}
-	got := w.backend.lastSpec.EgressHosts
-	want := append(append([]string(nil), application.DefaultEgressHosts...), "broker.test")
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("egress hosts = %v, want %v", got, want)
-	}
-	for _, host := range got {
-		if strings.ContainsAny(host, "*:/") || host != strings.ToLower(host) {
-			t.Errorf("egress host %q is not an exact lowercase hostname", host)
+	for _, proxy := range []string{"", "https://registry-proxy.test"} {
+		w := newRunnerTestWorld(t)
+		w.service.WithRegistryProxy(proxy)
+		if _, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID); err != nil {
+			t.Fatal(err)
+		}
+		var hosts []string
+		for _, rule := range w.backend.lastSpec.Egress {
+			hosts = append(hosts, rule.Host)
+			if strings.ContainsAny(rule.Host, "*:/") || rule.Host != strings.ToLower(rule.Host) {
+				t.Errorf("egress host %q is not an exact lowercase hostname", rule.Host)
+			}
+			forwarded := rule.ForwardURL != ""
+			wantForwarded := proxy != "" && application.IsRegistryHost(rule.Host)
+			if forwarded != wantForwarded {
+				t.Errorf("proxy %q: %s forwarded=%v, want %v", proxy, rule.Host, forwarded, wantForwarded)
+			}
+			if forwarded && rule.ForwardURL != proxy+"/r/"+rule.Host {
+				t.Errorf("%s forwards to %q, want its own route", rule.Host, rule.ForwardURL)
+			}
+		}
+		want := append(append([]string(nil), application.DefaultEgressHosts...), "broker.test")
+		if strings.Join(hosts, ",") != strings.Join(want, ",") {
+			t.Errorf("egress hosts = %v, want %v", hosts, want)
 		}
 	}
 }
