@@ -491,3 +491,7 @@ flags only pre-existing untracked `.claude/` files.
 
 **Next:** open/review PR; after merge, M5.4d.3 (authenticated edge using the guarded
 transport and snapshots, match-free runner forwarding, admin UI, live acceptance).
+
+Operator decision (M5.4d.2 review): keep the plan — the admin settings screen
+ships with M5.4d.3, not as a separate earlier slice. Until then the additions API
+has no UI and changes no runner network access.
