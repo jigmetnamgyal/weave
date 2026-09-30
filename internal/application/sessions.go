@@ -12,6 +12,8 @@ import (
 
 // Errors the session application service raises.
 var (
+	// ErrSessionInputUnavailable refuses missing/legacy input without disclosing tenant existence.
+	ErrSessionInputUnavailable = errors.New("session input unavailable")
 	// ErrSessionNotFound is returned when no session matches, for any reason.
 	// A caller who is not a member and one naming a session that never existed
 	// receive the same thing, so probing cannot distinguish them.

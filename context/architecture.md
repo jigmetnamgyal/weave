@@ -160,6 +160,13 @@ An approval grants permission only for the exact proposal hash. Parameter change
 
 Stores users, workspaces, memberships, repositories, tasks, agents, sessions, state transitions, event indexes, messages, approvals, policy snapshots, integration references, usage, subscriptions, idempotency records, outbox records, and audit logs.
 
+Session task title/body is captured atomically at session creation in
+`session_input_snapshots`, under the task lock; agent settings remain pinned to
+append-only `agent_versions`. Legacy sessions have no reconstructed input and
+future real-runtime delivery must refuse them (ADR-018, spec 28). Neither input
+text nor provider credentials are carried in workflow/outbox metadata. Credential
+account/funding and managed-secret-store choices remain proposed, not enabled.
+
 Every tenant-owned table includes `workspace_id`. Repository functions require workspace scope explicitly; there is no unscoped `GetByID` for tenant data. PostgreSQL row-level security is enabled as defense in depth for high-risk tables, with the application setting the verified tenant context per transaction.
 
 ### Object Storage

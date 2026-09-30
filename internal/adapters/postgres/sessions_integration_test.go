@@ -267,6 +267,7 @@ func TestAFailedSessionWriteLeavesNothingBehindIntegration(t *testing.T) {
 	// proves nothing.
 	counts := map[string]string{
 		"sessions":                  "SELECT count(*) FROM sessions WHERE workspace_id = $1",
+		"session_input_snapshots":   "SELECT count(*) FROM session_input_snapshots WHERE workspace_id = $1",
 		"session_participants":      "SELECT count(*) FROM session_participants WHERE workspace_id = $1",
 		"session_state_transitions": "SELECT count(*) FROM session_state_transitions WHERE workspace_id = $1",
 		"outbox_events":             "SELECT count(*) FROM outbox_events WHERE workspace_id = $1",

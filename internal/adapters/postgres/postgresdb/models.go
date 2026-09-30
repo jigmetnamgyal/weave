@@ -216,6 +216,16 @@ type SessionEventSequence struct {
 	LastSequence int64
 }
 
+// Task text captured at session INSERT. Legacy sessions have no row; never substitute current task text. No provider credentials.
+type SessionInputSnapshot struct {
+	SessionID    uuid.UUID
+	WorkspaceID  uuid.UUID
+	InputVersion int32
+	TaskTitle    string
+	TaskBody     string
+	CreatedAt    pgtype.Timestamptz
+}
+
 // Who is in a session and in what capacity. Distinct from workspace membership.
 type SessionParticipant struct {
 	SessionID   uuid.UUID

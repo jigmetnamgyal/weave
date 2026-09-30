@@ -138,6 +138,9 @@ type Querier interface {
 	// Scoped by workspace, so a session id from one tenant cannot be read through
 	// another even before the policies are consulted.
 	GetSessionForWorkspace(ctx context.Context, arg GetSessionForWorkspaceParams) (Session, error)
+	// No mutable task/current-agent join and no legacy fallback. Settings come from
+	// the frozen version pin; task text comes from its creation-time snapshot.
+	GetSessionInputForWorkspace(ctx context.Context, arg GetSessionInputForWorkspaceParams) (GetSessionInputForWorkspaceRow, error)
 	// Scoped by workspace, so a task id from one tenant cannot be read through
 	// another even before the policies are consulted.
 	GetTaskForWorkspace(ctx context.Context, arg GetTaskForWorkspaceParams) (Task, error)
