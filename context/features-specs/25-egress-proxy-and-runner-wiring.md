@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d.3 — Egress proxy, runner wiring and admin UI
 
-**Status: 3a merged (a5271af, PR #29); 3b built; operator walkthrough confirmed by the user; awaiting merge.** M5.4d.2 merged as 6a1193a
+**Status: 3a merged (a5271af, PR #29); 3b merged (ad8491c, PR #31); operator walkthrough confirmed by the user.** M5.4d.2 merged as 6a1193a
 (PR #28). Parent: `22-workspace-egress-allowlist.md`; design: ADR-017.
 
 This unit makes a workspace's added hostnames reachable from its runners, and
@@ -222,5 +222,5 @@ to default GitHub/registry/ingress rules.
 
 ## Next
 
-Merge PR #31 after final CI/review checks and user authorization. That completes
-M5.4d. Staging gates from ADR-013 still apply.
+M5.4d is complete. Continue with M6.1 (`26-claude-code-adapter.md`). Staging
+gates from ADR-013 still apply.

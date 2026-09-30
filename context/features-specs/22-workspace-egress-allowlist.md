@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d — Workspace egress allowlist additions
 
-**Status: ADR-017 accepted; M5.4d.1 merged (43ec4c7, PR #27); M5.4d.2 merged (6a1193a, PR #28); M5.4d.3a merged (a5271af, PR #29); M5.4d.3b admin screen built; user confirmed the walkthrough; awaiting merge.**
+**Status: ADR-017 accepted; M5.4d.1 merged (43ec4c7, PR #27); M5.4d.2 merged (6a1193a, PR #28); M5.4d.3a merged (a5271af, PR #29); M5.4d.3b merged (ad8491c, PR #31); user confirmed the walkthrough.**
 
 ## Outcome
 
