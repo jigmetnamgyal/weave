@@ -396,7 +396,13 @@ func newTestBackend(t *testing.T) (*Backend, *fakeVercel) {
 	return backend, fake
 }
 
-var testHosts = []string{"github.com", "codeload.github.com", "events.example.test"}
+const testProxy = "https://proxy.example.test"
+
+var testRules = []application.EgressRule{
+	{Host: "github.com"}, {Host: "codeload.github.com"},
+	{Host: "registry.npmjs.org", ForwardURL: testProxy + "/r/registry.npmjs.org"},
+	{Host: "events.example.test"},
+}
 
 func testSpec() application.RunnerSpec {
 	return application.RunnerSpec{
@@ -405,7 +411,7 @@ func testSpec() application.RunnerSpec {
 		GitToken: secretToken, NATSURL: "wss://events.example.test",
 		NATS:     application.RunnerCredentials{Creds: secretCreds, Subject: "weave.session.x.events", InboxPrefix: "_INBOX_x"},
 		Provider: "fake", Model: "deterministic-v1",
-		EgressHosts: testHosts,
+		Egress: testRules,
 	}
 }
 
@@ -428,8 +434,13 @@ func TestACreateIsNonPersistentWithExactlyItsHosts(t *testing.T) {
 		t.Errorf("persistent = %v (stated %v); every create must say false", persistent, stated)
 	}
 	policy, _ := json.Marshal(create["networkPolicy"])
-	if want := `{"allowedDomains":["github.com","codeload.github.com","events.example.test"],"mode":"custom"}`; string(policy) != want {
+	want := `{"allow":{"codeload.github.com":[],"events.example.test":[],"github.com":[],` +
+		`"registry.npmjs.org":[{"forwardURL":"https://proxy.example.test/r/registry.npmjs.org"}]}}`
+	if string(policy) != want {
 		t.Errorf("network policy = %s, want %s", policy, want)
+	}
+	if strings.Contains(string(policy), "match") || strings.Contains(string(policy), "allow-all") {
+		t.Errorf("network policy %s carries a match or allow-all; a request no rule matches goes to the origin unrecorded", policy)
 	}
 	if _, has := create["env"]; has {
 		t.Error("the create carried an environment; it is sandbox configuration every command inherits")
@@ -542,7 +553,7 @@ func TestProvisionIsIdempotent(t *testing.T) {
 		timeout: 300000, tags: map[string]string{tagScope: "t1", tagRunner: other.RunnerID.String()},
 	}
 	fake.mu.Unlock()
-	if _, err := backend.create(context.Background(), backend.sandboxName(other.RunnerID), other, networkPolicy{Mode: "deny-all"}); err != nil {
+	if _, err := backend.create(context.Background(), backend.sandboxName(other.RunnerID), other, denyAll{Mode: "deny-all"}); err != nil {
 		t.Errorf("a create that lost a race = %v, want the existing sandbox", err)
 	}
 }
@@ -554,7 +565,7 @@ func TestProvisionIsIdempotent(t *testing.T) {
 func TestASandboxWithoutItsRunnerIsNotAnEnvironment(t *testing.T) {
 	backend, fake := newTestBackend(t)
 	spec := testSpec()
-	if _, err := backend.create(context.Background(), backend.sandboxName(spec.RunnerID), spec, networkPolicy{Mode: "deny-all"}); err != nil {
+	if _, err := backend.create(context.Background(), backend.sandboxName(spec.RunnerID), spec, denyAll{Mode: "deny-all"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := backend.HandleFor(context.Background(), spec.RunnerID); err != nil || found {
@@ -682,7 +693,7 @@ func TestListSeesOnlyThisScopesRunners(t *testing.T) {
 func TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap(t *testing.T) {
 	backend, fake := newTestBackend(t)
 	spec := testSpec()
-	if _, err := backend.create(context.Background(), backend.sandboxName(spec.RunnerID), spec, networkPolicy{Mode: "deny-all"}); err != nil {
+	if _, err := backend.create(context.Background(), backend.sandboxName(spec.RunnerID), spec, denyAll{Mode: "deny-all"}); err != nil {
 		t.Fatal(err)
 	}
 	name := backend.sandboxName(spec.RunnerID)
@@ -719,21 +730,45 @@ func TestTheLeaseIsExtendedToALeaseFromNowNeverPastTheCap(t *testing.T) {
 	}
 }
 
-// TestNoHostsIsDenyAllAndABadHostIsRefused.
-func TestNoHostsIsDenyAllAndABadHostIsRefused(t *testing.T) {
+// TestNoHostsIsDenyAllAndABadRuleIsRefused: an empty policy fails closed; a
+// bad host or forward URL is refused, never dropped; plain hosts carry no
+// rules, forwarded hosts exactly one rule, and no rule ever a match.
+func TestNoHostsIsDenyAllAndABadRuleIsRefused(t *testing.T) {
 	policy, err := buildPolicy(nil)
-	if err != nil || policy.Mode != "deny-all" || len(policy.AllowedDomains) != 0 {
+	if deny, ok := policy.(denyAll); err != nil || !ok || deny.Mode != "deny-all" {
 		t.Errorf("no hosts = %+v, %v; want deny-all", policy, err)
 	}
 	for _, bad := range []string{"*.github.com", "github.*", "140.82.112.3", "[::1]", "GitHub.com", "github.com:443",
 		"https://github.com", "localhost", "a..b", "-x.com", "10.0.0.010", ""} {
-		if _, err := buildPolicy([]string{"github.com", bad}); !errors.Is(err, ErrInvalidEgressHost) {
-			t.Errorf("%q was accepted into a policy", bad)
+		if _, err := buildPolicy([]application.EgressRule{{Host: "github.com"}, {Host: bad}}); !errors.Is(err, ErrInvalidEgressHost) {
+			t.Errorf("host %q was accepted into a policy", bad)
 		}
 	}
-	policy, err = buildPolicy([]string{"github.com", "github.com", "registry.npmjs.org"})
-	if err != nil || policy.Mode != "custom" || strings.Join(policy.AllowedDomains, ",") != "github.com,registry.npmjs.org" {
-		t.Errorf("= %+v, %v", policy, err)
+	for _, bad := range []string{
+		"http://proxy.example.test/r/registry.npmjs.org",      // not https
+		"https://proxy.example.test/r/registry.npmjs.org?t=1", // a query
+		"https://proxy.example.test/r/registry.npmjs.org#x",   // a fragment
+		"https://u:p@proxy.example.test/r/registry.npmjs.org", // user information
+		"https://proxy.example.test/r/pypi.org",               // another host's route
+		"https://proxy.example.test/",                         // no route at all
+		"proxy.example.test/r/registry.npmjs.org",             // no scheme
+	} {
+		_, err := buildPolicy([]application.EgressRule{{Host: "registry.npmjs.org", ForwardURL: bad}})
+		if !errors.Is(err, ErrInvalidForwardURL) {
+			t.Errorf("forward URL %q was accepted: %v", bad, err)
+		}
+	}
+	if _, err := buildPolicy([]application.EgressRule{{Host: "registry.npmjs.org"},
+		{Host: "registry.npmjs.org", ForwardURL: testProxy + "/r/registry.npmjs.org"}}); err == nil {
+		t.Error("a host given once plain and once forwarded was accepted; one of the two would be silently dropped")
+	}
+	policy, err = buildPolicy(append([]application.EgressRule{{Host: "github.com"}}, testRules...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := policy.(rulesPolicy).Allow
+	if len(rules["github.com"]) != 0 || len(rules["registry.npmjs.org"]) != 1 || len(rules) != 4 {
+		t.Errorf("rules = %+v; want plain hosts ruleless and the registry forwarded once", rules)
 	}
 }
 

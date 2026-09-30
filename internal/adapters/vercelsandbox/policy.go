@@ -4,21 +4,45 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
-	"slices"
 	"strings"
+
+	"github.com/jigmetnamgyal/weave/internal/application"
 )
 
-// networkPolicy is the body Vercel's firewall enforces for a sandbox.
-type networkPolicy struct {
-	Mode           string   `json:"mode"`
-	AllowedDomains []string `json:"allowedDomains,omitempty"`
+// The network policy Vercel's firewall enforces for a sandbox, in its rules
+// format: every allowed host, each with the rules applied to its requests.
+//
+// The rules format, not M5.4b's mode/allowedDomains format, because only it
+// carries `forwardURL` (measured in M5.4c's spike). A host with no rules is
+// plainly allowed; a host whose one rule forwards has every request sent to
+// the registry proxy.
+type rulesPolicy struct {
+	Allow map[string][]policyRule `json:"allow"`
+}
+
+// policyRule forwards a host's requests. **It never carries `match`**: a
+// request that no rule matches is sent straight to the origin, unrecorded, so
+// a logging rule that matched only some requests would be a hole with a
+// comment on it.
+type policyRule struct {
+	ForwardURL string `json:"forwardURL"`
+}
+
+// denyAll is the policy for no hosts at all.
+type denyAll struct {
+	Mode string `json:"mode"`
 }
 
 // ErrInvalidEgressHost means a host given for the policy is not an exact
 // hostname. Refused rather than dropped: a silently shortened allowlist is a
 // policy nobody wrote.
 var ErrInvalidEgressHost = errors.New("vercelsandbox: not an exact hostname")
+
+// ErrInvalidForwardURL means a rule's forwardURL is not one Vercel accepts or
+// not the registry proxy's route for its host.
+var ErrInvalidForwardURL = errors.New("vercelsandbox: not a valid forward URL")
 
 // hostnameLabel is one DNS label: letters, digits and inner hyphens.
 var hostnameLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -32,23 +56,54 @@ var hostnameLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // addresses are refused (ADR-013 always refuses them), and so is anything
 // carrying a port, a path or a scheme.
 //
-// **No hosts is "deny-all"**, not an empty custom list: a policy builder that
-// loses every entry must fail closed. Vercel's deny-all also refuses DNS,
-// which the spike and M5.4b's probe both observed.
-func buildPolicy(hosts []string) (networkPolicy, error) {
-	allowed := make([]string, 0, len(hosts))
-	for _, host := range hosts {
-		if err := validHost(host); err != nil {
-			return networkPolicy{}, err
+// **No hosts is "deny-all"**: a policy builder that loses every entry must
+// fail closed. Vercel's deny-all also refuses DNS.
+func buildPolicy(rules []application.EgressRule) (any, error) {
+	allow := make(map[string][]policyRule, len(rules))
+	for _, rule := range rules {
+		if err := validHost(rule.Host); err != nil {
+			return nil, err
 		}
-		if !slices.Contains(allowed, host) {
-			allowed = append(allowed, host)
+		var next []policyRule
+		if rule.ForwardURL != "" {
+			if err := validForwardURL(rule.Host, rule.ForwardURL); err != nil {
+				return nil, err
+			}
+			next = []policyRule{{ForwardURL: rule.ForwardURL}}
+		} else {
+			next = []policyRule{}
 		}
+		if existing, seen := allow[rule.Host]; seen {
+			if len(existing) != len(next) || (len(next) == 1 && existing[0] != next[0]) {
+				return nil, fmt.Errorf("%w: %q is given twice with different rules", ErrInvalidEgressHost, rule.Host)
+			}
+			continue
+		}
+		allow[rule.Host] = next
 	}
-	if len(allowed) == 0 {
-		return networkPolicy{Mode: "deny-all"}, nil
+	if len(allow) == 0 {
+		return denyAll{Mode: "deny-all"}, nil
 	}
-	return networkPolicy{Mode: "custom", AllowedDomains: allowed}, nil
+	return rulesPolicy{Allow: allow}, nil
+}
+
+// validForwardURL holds Vercel's rule — no user information, query or
+// fragment — and Weave's: HTTPS, and the registry proxy's route for this exact
+// host (…/r/<host>), so the token Vercel signs for it names this host and no
+// other.
+func validForwardURL(host, raw string) error {
+	parsed, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: %q", ErrInvalidForwardURL, raw)
+	case parsed.Scheme != "https" || parsed.Host == "":
+		return fmt.Errorf("%w: %q must be https", ErrInvalidForwardURL, raw)
+	case parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("%w: %q carries user information, a query or a fragment", ErrInvalidForwardURL, raw)
+	case !strings.HasSuffix(parsed.Path, "/r/"+host):
+		return fmt.Errorf("%w: %q is not the registry proxy's route for %s", ErrInvalidForwardURL, raw, host)
+	}
+	return nil
 }
 
 func validHost(host string) error {

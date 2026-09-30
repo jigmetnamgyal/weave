@@ -70,7 +70,7 @@ func TestTheVercelBackendNeedsItsAccountStated(t *testing.T) {
 		"NATS_URL": "nats://localhost:54222", "NATS_WEBSOCKET_URL": "ws://localhost:54280",
 		"RUNNER_BACKEND": "vercel", "RUNNER_VERCEL_TOKEN": "", "RUNNER_VERCEL_TEAM_ID": "",
 		"RUNNER_VERCEL_PROJECT_ID": "", "RUNNER_VERCEL_MAX_SESSION": "", "RUNNER_VERCEL_BINARY": "",
-		"RUNNER_VERCEL_REGION": "", "RUNNER_VERCEL_LEASE": "", "RUNNER_NATS_URL": "",
+		"RUNNER_VERCEL_REGION": "", "RUNNER_VERCEL_LEASE": "", "RUNNER_NATS_URL": "", "RUNNER_REGISTRY_PROXY_URL": "",
 	}
 	set := func(overrides map[string]string) {
 		for k, v := range base {
@@ -112,8 +112,33 @@ func TestTheVercelBackendNeedsItsAccountStated(t *testing.T) {
 	account["RUNNER_NATS_SIGNING_KEY"] = "/secrets/signing.nk"
 	account["RUNNER_NATS_ACCOUNT"] = "/secrets/account.pub"
 	account["RUNNER_MANAGER_NATS_CREDS"] = "/secrets/runner-manager.creds"
+	account["RUNNER_REGISTRY_PROXY_URL"] = "https://registry.weave.example"
 	set(account)
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "RUNNER_VERCEL_BINARY") {
 		t.Errorf("production without a stated runner binary = %v", err)
+	}
+}
+
+// TestStagingAndProductionRefuseToStartWithoutARegistryProxy (M5.4c,
+// ADR-016): unset, runners' registry requests would pass unrecorded.
+func TestStagingAndProductionRefuseToStartWithoutARegistryProxy(t *testing.T) {
+	for _, tc := range []struct {
+		env, url string
+		ok       bool
+	}{
+		{"development", "", true},
+		{"test", "", true},
+		{"staging", "", false},
+		{"production", "", false},
+		{"", "", false},
+		{"production", "https://registry.weave.example", true},
+		{"development", "https://quick-name.trycloudflare.com", true},
+		{"development", "http://registry.weave.example", false},
+		{"production", "https://u:p@registry.weave.example", false},
+		{"production", "https://registry.weave.example/?t=1", false},
+	} {
+		if err := validateRegistryProxy(tc.env, tc.url); (err == nil) != tc.ok {
+			t.Errorf("APP_ENV=%q RUNNER_REGISTRY_PROXY_URL=%q: %v, want ok=%v", tc.env, tc.url, err, tc.ok)
+		}
 	}
 }
