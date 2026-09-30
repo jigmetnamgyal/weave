@@ -5,7 +5,7 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; M5.4d spec draft in progress, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport built, awaiting review (PR #27)**; M5.4d.2 API/audit/snapshots and M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
@@ -404,3 +404,12 @@ this unit. No runtime uses the adapter yet, so M5.4d remains incomplete.
 **Next:** review/merge the transport unit; then M5.4d.2 additions API/store/audit,
 idempotency, cap concurrency and immutable runner snapshots. M5.4d.3 integrates
 the authenticated edge/runner/UI. No DNS purchase or support reply required.
+
+### M5.4d.1 — PR #27 review round
+
+Two inline documentation findings corrected: the runbook no longer gates the
+API on optional provider verification or an unwritten ADR (ADR-017 exists), and
+current-phase/spec wording distinguishes built transport from pending runtime
+integration. Addressed CodeRabbit's top-level function-documentation warning
+with concise comments on private helpers and security regression tests. No
+runtime changes. Next: finish PR #27 checks/review, then M5.4d.2.

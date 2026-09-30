@@ -21,6 +21,7 @@ import (
 	"time"
 )
 
+// TestAddressClassification checks supported origins, forbidden classes and range boundaries.
 func TestAddressClassification(t *testing.T) {
 	for _, value := range []string{"8.8.8.8", "1.1.1.1", "140.82.112.3", "2001:4860:4860::8888", "2606:4700:4700::1111", "::ffff:8.8.8.8"} {
 		if !publicAddress(netip.MustParseAddr(value)) {
@@ -73,6 +74,7 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *tls.Con
 	return server, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 }
 
+// request builds a test request while preserving the supplied URL for validation.
 func request(t *testing.T, raw string) *http.Request {
 	t.Helper()
 	r, e := http.NewRequest("GET", raw, nil)
@@ -88,6 +90,7 @@ func request(t *testing.T, raw string) *http.Request {
 	return r
 }
 
+// TestNumericDialAndOriginalTLSHost verifies one lookup, numeric dialing and original Host/SNI.
 func TestNumericDialAndOriginalTLSHost(t *testing.T) {
 	var mu sync.Mutex
 	var names, targets []string
@@ -125,6 +128,7 @@ func TestNumericDialAndOriginalTLSHost(t *testing.T) {
 	}
 }
 
+// TestForbiddenAndMixedAnswersNeverDial proves all answers are validated before any connection attempt.
 func TestForbiddenAndMixedAnswersNeverDial(t *testing.T) {
 	for _, answers := range [][]string{{"127.0.0.1"}, {"10.0.0.1"}, {"169.254.169.254"}, {"::1"}, {"::ffff:10.0.0.1"}, {"fc00::1"}, {"2002:a00:1::1"}, {"8.8.8.8", "10.0.0.1"}, {"2001:4860::1", "fe80::1"}} {
 		t.Run(strings.Join(answers, ","), func(t *testing.T) {
@@ -144,6 +148,7 @@ func TestForbiddenAndMixedAnswersNeverDial(t *testing.T) {
 	}
 }
 
+// TestRebindingIsCheckedOnTheNextConnection refuses a changed private answer before a second dial.
 func TestRebindingIsCheckedOnTheNextConnection(t *testing.T) {
 	server, roots := fixture(t, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "marker") })
 	var mu sync.Mutex
@@ -185,6 +190,7 @@ func TestRebindingIsCheckedOnTheNextConnection(t *testing.T) {
 	}
 }
 
+// TestRedirectIsReturnedWithoutFollowing ensures redirect destinations never trigger a lookup.
 func TestRedirectIsReturnedWithoutFollowing(t *testing.T) {
 	server, roots := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "https://private.example/secret")
@@ -208,6 +214,7 @@ func TestRedirectIsReturnedWithoutFollowing(t *testing.T) {
 	}
 }
 
+// TestTLSVerificationCannotBeSkipped rejects untrusted certificates and mismatched origin names.
 func TestTLSVerificationCannotBeSkipped(t *testing.T) {
 	server, roots := fixture(t, func(w http.ResponseWriter, r *http.Request) { t.Error("HTTP reached despite bad TLS identity") })
 	for _, c := range []*Client{
@@ -230,6 +237,7 @@ func TestTLSVerificationCannotBeSkipped(t *testing.T) {
 	}
 }
 
+// TestInvalidRequestsNeverResolve rejects unsafe origins, methods and tunnels before DNS.
 func TestInvalidRequestsNeverResolve(t *testing.T) {
 	c := newClient(func(context.Context, string, string) ([]netip.Addr, error) {
 		t.Error("invalid request reached DNS")
@@ -259,6 +267,7 @@ func TestInvalidRequestsNeverResolve(t *testing.T) {
 	}
 }
 
+// TestResolutionFailuresAreSafeAndBounded covers empty answers, DNS errors and cancellation without leaking URLs.
 func TestResolutionFailuresAreSafeAndBounded(t *testing.T) {
 	for name, lookup := range map[string]lookupFunc{
 		"empty": func(context.Context, string, string) ([]netip.Addr, error) { return nil, nil },
@@ -287,6 +296,7 @@ func TestResolutionFailuresAreSafeAndBounded(t *testing.T) {
 	}
 }
 
+// TestEnvironmentProxyIsNotUsed ensures proxy environment variables cannot bypass numeric dialing.
 func TestEnvironmentProxyIsNotUsed(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
 	t.Setenv("ALL_PROXY", "http://127.0.0.1:1")
@@ -300,6 +310,7 @@ func TestEnvironmentProxyIsNotUsed(t *testing.T) {
 	}
 }
 
+// TestFallbackDialsOnlyValidatedNumericCandidates checks fallback stays in the validated answer set.
 func TestFallbackDialsOnlyValidatedNumericCandidates(t *testing.T) {
 	server, roots := fixture(t, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "marker") })
 	var mu sync.Mutex
@@ -328,6 +339,7 @@ func TestFallbackDialsOnlyValidatedNumericCandidates(t *testing.T) {
 	}
 }
 
+// TestHeaderTimeoutAndUnsolicitedUpgrade bounds response headers and refuses unsolicited protocol switching.
 func TestHeaderTimeoutAndUnsolicitedUpgrade(t *testing.T) {
 	for _, upgrade := range []bool{false, true} {
 		t.Run(map[bool]string{false: "slow headers", true: "unsolicited upgrade"}[upgrade], func(t *testing.T) {

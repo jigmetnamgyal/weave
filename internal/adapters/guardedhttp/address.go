@@ -31,6 +31,7 @@ var deniedIPv6 = prefixes(
 	"3fff::/20",         // documentation (RFC 9637)
 )
 
+// prefixes parses the fixed reviewed CIDR table, failing fast on programmer errors.
 func prefixes(values ...string) []netip.Prefix {
 	result := make([]netip.Prefix, 0, len(values))
 	for _, value := range values {
@@ -39,6 +40,7 @@ func prefixes(values ...string) []netip.Prefix {
 	return result
 }
 
+// publicAddress accepts supported public origins after normalization and conservative exclusions.
 func publicAddress(ip netip.Addr) bool {
 	if !ip.IsValid() || ip.Zone() != "" {
 		return false

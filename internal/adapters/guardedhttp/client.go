@@ -45,6 +45,7 @@ func New() *Client {
 type lookupFunc func(context.Context, string, string) ([]netip.Addr, error)
 type dialFunc func(context.Context, string, string) (net.Conn, error)
 
+// newClient constructs the production guard with private resolver/dial/TLS-root test seams.
 func newClient(lookup lookupFunc, dial dialFunc, roots *tls.Config) *Client {
 	guard := func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
@@ -130,6 +131,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 // responses. Every subsequently opened connection repeats resolution and checks.
 func (c *Client) CloseIdleConnections() { c.transport.CloseIdleConnections() }
 
+// hasUpgrade detects upgrade tokens across all Connection header values.
 func hasUpgrade(values []string) bool {
 	for _, value := range values {
 		for _, token := range strings.Split(value, ",") {
@@ -141,6 +143,7 @@ func hasUpgrade(values []string) bool {
 	return false
 }
 
+// validHostname rejects noncanonical names, raw IPs and local/internal suffixes before DNS.
 func validHostname(host string) bool {
 	if len(host) > 253 || !strings.Contains(host, ".") || strings.ToLower(host) != host {
 		return false

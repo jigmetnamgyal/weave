@@ -128,16 +128,18 @@ answer transition or a reachable private endpoint.
 
 ### 3. Resume implementation after the gate closes
 
-Once enforcement is supported and verification is sufficient, write the policy
-ADR/amendment, then build the contracted tenant-scoped store/API/audit boundary,
-followed by runner policy composition and UI. If the fixture requires paid
-infrastructure, present the cost and alternative evidence before creating it.
+ADR-017 already selects Weave-enforced guarded proxying. After review of the
+M5.4d.1 transport, proceed to M5.4d.2 contracted tenant-scoped store/API/audit and
+immutable runner snapshots, then M5.4d.3 edge, runner composition and UI. Provider
+support and fixture work above are optional investigations, not prerequisites
+for M5.4d.2. Obtain cost approval before any optional paid fixture.
 
 ## Completion and escalation
 
 Save sanitized observations and provider references in the spec and tracker.
 Do not claim the private-address/rebinding gate closed from a connection failure
-without a positive fixture control. If the provider cannot guarantee enforcement,
-stop and write an ADR for an alternative boundary; a one-time DNS check at host
-creation is not an acceptable workaround. Production policy remains unchanged
-until the required enforcement is designed, reviewed and verified.
+without a positive fixture control. Such provider evidence is optional under
+ADR-017; release acceptance instead requires the guarded transport, authorization
+and live forwarding checks described there. A one-time DNS check at host creation
+is not an acceptable workaround. Production policy remains unchanged until the
+ADR-017 implementation is reviewed and verified.

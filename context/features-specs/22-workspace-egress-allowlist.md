@@ -177,7 +177,8 @@ A connection failure against an address with no server would not prove filtering
 likewise, curl's `--resolve` does not change the firewall's DNS resolution.
 That provider-dependent path is superseded by ADR-017 for added hosts; these
 observations are retained as history. The guarded-proxy implementation gate
-remains open. No feature implementation yet.
+remains open. M5.4d.1 transport is built; runtime proxy integration and later
+feature units remain pending.
 
 ### IPv6 connectivity snapshot
 
