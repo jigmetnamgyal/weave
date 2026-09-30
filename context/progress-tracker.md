@@ -5,15 +5,16 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots built, awaiting review; M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
-Review M5.4d.2 (`context/features-specs/24-workspace-egress-api-and-snapshots.md`)
-on branch `m5.4d2-allowlist-api`: contracted hostname CRUD, current-authority
-rechecks, atomic audit and fenced idempotency, database-enforced cap and immutable
-runner snapshots. Configuration only: no runtime network access changes until
-M5.4d.3 wires the authenticated edge, runner forwarding and admin UI.
+Build M5.4d.3 on `m5.4d3-egress-proxy` (spec
+`context/features-specs/25-egress-proxy-and-runner-wiring.md`). M5.4d.2 merged as
+6a1193a (PR #28). Split in two: **3a** — `services/egress-proxy` (Vercel OIDC,
+per-runner snapshot authorization, forwarding through `guardedhttp`) plus runner
+wiring (`RUNNER_EGRESS_PROXY_URL`, forwarded rules, fail-closed provisioning);
+**3b** — the admin settings screen. 3a first. Spec only so far; no code yet.
 
 ## Product Milestones
 
@@ -508,3 +509,13 @@ workspace-lock trigger makes it fail. (3) Parent spec 22 status updated. (4)
 `egress_host_exists`/`egress_host_limit` added to the `Error.code` enum and httpx
 constants; generated types regenerated. lint/typecheck/test/build and
 contracts/sqlc checks pass; all six PostgreSQL egress tests pass with `-race`.
+
+### M5.4d.2 merged; M5.4d.3 specified
+
+PR #28 merged as 6a1193a with all checks green and all four review threads
+resolved. Wrote spec 25 for M5.4d.3 and split it: 3a is the egress proxy and
+runner wiring (the security boundary, with live Vercel acceptance through a third
+tunnel); 3b is the admin screen. Key choices: the proxy authorizes against the
+runner's immutable snapshot in its own tenant, never the live workspace list;
+provisioning fails closed on a missing snapshot, a missing proxy URL, or a host
+that is now reserved; added hosts are never plain rules. **Next:** build 3a.
