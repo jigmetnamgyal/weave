@@ -9,6 +9,7 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
+PR #32 merge is blocked by the critical Next.js advisory recorded below.
 Review M6.1a on `m6.1-claude-code-adapter`: bounded offline Claude stream
 normalization, synthetic fixtures/tests and protocol evidence (spec 26). No
 runtime adapter or paid invocation is enabled. Next, refine M6.1b credential
@@ -690,3 +691,13 @@ Verification: three repeated race runs, full unit suite, Go build, targeted
 lint, 98.3% coverage and a fresh fuzz smoke run over 319,000 executions. No paid
 run or runtime adapter registration. Next: finish PR #32 review/CI, obtain merge
 authorization, then refine M6.1b credential/input/tool boundaries.
+
+### PR #32 CI blocker — critical Next.js dependency advisory
+
+After a588439, the dependency-scan job failed on Next.js 16.3.4:
+GHSA-vcvr-r3jv-pc5j (RCE in next/og ImageResponse; advisory affected range
+16.2.0–16.3.5). npm's audit output recommends 16.3.8, outside the project's
+exact pin. This is not caused by the Go decoder changes and no dependency-gate
+exception was applied. The fifteen moderate transitive advisories remain.
+Next: a bounded dependency-upgrade fix with current Next docs, typecheck/build
+and audit verification before PR #32 can merge; retain all decoder review fixes.
