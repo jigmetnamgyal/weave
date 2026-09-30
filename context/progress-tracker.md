@@ -9,13 +9,13 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Implement M5.4d.1, the guarded resolver/dial transport and deterministic security
-tests defined by ADR-017. The operator approved a separate Weave egress proxy for
+Review M5.4d.1, the built guarded resolver/dial transport and deterministic security
+tests defined by ADR-017 (`context/features-specs/23-guarded-egress-transport.md`). The operator approved a separate Weave egress proxy for
 workspace additions rather than waiting for provider verification or purchasing
 a DNS/private-network fixture. Approved rules remain: 20 exact ASCII hosts,
 future runner allocations only. M5.4d.2 adds the API/audit/store and immutable
 runner snapshots; M5.4d.3 wires the authenticated edge, runner and admin UI.
-All three are needed before declaring M5.4d complete. No proxy implementation yet.
+All three are needed before declaring M5.4d complete. The transport is built; no public proxy or runtime wiring yet.
 
 ## Product Milestones
 
@@ -384,3 +384,23 @@ This is design only, not a closed security gate or changed runtime policy.
 **Next:** M5.4d.1 guarded transport and regression/mutation tests. No operator DNS
 setup required for this unit. Then M5.4d.2 contracted API/audit/snapshots, followed
 by M5.4d.3 edge/runner/UI and live forwarding. Existing staging gates still apply.
+
+### M5.4d.1 — guarded transport built, awaiting review
+
+`internal/adapters/guardedhttp` implements resolve-once, validate-all, numeric-only
+dialing with TLS original-host verification, no redirects/environment proxies,
+forbidden IPv4/IPv6 classification, bounded DNS/connect/TLS/header waits and safe
+error categories. Classifier tables checked against IANA special-purpose ranges.
+Tests use injected resolver/dial seams and a local trusted TLS fixture without
+weakening production validation. Rebinding on a new connection is refused before
+any dial; mixed answers are refused before even a public candidate is attempted.
+Four deliberate mutations fail: address-check removal, hostname redial, redirect
+following and TLS verification removal.
+
+Verification: package race tests pass three times, coverage 91.6%; `make lint-go`,
+`make test`, `go build ./...` and diff check pass. No live tests or DB changes in
+this unit. No runtime uses the adapter yet, so M5.4d remains incomplete.
+
+**Next:** review/merge the transport unit; then M5.4d.2 additions API/store/audit,
+idempotency, cap concurrency and immutable runner snapshots. M5.4d.3 integrates
+the authenticated edge/runner/UI. No DNS purchase or support reply required.

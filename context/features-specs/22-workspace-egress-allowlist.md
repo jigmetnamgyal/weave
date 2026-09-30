@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d — Workspace egress allowlist additions
 
-**Status: operator-approved policy and proxy approach; ADR-017 accepted, implementation pending.**
+**Status: ADR-017 accepted; M5.4d.1 transport built, awaiting review; API/snapshots/edge/UI pending.**
 
 ## Outcome
 
@@ -152,7 +152,8 @@ UI errors preserve entered text and explain that the previous policy is intact.
 
 ## Delivery status
 
-Spec only. No migration, API contract, guarded transport, policy changes or UI implementation yet.
+Partial implementation only. Guarded transport built in M5.4d.1 (`23-guarded-egress-transport.md`); not wired
+to runtime. No migration, API contract, public edge, policy changes or UI yet.
 Staging still requires Vercel Pro, the nine-hour survival test and data-processing
 terms; Hobby results do not close those gates.
 
