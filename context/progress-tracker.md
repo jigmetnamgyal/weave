@@ -5,17 +5,15 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization built, awaiting review** on `m6.1-claude-code-adapter`; no real adapter enabled yet.
+- Status: **M5 development implementation complete.** M5.4d.3b merged as ad8491c (PR #31), completing workspace allowlist additions after the user-confirmed walkthrough. Vercel Pro, nine-hour survival and data-processing terms remain staging gates. **M6.1a offline Claude stream normalization merged as cf1933c (PR #32)**, including the Next.js 16.3.8 security patch; no real adapter enabled yet.
 
 ## Current Goal
 
-PR #32 Next.js dependency repair is built and locally verified; await current-head CI and merge authorization.
-Review M6.1a on `m6.1-claude-code-adapter`: bounded offline Claude stream
-normalization, synthetic fixtures/tests and protocol evidence (spec 26). No
-runtime adapter or paid invocation is enabled. Next, refine M6.1b credential
-ownership/isolation, task/agent input delivery and tool policy before wiring
-process execution. Live session room/reconnect and its cursor pagination gate
-remain separate M6 slices.
+Refine M6.1b credential ownership/isolation, immutable task/agent input delivery
+and tool policy before process wiring or paid acceptance (spec 26). M6.1a merged
+as cf1933c (PR #32) after all current-head CI checks passed and all review threads
+were resolved. No runtime adapter or paid invocation is enabled. Live session
+room/reconnect and its cursor pagination gate remain separate M6 slices.
 
 ## Product Milestones
 
@@ -27,7 +25,7 @@ remain separate M6 slices.
 | M3 | GitHub App installation, repository access, webhook ingestion, and branch operations | Complete |
 | M4 | Task model, agent profiles, provider capabilities, and session creation | Complete |
 | M5 | Durable session workflow, runner manager, isolated runner, and fake provider adapter | Complete in development; staging gates remain |
-| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a built, awaiting review |
+| M6 | Claude Code adapter, normalized events, live session room, and reconnect | In progress — M6.1a merged; M6.1b next |
 | M7 | Approval policy, tool proxy, diff review, verification, and revision loop | Not started |
 | M8 | Codex adapter, commit/pull-request delivery, usage ledger, and quotas | Not started |
 | M9 | Billing, production hardening, security review, runbooks, staging, and launch readiness | Not started |
@@ -727,3 +725,15 @@ That temporary server was stopped and port 3107 verified empty. The user's
 running 16.3.4 dev server was left untouched; restart `make dev` to use the patch.
 Next: current-head CI/review, then merge authorization for PR #32; signed-in
 runtime verification needs the operator's working Clerk session/environment.
+
+### PR #32 merged — M6.1a and Next.js security repair
+
+User authorized the merge. Squash-merged PR #32 as cf1933c after confirming the
+exact head, all current-head checks passing, no unresolved threads and no orphan
+REST inline comments. Main now includes the offline decoder, review fixes and
+Next.js/eslint-config-next 16.3.8. Audit has zero high/critical findings; fifteen
+moderate transitive findings remain tracked. Runtime/browser verification was
+limited by Clerk connection resets, as recorded above; no claim of a successful
+post-upgrade browser walk. Restart the user's dev stack to load the patch.
+Next: refine M6.1b credential/input/tool boundaries before enabling paid runtime
+execution. The real Claude adapter remains disabled.

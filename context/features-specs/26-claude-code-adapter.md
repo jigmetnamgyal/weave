@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M6.1 — Claude Code adapter
 
-**Status: M6.1a offline decoder built and verified, awaiting review on `m6.1-claude-code-adapter`; no runtime adapter enabled.**
+**Status: M6.1a merged as cf1933c (PR #32); M6.1b next; no runtime adapter enabled.**
 
 ## Outcome and boundary
 
@@ -159,7 +159,7 @@ assistant UUID, scoped to the Weave session, not that shared API ID.
 
 ## Next
 
-Review and merge M6.1a. Then refine M6.1b: authentication/credential ownership,
+Refine M6.1b: authentication/credential ownership,
 isolation from repository configuration, immutable task/agent input delivery and
 tool policy before process wiring or paid acceptance. Do not treat the local
 operator's CLI installation as a production integration.
