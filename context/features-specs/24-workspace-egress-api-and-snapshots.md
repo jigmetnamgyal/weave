@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d.2 — Workspace egress API, audit and runner snapshots
 
-**Status: specification started; no implementation yet.**
+**Status: implementation in progress; configuration, snapshot and replay design specified below.**
 M5.4d.1 merged as 43ec4c7 (PR #27). Parent: `22-workspace-egress-allowlist.md`;
 security design: ADR-017.
 
@@ -42,11 +42,14 @@ Use existing `/v1/workspaces/{workspaceId}` naming and response conventions.
 - All three require verified membership and `workspace:manage`, as agent profiles
   do. No new permission and no Clerk Organizations.
 - Mutation idempotency follows the established session API convention. Scope keys
-  by workspace, authenticated user, operation and request hash. Reject reuse with
+  by workspace, authenticated user and operation; fingerprint canonical request fields
+  separately (hostname for add, entry ID for remove). Reject reuse with
   different input. Replays recheck current authorization before returning results.
 - Invalid/reserved hostname: 400; permission denial: 403; unknown/foreign workspace:
   404; duplicate or cap reached: 409 with distinct stable codes. Declare exact error
-  strings/schemas in OpenAPI before handlers. No undocumented fields.
+  strings/schemas in OpenAPI before handlers. Preserve existing 422 for a key reused
+  with a different request and 409/Retry-After for in-flight attempts. Keys remain
+  optional, matching the established API. No undocumented fields.
 - Entry fields: UUIDv7 `id`, `workspace_id`, canonical `hostname`, `created_by`,
   UTC `created_at`. No secrets or connection data.
 
@@ -89,13 +92,32 @@ read its existing snapshot. Never reconstruct a missing old snapshot from the
 current list. Existing runners created before additions can be represented by
 an empty snapshot during migration, since no additions previously existed.
 
-Before selecting the exact schema/insert mechanism, verify rolling deployment:
-old runner-manager versions must not create ambiguous snapshots. Prefer an
-atomic database-enforced creation mechanism if it preserves established tenant
-and lock invariants; otherwise stage rollout to prevent old writers before
-exposing mutations. Document the decision and exercise it in integration tests.
+### Snapshot creation decision
+
+Use database runner-insert triggers so older runner managers also receive an
+explicit snapshot. A BEFORE INSERT trigger validates tenant context equals
+NEW.workspace_id and locks the workspace; an AFTER INSERT trigger inserts the
+single snapshot row, copying sorted current entries within that same transaction.
+The BEFORE lock precedes runner FK checks and AFTER writes, preserving workspace-
+first ordering. Duplicate runner insertion rolls back the entire trigger work.
+Backfill explicit empty rows for pre-migration runners while additions are empty.
+
+Store `runner_id`, `workspace_id`, `session_id`, `hosts text[]`, `created_at`;
+zero hosts is an empty array, never NULL. Enforce one-dimensional, non-null,
+unique canonical hosts, cardinality <=20 and tenant-bound runner/session FKs.
 No API can edit snapshots. UPDATE/DELETE/TRUNCATE are forbidden except authorized
-workspace cascades under the existing append-only pattern.
+parent cascades under the existing append-only pattern. The application role
+reads snapshots but does not supply their host list. Use a narrowly privileged,
+NOLOGIN trigger owner with only required table grants; revoke PUBLIC invocation,
+fix search_path, and require the tenant match even in the privileged trigger.
+Do not grant clients a general snapshot insert function or tenant bypass.
+
+Old managers still omit added hosts from network policy, which denies rather
+than grants access. The additions API is configuration-only in .2; do not release
+the complete capability or claim connectivity until all .3 managers/proxies are
+installed. The immutable configured list cannot be re-snapshotted on upgrade.
+Tests must demonstrate trigger coverage for an unchanged old CreateRunner INSERT,
+rollback on failed snapshot creation and preservation on same-runner retry.
 
 Expose a tenant-scoped snapshot read port for .3. Future edge authorization may
 use one bounded privileged runner lookup, then a tenant transaction verifying
@@ -128,8 +150,44 @@ complete additions capability waits for .3 acceptance.
   repository's actual targets. Stop `make dev` workers before integration checks.
   No live provider test is needed to prove this DB/API slice.
 
+## Configuration and reserved destinations
+
+Introduce shared `EGRESS_RESERVED_HOSTS`: a comma-separated list of canonical
+Weave-operated hostnames/namespaces (each entry also reserves descendants). It
+contains no credentials or URLs. In staging/production the API requires a nonempty
+explicit deployment declaration; development/test may use an explicit empty list
+because internal/local suffixes and built-in destinations are always refused.
+Deployment documentation must enumerate the web/API/service names; the declaration
+cannot be guessed from bind addresses or DNS. Incomplete deployment input is an
+operator configuration error, not a claimed automatic discovery mechanism.
+
+The API constructs a policy from that list plus built-in GitHub/registry hosts and
+configured public URLs: `API_BASE_URL`, `NEXT_PUBLIC_APP_URL`, `RUNNER_NATS_URL`
+(or NATS_WEBSOCKET_URL), `RUNNER_REGISTRY_PROXY_URL`, and `RUNNER_EGRESS_PROXY_URL`
+when present. Share a parser/policy across API and runner manager. Validate any
+supplied URL before extracting its hostname; no secret credentials accepted.
+Staging/production requires the real public service hosts in the declaration,
+including reserved egress-proxy hostname before .3 release. Local suffix rejection
+is independent of the declaration. Later provisioning revalidates saved hosts
+against current reserved deployment policy; conflict fails closed without
+rewriting the immutable snapshot or falling back to direct network rules.
+
+## Replay and lock ordering
+
+Reuse the committed leased Claim/Release mechanism and `completeIdempotency`.
+Claim is a short separate transaction, not held across workspace locking. Work
+locks workspace, rechecks actor, changes configuration, writes audit, renders the
+response and completes the claim with its claimant fence in one transaction.
+A stale claimant or render/audit/completion failure rolls everything back.
+Releasing a failed claim is fenced and cannot delete a newer claimant's record.
+
+Do not blindly use `idempotency.claim`'s immediate completed-response replay:
+recheck membership/permission under the workspace lock before releasing stored
+response bytes. DELETE replay sends 204 with no JSON body; existing generic replay
+needs a zero-body-aware path. Fingerprinting uses canonical input, not raw bytes.
+
 ## Next
 
-First resolve the reserved-host configuration and snapshot creation/rollout details
-against current code. Then contract, migration, domain/store, API and tests, in
-that order. After review/merge, .3 integrates the authenticated edge, runner and UI.
+Implement domain validation and tests, then OpenAPI, migration/queries, atomic
+store and API in this unit. Complete security and integration gates before PR.
+After review/merge, .3 integrates the authenticated edge, runner and UI.

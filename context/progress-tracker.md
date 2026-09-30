@@ -5,16 +5,17 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots and M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots in progress; M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
 Specify and build M5.4d.2 on `m5.4d2-allowlist-api` after M5.4d.1 merged as
-43ec4c7 (PR #27). Draft: `context/features-specs/24-workspace-egress-api-and-snapshots.md`.
+43ec4c7 (PR #27). Spec: `context/features-specs/24-workspace-egress-api-and-snapshots.md`.
 Scope: contracted tenant-scoped hostname CRUD, authorization, atomic audit and
-idempotency, concurrent cap enforcement, immutable runner snapshots. Before coding,
-resolve reserved-service configuration and snapshot creation/rolling-deploy details.
-No M5.4d.2 runtime implementation yet; forwarding and UI remain M5.4d.3.
+idempotency, concurrent cap enforcement, immutable runner snapshots. Shared reserved-
+host configuration and database-triggered snapshots are specified. Domain validation
+and namespace matching are implemented/tested; next OpenAPI and migration.
+No API/store wiring yet; forwarding and UI remain M5.4d.3.
 
 ## Product Milestones
 
@@ -424,3 +425,22 @@ cap/audit atomicity, empty-vs-missing snapshots, immutable retry semantics and
 rolling-deploy acceptance. No code/migration yet. Next: inspect reserved-host
 configuration and choose an atomic snapshot creation mechanism before contracting
 and implementing the API/store slice. No operator domain setup needed.
+
+### M5.4d.2 — detailed spec and domain validation
+
+Expanded spec 24: shared `EGRESS_RESERVED_HOSTS` deployment declaration plus
+configured public service URLs; explicit environment requirements and namespace
+reservation. Selected BEFORE runner-insert workspace locking and AFTER-insert
+snapshot creation for compatibility with old managers; backfill empty snapshots
+only for pre-additions runners. Narrow trigger privilege and tenant checks are
+required. Corrected replay design to existing optional keys, canonical fingerprint,
+422 mismatch and fenced transactional completion; completed responses must undergo
+current authorization recheck, and DELETE replay must have an empty 204 body.
+These are specified requirements, not implemented database/API behavior yet.
+
+Added domain EgressHost/RunnerEgressSnapshot types, approved cap/UUIDv7 identity,
+ASCII hostname validation and reserved namespace matching. Domain race tests and
+package lint pass. Two deliberate mutations fail: punycode guard removal and
+reserved-descendant matching removal. No DNS lookup, new dependency or runtime
+network policy change. Next: OpenAPI, migration/sqlc, atomic store/API and integration
+verification; do not declare this partial domain work the complete unit.
