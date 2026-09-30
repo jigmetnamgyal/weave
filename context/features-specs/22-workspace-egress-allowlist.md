@@ -153,3 +153,13 @@ controlled authoritative DNS name that changes from public to forbidden answers.
 A connection failure against an address with no server would not prove filtering;
 likewise, curl's `--resolve` does not change the firewall's DNS resolution.
 The private-address/rebinding gate remains open. No feature implementation yet.
+
+### IPv6 connectivity snapshot
+
+`TestLiveIPv6ConnectivitySnapshot` observes the current sandbox: IPv6 is enabled
+in the kernel, with loopback and link-local addresses but no usable external
+IPv6 route. Public AAAA records resolve. The IPv4 Cloudflare control receives
+its real server response; forcing IPv6 fails with curl exit 7. This is not a
+contractual IPv6 security guarantee. Only the selected server header is emitted,
+not response cookies. Fixture prerequisites and provider questions are documented
+in `docs/runbooks/workspace-egress-verification.md`.

@@ -334,3 +334,20 @@ so IPv6 enforcement requires investigation. Private-address and rebinding tests
 still need controlled DNS and a reachable forbidden-address fixture; an absent
 server or a `--resolve` probe is not sufficient evidence. Feature implementation
 remains gated on this verification, not on the already-approved policy choices.
+
+### M5.4d — IPv6 investigation completed (security gate still open)
+
+Added `internal/adapters/vercelsandbox/ipv6_live_test.go`: current kernel has
+IPv6 enabled and public AAAA resolution works, but no usable external IPv6 route;
+IPv4 control passes, IPv6 request fails. The live snapshot passes twice, and
+build-tagged vet/lint pass. Cleanup verifies each sandbox deleted and no snapshots.
+This does not establish a durable provider guarantee. No production policy changed.
+
+**Next:** use `docs/runbooks/workspace-egress-verification.md` to obtain Vercel's
+IPv6/deny-range enforcement contract and a disposable controlled DNS fixture for
+private-address/rebinding tests. Operator input needed: a test subdomain and
+permission to configure its DNS/test endpoints (or provider-assisted equivalent).
+Do not use unknown internal services or metadata contents as test fixtures. After
+this gate closes, contract/build the tenant-scoped additions API and audit store,
+then runner-policy composition and UI. Completed task summaries must state the
+next actionable step and any operator prerequisite.
