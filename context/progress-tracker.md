@@ -5,19 +5,15 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots in progress; M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots built, awaiting review; M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
-Specify and build M5.4d.2 on `m5.4d2-allowlist-api` after M5.4d.1 merged as
-43ec4c7 (PR #27). Spec: `context/features-specs/24-workspace-egress-api-and-snapshots.md`.
-Scope: contracted tenant-scoped hostname CRUD, authorization, atomic audit and
-idempotency, concurrent cap enforcement, immutable runner snapshots. Shared reserved-
-host configuration and database-triggered snapshots are specified. Domain validation
-and namespace matching are implemented/tested. OpenAPI and migration/sqlc are
-now drafted/generated and migration verified locally. Next real store/API wiring:
-the route-contract coverage test remains red until those handlers exist.
-Forwarding and UI remain M5.4d.3.
+Review M5.4d.2 (`context/features-specs/24-workspace-egress-api-and-snapshots.md`)
+on branch `m5.4d2-allowlist-api`: contracted hostname CRUD, current-authority
+rechecks, atomic audit and fenced idempotency, database-enforced cap and immutable
+runner snapshots. Configuration only: no runtime network access changes until
+M5.4d.3 wires the authenticated edge, runner forwarding and admin UI.
 
 ## Product Milestones
 
@@ -473,3 +469,25 @@ unfinished-slice gate, not waived or fixed with stubs. **Next:** implement the r
 application/store/API configuration and authorization/idempotency wiring, add
 rollback/replay/demotion/failure-path tests, then rerun the full gates. Do not open
 this partial unit for merge or claim M5.4d.2 complete.
+
+### M5.4d.2 — built and verified locally, awaiting review
+
+Application service/store and three real HTTP handlers complete the slice; the
+route-contract coverage gate now passes. Store rechecks workspace:manage under the
+workspace lock for list/add/remove and refuses system actors. Mutation, audit and
+fenced idempotency completion commit atomically; render, fence and audit failures
+roll back. Replays and key-reuse mismatches recheck current authority, so a demoted
+admin cannot replay; DELETE replay returns an empty 204. Reserved hosts combine
+built-ins, `EGRESS_RESERVED_HOSTS` (required in staging/production) and public
+service URLs, without echoing URL values in errors.
+
+Tests: domain, application config, HTTP role/validation/replay, and five PostgreSQL
+integration tests. Seven deliberate mutations fail (cap, snapshot trigger, snapshot
+RLS, system-actor guard, replay reauthorization, reserved check, audit write).
+Full integration suite 21 packages pass, none skipped — run directly because
+Docker Hub DNS blocked the runner image rebuild in `make test-integration`.
+lint/typecheck/test/build/sqlc-check/contracts-check pass; `make ci` formatting
+flags only pre-existing untracked `.claude/` files.
+
+**Next:** open/review PR; after merge, M5.4d.3 (authenticated edge using the guarded
+transport and snapshots, match-free runner forwarding, admin UI, live acceptance).

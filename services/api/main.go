@@ -183,6 +183,10 @@ func run() error {
 	sessionService := application.NewSessionService(
 		postgres.NewSessionStore(appPool), taskStore, agentStore)
 	idempotencyStore := postgres.NewIdempotencyStore(appPool)
+	egressService, err := application.NewEgressService(postgres.NewEgressStore(appPool), cfg.EgressReservedHosts)
+	if err != nil {
+		return fmt.Errorf("configure egress service: %w", err)
+	}
 
 	// Idempotency records expire too, and for a sharper reason than the
 	// delivery log: they hold a stored response body carrying identifiers, so
@@ -196,6 +200,7 @@ func run() error {
 	workspaceHandler.RegisterTasks(protected, taskService)
 	workspaceHandler.RegisterAgents(protected, agentService)
 	workspaceHandler.RegisterSessions(protected, sessionService, idempotencyStore)
+	workspaceHandler.RegisterEgress(protected, egressService, idempotencyStore)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health/live", health.Live())

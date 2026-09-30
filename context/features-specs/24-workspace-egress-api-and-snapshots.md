@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d.2 — Workspace egress API, audit and runner snapshots
 
-**Status: implementation in progress; configuration, snapshot and replay design specified below.**
+**Status: implemented and verified locally; awaiting review. Configuration only — no network access is enabled until M5.4d.3.**
 M5.4d.1 merged as 43ec4c7 (PR #27). Parent: `22-workspace-egress-allowlist.md`;
 security design: ADR-017.
 
@@ -188,15 +188,7 @@ needs a zero-body-aware path. Fingerprinting uses canonical input, not raw bytes
 
 ## Next
 
-Implement domain validation and tests, then OpenAPI, migration/queries, atomic
-store and API in this unit. Complete security and integration gates before PR.
-After review/merge, .3 integrates the authenticated edge, runner and UI.
+Review and merge. Then M5.4d.3: authenticated egress edge using the guarded
+transport and runner snapshots, match-free runner forwarding, and the admin UI,
+with live forwarding acceptance.
 
-## Implementation checkpoint
-
-Domain validation and namespace matching are implemented. OpenAPI operations and
-migration 00015/sqlc queries are added; local migration and DB boundary tests pass.
-No application service/store or HTTP handlers yet. Full contract coverage correctly
-fails until the actual operations are served. Next is application/store/API and
-reserved configuration, including atomic audit/idempotency and authorized replay.
-The current DB tests do not prove the not-yet-implemented audit/replay boundary.
