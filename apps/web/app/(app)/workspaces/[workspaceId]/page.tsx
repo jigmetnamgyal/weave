@@ -74,6 +74,29 @@ export default async function WorkspacePage({ params }: PageProps<"/workspaces/[
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">Added hosts</CardTitle>
+          <CardDescription>
+            Sites beyond GitHub and the package registries that sessions may reach.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="outline"
+            size="sm"
+            nativeButton={false}
+            render={
+              <Link href={`/workspaces/${workspace.id}/settings/egress`}>
+                {workspace.permissions.includes("workspace:manage")
+                  ? "Manage added hosts"
+                  : "About added hosts"}
+              </Link>
+            }
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">Work</CardTitle>
           <CardDescription>
             A task describes what needs doing, an agent describes what will attempt it, and a

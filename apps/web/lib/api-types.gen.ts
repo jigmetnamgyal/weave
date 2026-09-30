@@ -15,7 +15,7 @@ export interface paths {
         };
         /**
          * List additional runner destinations
-         * @description Requires workspace:manage. Configuration only until guarded proxy integration is deployed.
+         * @description Requires workspace:manage. The hosts a new session's runner may reach, beyond the built-in ones.
          */
         get: operations["listEgressHosts"];
         put?: never;
@@ -24,8 +24,9 @@ export interface paths {
          * @description Requires workspace:manage. Lowercase ASCII canonicalization; no URLs,
          *     wildcards, IPs, IDN, local/internal names or reserved service destinations.
          *     At most 20 additional hosts per workspace. Writes configuration and audit
-         *     atomically. Existing runner snapshots are unchanged. This API alone does
-         *     not enable connectivity; guarded proxy integration is a separate unit.
+         *     atomically. Takes effect for sessions whose runner starts afterwards,
+         *     reached only through the guarded egress proxy (ADR-017); existing runner
+         *     snapshots are unchanged.
          */
         post: operations["addEgressHost"];
         delete?: never;

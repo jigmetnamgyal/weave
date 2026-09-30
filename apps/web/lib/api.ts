@@ -129,6 +129,14 @@ export type Repository = Schemas["Repository"];
 /** What an installation can and cannot currently do. */
 export type InstallationHealth = Schemas["InstallationHealth"];
 
+/**
+ * A host a workspace's admins added for its runners to reach (ADR-017).
+ *
+ * Reached only through the guarded egress proxy, and only by sessions whose
+ * runner starts after it was added: a runner keeps the list it started with.
+ */
+export type EgressHost = Schemas["EgressHost"];
+
 /** The error envelope every failing endpoint returns. */
 type ApiError = Schemas["Error"];
 
@@ -468,6 +476,41 @@ export async function createSession(
   return apiRequest<Ok<"createSession">>(`/v1/workspaces/${workspaceId}/sessions`, {
     method: "POST",
     body: JSON.stringify(input),
+    ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
+  });
+}
+
+/** List a workspace's added egress hosts, with the most it may have. */
+export async function fetchEgressHosts(
+  workspaceId: string
+): Promise<Result<Ok<"listEgressHosts">>> {
+  return apiRequest<Ok<"listEgressHosts">>(`/v1/workspaces/${workspaceId}/egress-hosts`);
+}
+
+/**
+ * Add an egress host. The key makes a retry of one submission safe: the API
+ * answers it with the first result instead of adding the host twice.
+ */
+export async function addEgressHost(
+  workspaceId: string,
+  hostname: string,
+  idempotencyKey?: string
+): Promise<Result<EgressHost>> {
+  return apiRequest<Ok<"addEgressHost">>(`/v1/workspaces/${workspaceId}/egress-hosts`, {
+    method: "POST",
+    body: JSON.stringify({ hostname }),
+    ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
+  });
+}
+
+/** Remove an egress host from the list new sessions start with. */
+export async function removeEgressHost(
+  workspaceId: string,
+  egressHostId: string,
+  idempotencyKey?: string
+): Promise<Result<void>> {
+  return apiRequest<void>(`/v1/workspaces/${workspaceId}/egress-hosts/${egressHostId}`, {
+    method: "DELETE",
     ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
   });
 }

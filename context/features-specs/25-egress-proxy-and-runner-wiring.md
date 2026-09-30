@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d.3 — Egress proxy, runner wiring and admin UI
 
-**Status: 3a built and verified live on Vercel Hobby, awaiting review; 3b pending.** M5.4d.2 merged as 6a1193a
+**Status: 3a merged (a5271af, PR #29); 3b built, awaiting review and the operator walkthrough.** M5.4d.2 merged as 6a1193a
 (PR #28). Parent: `22-workspace-egress-allowlist.md`; design: ADR-017.
 
 This unit makes a workspace's added hostnames reachable from its runners, and
@@ -176,6 +176,37 @@ to default GitHub/registry/ingress rules.
 - `make test-integration` (22 packages), lint, typecheck, test, build, sqlc and
   contracts checks pass.
 
+## 3b implementation record
+
+- Page `apps/web/app/(app)/workspaces/[workspaceId]/settings/egress/page.tsx`,
+  with a `loading.tsx` skeleton in the page's shape (reduced motion respected),
+  linked from the workspace page ("Manage added hosts", or "About added hosts"
+  for members without `workspace:manage`).
+- States: the warnings (an added host can receive repository data; changes apply
+  to sessions that start afterwards; removal does not cut off a running session),
+  a count against the limit, empty, at-limit, a load failure distinct from empty
+  (with the request reference), and an explanation in place of the list for
+  members who cannot manage it.
+- `components/add-egress-host-form.tsx`: bound into `useActionState`; the API's
+  refusal is shown inline and the typed hostname kept; one idempotency key per
+  submission, written after mount, renewed only after a success.
+- `components/remove-egress-host-button.tsx`: a confirmation that says removal is
+  not an immediate cut-off, submitted as a bound form action with its own key.
+- `app/actions/egress.ts` and `lib/api.ts`: pass-throughs over the generated
+  contract types; the API makes every decision.
+- Contract descriptions updated: the API is no longer "configuration only".
+
+## 3b verification record
+
+- `npm run typecheck` (with route typegen), lint (no new warnings), prettier,
+  `next build` (route registered), `make contracts-check`.
+- **Not yet done: the walkthrough.** The web app has no component-test runner, and
+  a signed-in Clerk session is needed to render the page; as with M4.3, the walk
+  is the operator's: sign in as an owner, add a host, see it listed with the
+  count, try an invalid and a reserved hostname and see the API's message with
+  the input kept, remove one after confirming, and view the page as a developer.
+
 ## Next
 
-Review and merge 3a. Then 3b, the admin screen. Staging gates from ADR-013 still apply.
+Review 3b and do the walkthrough. That completes M5.4d. Staging gates from
+ADR-013 still apply.

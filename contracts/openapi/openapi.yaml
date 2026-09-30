@@ -56,7 +56,7 @@ paths:
       operationId: listEgressHosts
       tags: [workspaces]
       summary: List additional runner destinations
-      description: Requires workspace:manage. Configuration only until guarded proxy integration is deployed.
+      description: Requires workspace:manage. The hosts a new session's runner may reach, beyond the built-in ones.
       responses:
         "200":
           description: Entries ordered by canonical hostname; built-in hosts excluded.
@@ -84,8 +84,9 @@ paths:
         Requires workspace:manage. Lowercase ASCII canonicalization; no URLs,
         wildcards, IPs, IDN, local/internal names or reserved service destinations.
         At most 20 additional hosts per workspace. Writes configuration and audit
-        atomically. Existing runner snapshots are unchanged. This API alone does
-        not enable connectivity; guarded proxy integration is a separate unit.
+        atomically. Takes effect for sessions whose runner starts afterwards,
+        reached only through the guarded egress proxy (ADR-017); existing runner
+        snapshots are unchanged.
       requestBody:
         required: true
         content:
