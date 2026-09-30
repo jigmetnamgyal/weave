@@ -28,7 +28,7 @@ This design supports an efficient MVP while preserving clear extraction boundari
 | Billing | Stripe | Plans, checkout, subscriptions, invoices, and billing portal |
 | Agent execution | Ephemeral Linux microVM or gVisor-isolated container | Runs untrusted repositories and coding-agent processes |
 | Container scheduling | Kubernetes Jobs or managed isolated-compute provider | Runner placement, resource quotas, lifecycle, and autoscaling |
-| Secrets | Cloud KMS + managed secret store | Envelope encryption and service credential management |
+| Secrets | GCP Secret Manager with managed encryption and scoped workload identity (ADR-019) | BYOK values outside product storage; delivery not enabled |
 | Observability | OpenTelemetry, Prometheus, Grafana, Sentry | Traces, metrics, dashboards, alerts, and application errors |
 | Infrastructure | Terraform | Repeatable staging and production infrastructure |
 | CI/CD | GitHub Actions | Validation, builds, security scans, migrations, and deployments |
@@ -45,6 +45,13 @@ This design supports an efficient MVP while preserving clear extraction boundari
 8. **Registry proxy** — the second public edge (ADR-016): receives the package-registry requests Vercel's firewall forwards from runner sandboxes, authenticates each by the sandbox OIDC token Vercel signs, records it per session before forwarding it to the registry, and fetches from nothing but its fixed registry list. Separate because it authenticates sandboxes rather than people and fetches from the internet on their behalf; installs depend on it, by design.
 
 9. **Egress proxy** — the third public edge (ADR-017): receives requests Vercel's firewall forwards to a workspace's added hosts, authenticates each by the sandbox OIDC token with an audience bound to the exact host's route, authorizes the host against the runner's own immutable snapshot, and fetches only through the guarded transport — every DNS answer validated, only public numeric addresses dialed, original-host TLS verified, no redirects followed. Separate from the registry proxy because it fetches from admin-chosen hosts rather than a fixed list; added hosts depend on it, by design.
+
+**Hosting direction accepted in ADR-019:** Vercel web/sandboxes, GCP Cloud Run for
+stateless HTTP services, and always-on compute for workers/runner manager/NATS.
+The secret-access manager identity must not be shared through VM metadata with
+less-privileged workloads; use separate instances or proven per-workload identity.
+Projects/region/replication, actual IAM, operational HA and deployment spending
+remain staging decisions. No cloud deployment is implemented by this selection.
 
 Only the runner manager and workflow workers can provision runners. The browser never connects directly to a runner.
 
@@ -166,8 +173,8 @@ append-only `agent_versions`. Legacy sessions have no reconstructed input and
 future real-runtime delivery must refuse them (ADR-018, spec 28). Neither input
 text nor provider credentials are carried in workflow/outbox metadata. Credential
 ownership is BYOK: workspace-supplied provider API keys, billed directly by the
-provider. Managed-secret-store and authenticated delivery remain proposed, not
-enabled (ADR-018); no platform key or local subscription/login fallback.
+provider. GCP Secret Manager is selected (ADR-019); authenticated retrieval/delivery
+is not implemented. No platform key or local subscription/login fallback.
 
 Every tenant-owned table includes `workspace_id`. Repository functions require workspace scope explicitly; there is no unscoped `GetByID` for tenant data. PostgreSQL row-level security is enabled as defense in depth for high-risk tables, with the application setting the verified tenant context per transaction.
 

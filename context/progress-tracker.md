@@ -9,12 +9,12 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-BYOK ownership accepted: workspace-supplied provider API keys, paid directly to
-the provider by the customer. Select managed secret store/KMS and control-plane
-hosting/workload identity before implementing authenticated runner credential
-delivery (ADR-018). Immutable input storage is merged as 2f50688 (PR #34).
-No key ingestion/retrieval, subscription/login reuse, paid model invocation or
-real adapter activation is enabled by this ownership decision.
+BYOK and GCP accepted. Design recorded in ADR-019 and spec 29. Next coding unit:
+M6.1b.2b workspace/provider binding metadata, scoped lifecycle, immutable version
+references and fake trusted-reference verification; no cloud/runtime wiring.
+GCP Secret Manager retrieval and authenticated backend handoff are separate
+follow-ups. Environment/project/region, IAM and staging spend need configuration;
+no key ingestion/retrieval, paid call or cloud resource provisioned yet.
 
 ## Product Milestones
 
@@ -904,3 +904,25 @@ down affected runners; memory-held long-lived keys need provider-side revocation
 This records ownership only, not working credential delivery.
 Next decision: managed secret store/KMS and where API/runner manager will run,
 so retrieval can use scoped workload identity rather than a broad static key.
+
+### GCP direction accepted — BYOK flow designed
+
+Owner approved GCP for Go control plane/Secret Manager, retaining Vercel web and
+sandbox. ADR-019 records Cloud Run stateless HTTP services and always-on workers,
+manager and NATS. Secret-access manager cannot share instance metadata identity
+with less-privileged workloads. Per-secret manager access; no static service-account
+JSON credentials, broad API/worker/NATS secret grant or local-login fallback.
+No project/region, resources, spending or customer key access activated.
+
+Spec 29 splits (b) binding metadata, (c) GCP reference verification/retrieval and
+(d) authenticated receiver/handoff. Design includes immutable numeric versions,
+allocation epoch snapshots, checks before fetch and delivery authorization,
+revocation cleanup and ambiguous-delivery reconciliation. Cancellation can race
+an already-authorized handoff: no instant-erasure or exactly-once-network claim.
+Real Vercel secret transport remains a capability gate. Fake sessions key-free;
+real Claude stays disabled. Public GCP docs fetch did not complete; reference
+links are not claimed live verification. No SDK/dependency or runtime change.
+
+Verification: Markdown formatting and diff checks only, no code tests claimed for
+this design-only change. Next: implement M6.1b.2b metadata/service/PostgreSQL with
+fake verifier and tenant/permission/epoch/retry/atomicity tests; then review.

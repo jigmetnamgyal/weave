@@ -1,6 +1,6 @@
 # ADR-018: Session input capture and proposed provider credential delivery
 
-- Status: Input capture merged in PR #34 (2f50688); BYOK ownership accepted by owner; delivery/secret-store proposal pending
+- Status: Input capture merged in PR #34 (2f50688); BYOK and GCP Secret Manager direction accepted by owner (ADR-019); delivery implementation pending
 - Date: 2026-10-01
 
 ## Context
@@ -74,12 +74,18 @@ Required isolation rules for workspace-owned BYOK credentials:
   Tool-enabled activation needs a separate threat-model/containment review (M7),
   redaction before events leave, provider egress and opt-in spend limits.
 
-## Owner decisions still required
+## Accepted store direction and remaining gates
 
-1. Managed secret store/KMS and hosting/workload identity choice. No production
-   infrastructure or credential store is selected/created by this implementation.
-2. Rotation/revocation implementation, budget enforcement and explicitly authorized
-   sandbox acceptance spending before any provider call.
+GCP Secret Manager with scoped workload identities is accepted (ADR-019).
+Cloud Run serves stateless HTTP workloads; privileged always-on manager compute
+must not share metadata credentials with workers/NATS. No cloud resource is
+provisioned or key accessed by this decision.
+
+Environment/project/region, replication, concrete IAM and deployment spending
+remain to be configured/approved. Rotation/revocation implementation, budget
+enforcement and explicitly authorized sandbox acceptance spending remain gates.
+Spec 29 splits binding metadata, GCP retrieval and backend handoff; in-flight
+revocation is convergent cleanup, not a promise of instant distributed erasure.
 
 ## Threat model and alternatives
 
