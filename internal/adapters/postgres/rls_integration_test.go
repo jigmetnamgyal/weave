@@ -510,7 +510,9 @@ func TestAWorkspaceCanBeCreatedAsTheApplicationRoleIntegration(t *testing.T) {
 		t.Fatalf("create a workspace as the application role: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = ownerPool.Exec(context.Background(), "DELETE FROM workspaces WHERE id = $1", workspace.ID)
+		if _, err := ownerPool.Exec(context.Background(), "DELETE FROM workspaces WHERE id = $1", workspace.ID); err != nil {
+			t.Errorf("cleanup workspace: %v", err)
+		}
 	})
 	if workspace.ID == uuid.Nil || workspace.Name != "Created Under RLS" || workspace.CreatedBy != user.ID || workspace.Version != 1 {
 		t.Errorf("created %+v", workspace)
