@@ -562,3 +562,12 @@ reusing one connection past the deadline passes even with the proxy's own clear
 removed. Kept an explicit clear as a safeguard, with an accurate comment, and the
 test as a regression check. Thread left open for a maintainer, since the claimed
 bug was not reproduced.
+
+PR #29, third review round: Greptile agreed the write-deadline finding does not
+occur on Go 1.26 (thread resolved). Two new findings fixed: (1) the origin's idle
+clock was reset when a chunk was read, so a slow write to the sandbox followed by
+an origin pause could cut off a stream still making progress — the clock now
+starts once the chunk is delivered; (2) a failed flush (sandbox gone) was ignored,
+so an undelivered response was logged `forwarded` — it is now `incomplete`
+(`http.ErrNotSupported` from a non-flushing writer is not a failure). Both tests
+fail with their fix reverted; the first needed its timings corrected before it did.

@@ -450,3 +450,77 @@ func TestAReusedConnectionOutlivesAStreamsWriteDeadline(t *testing.T) {
 		t.Errorf("second on the reused connection: %d, want 200", code)
 	}
 }
+
+// slowWriter delivers each chunk slowly, as a sandbox on a congested link
+// would, and can refuse flushes as one that has gone away would.
+type slowWriter struct {
+	*httptest.ResponseRecorder
+	delay     time.Duration
+	failFlush bool
+}
+
+func (s *slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(s.delay)
+	return s.ResponseRecorder.Write(p)
+}
+
+func (s *slowWriter) FlushError() error {
+	if s.failFlush {
+		return errors.New("the sandbox went away")
+	}
+	s.Flush()
+	return nil
+}
+
+// TestASlowWriteDoesNotEatTheOriginsAllowance is review feedback on PR #29:
+// the idle clock was reset when a chunk was read, not when it was delivered,
+// so a slow write followed by an origin pause cancelled a stream that was
+// still making progress. Idle 200ms; each write takes 150ms; the origin sends
+// the next chunk 250ms after the last was taken — 250ms after the read, but
+// only 100ms after the write finished, so the stream is never idle for 200ms.
+func TestASlowWriteDoesNotEatTheOriginsAllowance(t *testing.T) {
+	w := newWorld(t, nil)
+	w.handler = proxy.New(proxy.Config{PublicBase: base, Verifier: w.verifier, Authorizer: w.authorizer, Upstream: w.upstream,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), IdleTimeout: 200 * time.Millisecond})
+	w.upstream.respond = func(r *http.Request) (*http.Response, error) {
+		reader, writer := io.Pipe()
+		go func() {
+			for i := 0; i < 3; i++ {
+				if _, err := writer.Write([]byte("chunk")); err != nil {
+					return
+				}
+				select {
+				case <-time.After(250 * time.Millisecond):
+				case <-r.Context().Done():
+					_ = writer.CloseWithError(r.Context().Err())
+					return
+				}
+			}
+			_ = writer.Close()
+		}()
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: reader}, nil
+	}
+	rec := &slowWriter{ResponseRecorder: httptest.NewRecorder(), delay: 150 * time.Millisecond}
+	w.handler.ServeHTTP(rec, forwarded("GET", host, "/slow-link", w.token(t, host), nil))
+	if rec.Body.String() != "chunkchunkchunk" {
+		t.Errorf("body %q; a stream making progress was cut off", rec.Body.String())
+	}
+}
+
+// TestAFailedFlushIsNotLoggedAsDelivered is review feedback on PR #29: a small
+// response can be written into a buffer while the sandbox has gone, and the
+// failed flush was ignored — so the outcome log said "forwarded".
+func TestAFailedFlushIsNotLoggedAsDelivered(t *testing.T) {
+	w := newWorld(t, nil)
+	var logs strings.Builder
+	var mu sync.Mutex
+	w.handler = proxy.New(proxy.Config{PublicBase: base, Verifier: w.verifier, Authorizer: w.authorizer, Upstream: w.upstream,
+		Logger: slog.New(slog.NewTextHandler(lockedWriter{&mu, &logs}, nil))})
+	rec := &slowWriter{ResponseRecorder: httptest.NewRecorder(), failFlush: true}
+	w.handler.ServeHTTP(rec, forwarded("GET", host, "/", w.token(t, host), nil))
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(logs.String(), "outcome=incomplete") || strings.Contains(logs.String(), "outcome=forwarded") {
+		t.Errorf("a failed delivery was logged as:\n%s", logs.String())
+	}
+}

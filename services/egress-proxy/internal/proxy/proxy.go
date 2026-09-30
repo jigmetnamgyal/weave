@@ -228,8 +228,9 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path str
 	defer func() { _ = response.Body.Close() }()
 	copyHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
-	if stalled := h.stream(w, response.Body, cancel); stalled {
-		return response.StatusCode, "stalled"
+	if incomplete := h.stream(w, response.Body, cancel); incomplete {
+		// Stalled, or the sandbox stopped taking it: not delivered in full.
+		return response.StatusCode, "incomplete"
 	}
 	return response.StatusCode, "forwarded"
 }
@@ -239,7 +240,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path str
 // for the idle timeout cancels the origin request, and each write to the
 // sandbox gets the same bound, so a stalled peer on either side cannot hold
 // the request open.
-func (h *Handler) stream(w http.ResponseWriter, body io.Reader, cancel context.CancelFunc) (stalled bool) {
+func (h *Handler) stream(w http.ResponseWriter, body io.Reader, cancel context.CancelFunc) (incomplete bool) {
 	control := http.NewResponseController(w)
 	// The write deadline is the connection's, not this response's. Go's HTTP/1
 	// server already clears it after each request (net/http server.go, after
@@ -254,12 +255,20 @@ func (h *Handler) stream(w http.ResponseWriter, body io.Reader, cancel context.C
 	for {
 		n, readErr := body.Read(buf)
 		if n > 0 {
-			idle.Reset(h.idle)
+			idle.Stop() // the origin made progress; the write has its own bound
 			_ = control.SetWriteDeadline(time.Now().Add(h.idle))
 			if _, err := w.Write(buf[:n]); err != nil {
 				return true
 			}
-			_ = control.Flush()
+			// A write can succeed into a buffer while the sandbox has gone;
+			// the flush is what tells (review of PR #29). A writer that cannot
+			// flush at all is not a failure.
+			if err := control.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				return true
+			}
+			// The origin's idle clock starts once the chunk is delivered, so a
+			// slow write cannot eat into the origin's allowance (review of PR #29).
+			idle.Reset(h.idle)
 		}
 		if readErr != nil {
 			return !errors.Is(readErr, io.EOF)
