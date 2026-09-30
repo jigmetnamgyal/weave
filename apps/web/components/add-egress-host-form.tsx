@@ -28,13 +28,29 @@ export function AddEgressHostForm({
     initialState
   );
 
-  // One key per submission, written after mount rather than rendered: a value
-  // generated during render would differ between the server and the browser.
-  // A new key only after a success, so a failed attempt's retry reuses it.
+  // The retry identity belongs to the component, not the hidden DOM input:
+  // the latter disappears at the limit. Changed input is a new intent, while
+  // resubmitting the same trimmed hostname retries the old request.
+  const retry = useRef<{ hostname: string; key: string } | null>(null);
   const keyInput = useRef<HTMLInputElement>(null);
+  const hostnameInput = useRef<HTMLInputElement>(null);
+
+  function syncKey(hostname: string) {
+    const identity = hostname.trim();
+    if (!retry.current || retry.current.hostname !== identity) {
+      retry.current = { hostname: identity, key: crypto.randomUUID() };
+    }
+    if (keyInput.current) keyInput.current.value = retry.current.key;
+  }
+
+  // Randomness stays out of render. Rotate on each successful action result,
+  // even if its hostname is the same as an earlier successful submission.
   useEffect(() => {
-    if (keyInput.current) keyInput.current.value = crypto.randomUUID();
-  }, [state.added]);
+    if (state.added) retry.current = null;
+  }, [state]);
+  useEffect(() => {
+    if (hostnameInput.current) syncKey(hostnameInput.current.value);
+  }, [state, atLimit]);
 
   if (atLimit) {
     return (
@@ -56,7 +72,10 @@ export function AddEgressHostForm({
           name="hostname"
           // Keyed on the result so a success clears the field and a refusal
           // restores what was typed.
-          key={state.added ?? state.hostname ?? "empty"}
+          key={state.error ? `error:${state.hostname ?? ""}` : `success:${state.added ?? ""}`}
+          ref={hostnameInput}
+          onChange={(event) => syncKey(event.currentTarget.value)}
+          disabled={pending}
           defaultValue={state.error ? state.hostname : ""}
           placeholder="docs.example.com"
           autoComplete="off"

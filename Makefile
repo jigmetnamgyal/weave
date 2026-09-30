@@ -128,6 +128,7 @@ typecheck: ## Type-check the web workspace (CI gate)
 
 test: ## Run unit tests (CI gate)
 	@go test -race $(GO_PKGS)
+	@npm run test --workspace $(WEB_WORKSPACE)
 
 # Integration tests need a migrated database. They skip themselves when
 # TEST_DATABASE_URL is unset, which is what keeps `make test` runnable without

@@ -19,7 +19,20 @@ export default async function EgressSettingsPage({
   const { workspaceId } = await params;
 
   const workspaces = await fetchWorkspaces();
-  if (!workspaces.ok) throw new Error(workspaces.message);
+  if (!workspaces.ok) {
+    return (
+      <main className="mx-auto w-full max-w-3xl flex-1 space-y-6 p-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Added hosts</h1>
+        <p role="alert" className="text-destructive text-sm">
+          {workspaces.message}
+        </p>
+        <p className="text-muted-foreground text-xs">
+          The workspace could not be loaded. Nothing has changed.
+          {workspaces.requestId ? ` Reference: ${workspaces.requestId}.` : ""}
+        </p>
+      </main>
+    );
+  }
   const workspace = workspaces.data.find((candidate) => candidate.id === workspaceId);
   if (!workspace) notFound();
 
@@ -126,6 +139,8 @@ async function HostList({ workspaceId }: { workspaceId: string }) {
                         })}{" "}
                         UTC
                       </time>
+                      {" · Added by "}
+                      <span className="break-all font-mono">{host.created_by}</span>
                     </p>
                   </div>
                   <RemoveEgressHostButton

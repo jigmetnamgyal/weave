@@ -31,10 +31,12 @@ export function RemoveEgressHostButton({
   );
 
   // Kept for this host's removal: a retry after a failure reuses it.
+  const retryKey = useRef<string | null>(null);
   const keyInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (keyInput.current && keyInput.current.value === "") {
-      keyInput.current.value = crypto.randomUUID();
+    if (keyInput.current) {
+      retryKey.current ??= crypto.randomUUID();
+      keyInput.current.value = retryKey.current;
     }
   }, [confirming]);
 

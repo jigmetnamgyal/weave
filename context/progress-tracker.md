@@ -596,3 +596,17 @@ merged API; contract descriptions no longer call the API configuration-only.
 Verified: typecheck with route typegen, lint (no new warnings), prettier,
 `next build`, contracts check. **Not verified: the walkthrough**, which needs a
 signed-in session; there is no web component-test runner, as in M4.3.
+
+### PR #31 review fixes — M5.4d.3b
+
+Addressed seven inline findings (six distinct issues): add retry keys survive
+at-limit hide/show and renew for changed input or a successful result; removal
+keys survive Keep/reconfirm after a lost response; a successful retry clears the
+hostname; list rows show the creator identifier; initial workspace failures keep
+the request reference. Added seven dependency-free Node tests of the actual TSX
+with a small hook/host model and wired them into web CI and `make test`. All
+seven pass with fixes and fail against the reviewed implementation. Typecheck,
+lint (only the six existing warnings), formatting and web build pass. These are
+not browser or Next action-transport tests; the signed-in operator walkthrough
+remains outstanding. Next: finish PR #31 review/CI and the walkthrough before
+asking to merge.
