@@ -152,6 +152,15 @@ type Runner struct {
 	UpdatedAt     pgtype.Timestamptz
 }
 
+// Immutable configured additional hosts at runner allocation; guarded forwarding is wired in M5.4d.3.
+type RunnerEgressSnapshot struct {
+	RunnerID    uuid.UUID
+	WorkspaceID uuid.UUID
+	SessionID   uuid.UUID
+	Hosts       []string
+	CreatedAt   pgtype.Timestamptz
+}
+
 // A run of an agent against a task. Carries the pinned agent version, which is the policy snapshot, and the branch intent M5 acts on.
 type Session struct {
 	ID             uuid.UUID
@@ -263,6 +272,14 @@ type Workspace struct {
 	Version   int32
 	CreatedAt pgtype.Timestamptz
 	UpdatedAt pgtype.Timestamptz
+}
+
+type WorkspaceEgressHost struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Hostname    string
+	CreatedBy   uuid.UUID
+	CreatedAt   pgtype.Timestamptz
 }
 
 // Invitations to join a workspace. Only the token hash is stored; the token is shown to the issuer once.

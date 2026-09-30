@@ -14,8 +14,10 @@ Specify and build M5.4d.2 on `m5.4d2-allowlist-api` after M5.4d.1 merged as
 Scope: contracted tenant-scoped hostname CRUD, authorization, atomic audit and
 idempotency, concurrent cap enforcement, immutable runner snapshots. Shared reserved-
 host configuration and database-triggered snapshots are specified. Domain validation
-and namespace matching are implemented/tested; next OpenAPI and migration.
-No API/store wiring yet; forwarding and UI remain M5.4d.3.
+and namespace matching are implemented/tested. OpenAPI and migration/sqlc are
+now drafted/generated and migration verified locally. Next real store/API wiring:
+the route-contract coverage test remains red until those handlers exist.
+Forwarding and UI remain M5.4d.3.
 
 ## Product Milestones
 
@@ -444,3 +446,30 @@ package lint pass. Two deliberate mutations fail: punycode guard removal and
 reserved-descendant matching removal. No DNS lookup, new dependency or runtime
 network policy change. Next: OpenAPI, migration/sqlc, atomic store/API and integration
 verification; do not declare this partial domain work the complete unit.
+
+### M5.4d.2 — contract and database boundary implemented (unit incomplete)
+
+Added three OpenAPI operations and generated API types; no HTTP handlers yet.
+Added migration 00015, egress queries and regenerated sqlc. Migration applied to
+local development successfully. Workspace host entries have forced RLS, canonical
+shape/unique constraints, insert/delete-only app grants and a workspace-serialized
+DB cap. Runner BEFORE INSERT locks verified tenant workspace; AFTER INSERT creates
+an explicit immutable sorted snapshot through a narrow trigger owned by the
+existing NOLOGIN bypass role. Existing runner backfill is empty, not current config.
+App cannot insert snapshots; composite FK binds runner/session/workspace.
+Updated the event-test runner fixture to use tenant-scoped runner-store creation
+rather than an owner INSERT with absent context.
+
+Three new application-role DB integration tests pass with race detection: unchanged
+runner INSERT, empty/current/future snapshots, immutable mutation refusal/cascades,
+tenant isolation, canonical SQL shape and concurrent cap. Three DB mutations fail:
+cap trigger disabled (12 succeed instead of one), snapshot trigger disabled (missing
+row), snapshot read policy broadened (foreign read succeeds). All restored, tests
+pass again. Local `make lint-go`, `go build ./...`, generators and diff check pass.
+
+`make test-integration` ran: all database/adapter packages pass; the API contract
+coverage test fails because the three new operations lack handlers. This is an
+unfinished-slice gate, not waived or fixed with stubs. **Next:** implement the real
+application/store/API configuration and authorization/idempotency wiring, add
+rollback/replay/demotion/failure-path tests, then rerun the full gates. Do not open
+this partial unit for merge or claim M5.4d.2 complete.

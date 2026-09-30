@@ -75,6 +75,7 @@ type Querier interface {
 	ConnectInstallation(ctx context.Context, arg ConnectInstallationParams) (GithubInstallation, error)
 	// Test and operator support only; not used on a request path.
 	CountUsers(ctx context.Context) (int64, error)
+	CountWorkspaceEgressHosts(ctx context.Context, workspaceID uuid.UUID) (int64, error)
 	// Used under LockWorkspace to enforce that a workspace never loses its last
 	// owner.
 	CountWorkspaceOwners(ctx context.Context, workspaceID uuid.UUID) (int64, error)
@@ -89,6 +90,7 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
+	DeleteWorkspaceEgressHost(ctx context.Context, arg DeleteWorkspaceEgressHostParams) (WorkspaceEgressHost, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
 	// The terminal write, after the backend confirms the environment is gone.
 	// Conditional on the runner being live, so a redelivered teardown finds no
@@ -128,6 +130,7 @@ type Querier interface {
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
 	GetRepositoryForWorkspace(ctx context.Context, arg GetRepositoryForWorkspaceParams) (Repository, error)
 	GetRunner(ctx context.Context, arg GetRunnerParams) (Runner, error)
+	GetRunnerEgressSnapshot(ctx context.Context, arg GetRunnerEgressSnapshotParams) (RunnerEgressSnapshot, error)
 	// Scoped by workspace, so a session id from one tenant cannot be read through
 	// another even before the policies are consulted.
 	GetSessionForWorkspace(ctx context.Context, arg GetSessionForWorkspaceParams) (Session, error)
@@ -135,6 +138,7 @@ type Querier interface {
 	// another even before the policies are consulted.
 	GetTaskForWorkspace(ctx context.Context, arg GetTaskForWorkspaceParams) (Task, error)
 	GetUserByExternalID(ctx context.Context, externalID string) (User, error)
+	GetWorkspaceEgressHost(ctx context.Context, arg GetWorkspaceEgressHostParams) (WorkspaceEgressHost, error)
 	// Scoped by member, not just by id. A caller who is not a member gets no row,
 	// so "not found" and "not yours" are indistinguishable from the outside and
 	// workspace identifiers cannot be probed.
@@ -143,6 +147,7 @@ type Querier interface {
 	// Recorded before the proxy forwards the request. Runs in the tenant context
 	// of the runner's workspace; RLS refuses any other.
 	InsertRegistryRequest(ctx context.Context, arg InsertRegistryRequestParams) error
+	InsertWorkspaceEgressHost(ctx context.Context, arg InsertWorkspaceEgressHostParams) (WorkspaceEgressHost, error)
 	// What the workspace currently has connected. Removed installations are kept
 	// for their repository history but are not connections any more.
 	ListActiveInstallationsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]GithubInstallation, error)
@@ -178,6 +183,7 @@ type Querier interface {
 	ListSessionTransitions(ctx context.Context, arg ListSessionTransitionsParams) ([]SessionStateTransition, error)
 	ListSessionsForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Session, error)
 	ListTasksForWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]Task, error)
+	ListWorkspaceEgressHosts(ctx context.Context, workspaceID uuid.UUID) ([]WorkspaceEgressHost, error)
 	ListWorkspaceMembers(ctx context.Context, workspaceID uuid.UUID) ([]ListWorkspaceMembersRow, error)
 	ListWorkspacesForUser(ctx context.Context, userID uuid.UUID) ([]ListWorkspacesForUserRow, error)
 	// Taken before computing the next version number. Without it two concurrent
@@ -384,6 +390,7 @@ type Querier interface {
 	// currently granted set and negating it, rather than deleting named ones,
 	// means a repository that vanished without an event is still caught.
 	WithdrawRepositoriesNotIn(ctx context.Context, arg WithdrawRepositoriesNotInParams) error
+	WorkspaceEgressHostExists(ctx context.Context, arg WorkspaceEgressHostExistsParams) (bool, error)
 }
 
 var _ Querier = (*Queries)(nil)

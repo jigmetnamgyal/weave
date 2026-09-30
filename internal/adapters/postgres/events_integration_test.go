@@ -43,10 +43,13 @@ func bindRunner(t *testing.T, ownerPool *pgxpool.Pool, session domain.Session) u
 		return id
 	}
 	id = uuid.New()
-	if _, err := ownerPool.Exec(context.Background(),
-		`INSERT INTO runners (id, session_id, workspace_id, backend, state) VALUES ($1, $2, $3, 'test', 'running')`,
-		id, session.ID, session.WorkspaceID); err != nil {
+	ctx := postgres.WithTenantWorkspace(context.Background(), session.WorkspaceID)
+	store := postgres.NewRunnerStore(ownerPool)
+	if _, err := store.Create(ctx, domain.Runner{ID: id, SessionID: session.ID, WorkspaceID: session.WorkspaceID, Backend: "test"}); err != nil {
 		t.Fatalf("bind a runner: %v", err)
+	}
+	if _, err := store.MarkRunning(ctx, id, session.WorkspaceID); err != nil {
+		t.Fatalf("mark test runner running: %v", err)
 	}
 	return id
 }
