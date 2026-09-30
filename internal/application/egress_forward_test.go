@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -146,5 +147,34 @@ func TestTheEgressAuthorizerUsesTheRunnersOwnSnapshot(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s was authorized", name)
 		}
+	}
+}
+
+// TestEgressFailuresAreTerminalAndNamed is review feedback on PR #29: an egress
+// configuration failure was retried and then reported only as "could not be
+// started". It is now terminal, with its own cause and reason — while a
+// transient database error reading the snapshot stays retryable.
+func TestEgressFailuresAreTerminalAndNamed(t *testing.T) {
+	for name, setup := range map[string]func(*runnerWorld){
+		"missing snapshot": func(w *runnerWorld) { w.missing = true; withEgress(t, w, "https://egress.weave.example", nil) },
+		"no proxy URL":     func(w *runnerWorld) { w.added = []string{"docs.example.com"}; withEgress(t, w, "", nil) },
+		"now reserved": func(w *runnerWorld) {
+			w.added = []string{"api.weave.example.com"}
+			withEgress(t, w, "https://egress.weave.example", []string{"weave.example.com"})
+		},
+	} {
+		w := newRunnerTestWorld(t)
+		setup(w)
+		_, err := w.service.Provision(context.Background(), w.session.WorkspaceID, w.session.ID)
+		cause, terminal := application.ClassifyRunnerFailure(err)
+		if !terminal || cause != application.RunnerFailureEgressRefused {
+			t.Errorf("%s: classified %q, terminal=%v; want egress_refused, terminal", name, cause, terminal)
+		}
+		if reason := application.SessionFailureReason(string(cause)); !strings.Contains(reason, "egress") {
+			t.Errorf("%s: reason %q does not name egress", name, reason)
+		}
+	}
+	if _, terminal := application.ClassifyRunnerFailure(errors.New("read the runner's egress snapshot: connection refused")); terminal {
+		t.Error("a transient snapshot read error was made terminal")
 	}
 }

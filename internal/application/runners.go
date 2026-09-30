@@ -983,6 +983,10 @@ const (
 	RunnerFailureEventsUnconfirmed   RunnerFailure = "events_unconfirmed"
 	RunnerFailureEventsNotDrained    RunnerFailure = "events_not_drained"
 	RunnerFailureBackendRefused      RunnerFailure = "backend_refused"
+	// RunnerFailureEgressRefused: the runner's added egress hosts cannot be
+	// granted safely — no snapshot, no egress proxy configured, or a host that
+	// has since become reserved (ADR-017). Retrying cannot change any of them.
+	RunnerFailureEgressRefused RunnerFailure = "egress_refused"
 	// RunnerFailureNoProvider is how every session ends until M5.5: the
 	// runner came up with a verified checkout, and there is no provider
 	// adapter to run in it yet.
@@ -1005,6 +1009,10 @@ func ClassifyRunnerFailure(err error) (RunnerFailure, bool) {
 		return RunnerFailureBrokerRefused, true
 	case errors.Is(err, ErrRunnerBackendRefused):
 		return RunnerFailureBackendRefused, true
+	// A missing snapshot and an unbuildable policy are terminal; a database
+	// error reading the snapshot is not, and stays retryable.
+	case errors.Is(err, ErrEgressConfiguration), errors.Is(err, ErrEgressSnapshotMissing):
+		return RunnerFailureEgressRefused, true
 	default:
 		return "", false
 	}
@@ -1018,6 +1026,9 @@ func SessionFailureReason(cause string) string {
 		return "the session's runner could not be started"
 	case RunnerFailureBackendRefused:
 		return "the runner backend refused to start the session's environment"
+	case RunnerFailureEgressRefused:
+		return "the workspace's added egress hosts could not be granted safely: the runner's host snapshot is missing, " +
+			"no egress proxy is configured, or a host is now reserved"
 	case RunnerFailureLost:
 		return "the session's runner stopped before it was ready"
 	case RunnerFailureNotReady:

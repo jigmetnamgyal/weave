@@ -312,3 +312,92 @@ func TestAStalledBodyEndsTheRequest(t *testing.T) {
 		t.Error("a body that never arrived was forwarded")
 	}
 }
+
+// TestAStalledResponseIsCutOff is review feedback on PR #29: an origin that
+// sent headers and then stopped held the request open indefinitely. Now a
+// stream that makes no progress for the idle timeout is ended, while what
+// already arrived was passed through.
+func TestAStalledResponseIsCutOff(t *testing.T) {
+	w := newWorld(t, nil)
+	w.handler = proxy.New(proxy.Config{PublicBase: base, Verifier: w.verifier, Authorizer: w.authorizer, Upstream: w.upstream,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), IdleTimeout: 200 * time.Millisecond})
+	w.upstream.respond = func(r *http.Request) (*http.Response, error) {
+		reader, writer := io.Pipe()
+		go func() {
+			_, _ = writer.Write([]byte("partial "))
+			<-r.Context().Done() // stall until the proxy gives up
+			_ = writer.CloseWithError(r.Context().Err())
+		}()
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: reader}, nil
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- serve(w.handler, forwarded("GET", host, "/big", w.token(t, host), nil)) }()
+	select {
+	case rec := <-done:
+		if !strings.HasPrefix(rec.Body.String(), "partial ") {
+			t.Errorf("body %q; want what arrived before the stall", rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stalled response held the request for 5s")
+	}
+}
+
+// TestASlowButSteadyResponseIsNotCutOff: the bound is on stalls, not on size
+// or total time — a stream that keeps arriving outlives the idle timeout.
+func TestASlowButSteadyResponseIsNotCutOff(t *testing.T) {
+	w := newWorld(t, nil)
+	w.handler = proxy.New(proxy.Config{PublicBase: base, Verifier: w.verifier, Authorizer: w.authorizer, Upstream: w.upstream,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), IdleTimeout: 200 * time.Millisecond})
+	w.upstream.respond = func(*http.Request) (*http.Response, error) {
+		reader, writer := io.Pipe()
+		go func() {
+			for i := 0; i < 8; i++ { // 8 chunks, 100ms apart: 800ms total, 4x the idle bound
+				_, _ = writer.Write([]byte("x"))
+				time.Sleep(100 * time.Millisecond)
+			}
+			_ = writer.Close()
+		}()
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: reader}, nil
+	}
+	rec := serve(w.handler, forwarded("GET", host, "/steady", w.token(t, host), nil))
+	if rec.Body.String() != "xxxxxxxx" {
+		t.Errorf("body %q; a steady stream was cut off", rec.Body.String())
+	}
+}
+
+// TestRefusalsLogNoRequestContent is review feedback on PR #29: a refusal
+// logged its cause verbatim, and the cause of a non-runner sandbox carries the
+// sandbox name from the token. Refusals now log a category.
+func TestRefusalsLogNoRequestContent(t *testing.T) {
+	w := newWorld(t, nil)
+	var logs strings.Builder
+	var mu sync.Mutex
+	w.handler = proxy.New(proxy.Config{PublicBase: base, Verifier: w.verifier, Authorizer: w.authorizer, Upstream: w.upstream,
+		Logger: slog.New(slog.NewTextHandler(lockedWriter{&mu, &logs}, nil))})
+	marker := "sandbox-name-marker-7f3a"
+	tok := w.issuer.Mint(t, vercelsandboxtest.Token{Audience: []string{base + "/e/" + host}, ProjectID: project, SandboxName: marker})
+	if rec := serve(w.handler, forwarded("GET", host, "/secret-path?token=q-marker", tok, nil)); rec.Code != http.StatusForbidden {
+		t.Fatalf("got %d", rec.Code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, leaked := range []string{marker, "secret-path", "q-marker"} {
+		if strings.Contains(logs.String(), leaked) {
+			t.Errorf("the log carries request content %q:\n%s", leaked, logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "egress request refused") {
+		t.Errorf("the refusal was not logged at all:\n%s", logs.String())
+	}
+}
+
+type lockedWriter struct {
+	mu *sync.Mutex
+	b  *strings.Builder
+}
+
+func (l lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}

@@ -136,7 +136,8 @@ func TestTheEgressAuthorizerHonorsTheSnapshotIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizer := application.NewEgressAuthorizer(postgres.NewRegistryStore(app), store, postgres.WithTenantWorkspace, "vercel-")
+	// The production composition (services/egress-proxy uses the same call).
+	authorizer := postgres.NewEgressAuthorizer(app, "vercel-")
 	authorize := func(host string) error {
 		_, err := authorizer.Authorize(context.Background(), runner.ID, host)
 		return err

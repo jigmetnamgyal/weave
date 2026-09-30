@@ -538,3 +538,18 @@ resolve; registry and backend suites still pass; project empty afterwards.
 Two live lessons, recorded in ADR-017: a loopback name never leaves the sandbox,
 and the quick tunnel rewrites 502 bodies. `make test-integration` (22 packages)
 and all local gates pass. **Next:** PR for 3a, then 3b (admin screen).
+
+### M5.4d.3a — PR #29 review round
+
+Four findings, all acted on. (1) Egress configuration failures were retried and
+then reported only as "could not be started": now terminal, with a new
+`egress_refused` cause and a reason naming egress; a transient snapshot read error
+stays retryable. (2) A stalled origin response could hold a request open: the
+proxy now cuts off a stream that makes no progress for 60s (reads and writes each
+reset it), without bounding size or total time. (3) The live test uses an
+in-memory authorizer: `postgres.NewEgressAuthorizer` is now the one constructor
+the service and its integration test both use, so the DB test covers the exact
+production composition; the live test stays Vercel-focused. (4) Refusals logged
+the cause's text, which can carry the sandbox name: they now log a category.
+Each fix's test fails when the fix is reverted. All local gates,
+`make test-integration` and the egress live test pass; project empty afterwards.

@@ -57,6 +57,11 @@ const (
 // before anything is forwarded, and the header timeout does not cover it.
 const DefaultBodyReadTimeout = 60 * time.Second
 
+// DefaultIdleTimeout bounds how long a response stream may make no progress.
+// It limits stalls, not size: every chunk read from the origin, and every
+// chunk written to the sandbox, resets it (review of PR #29).
+const DefaultIdleTimeout = 60 * time.Second
+
 // MaxRequestBody bounds a forwarded request's body.
 const MaxRequestBody = 8 << 20
 
@@ -69,6 +74,8 @@ type Config struct {
 	Upstream        Upstream
 	Logger          *slog.Logger
 	BodyReadTimeout time.Duration
+	// IdleTimeout is DefaultIdleTimeout when zero.
+	IdleTimeout time.Duration
 }
 
 // Handler serves forwarded egress requests.
@@ -79,6 +86,7 @@ type Handler struct {
 	upstream   Upstream
 	logger     *slog.Logger
 	bodyRead   time.Duration
+	idle       time.Duration
 }
 
 // New builds the handler.
@@ -91,8 +99,12 @@ func New(cfg Config) *Handler {
 	if bodyRead == 0 {
 		bodyRead = DefaultBodyReadTimeout
 	}
+	idle := cfg.IdleTimeout
+	if idle == 0 {
+		idle = DefaultIdleTimeout
+	}
 	return &Handler{base: strings.TrimSuffix(cfg.PublicBase, "/"), verifier: cfg.Verifier, authorizer: cfg.Authorizer,
-		upstream: upstream, logger: cfg.Logger, bodyRead: bodyRead}
+		upstream: upstream, logger: cfg.Logger, bodyRead: bodyRead, idle: idle}
 }
 
 // ServeHTTP refuses at the first failed step, and forwards only after all of
@@ -188,7 +200,10 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path str
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, "https://"+host+path, reader)
+	// Cancelled when the stream stalls, which ends the origin's read.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	upstream, err := http.NewRequestWithContext(ctx, r.Method, "https://"+host+path, reader)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return http.StatusBadRequest, "bad_request"
@@ -213,8 +228,36 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path str
 	defer func() { _ = response.Body.Close() }()
 	copyHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, response.Body)
+	if stalled := h.stream(w, response.Body, cancel); stalled {
+		return response.StatusCode, "stalled"
+	}
 	return response.StatusCode, "forwarded"
+}
+
+// stream copies the response while it makes progress. No total deadline: a
+// large download takes as long as it takes. But a read that yields nothing
+// for the idle timeout cancels the origin request, and each write to the
+// sandbox gets the same bound, so a stalled peer on either side cannot hold
+// the request open.
+func (h *Handler) stream(w http.ResponseWriter, body io.Reader, cancel context.CancelFunc) (stalled bool) {
+	control := http.NewResponseController(w)
+	idle := time.AfterFunc(h.idle, cancel)
+	defer idle.Stop()
+	buf := make([]byte, 32<<10)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			idle.Reset(h.idle)
+			_ = control.SetWriteDeadline(time.Now().Add(h.idle))
+			if _, err := w.Write(buf[:n]); err != nil {
+				return true
+			}
+			_ = control.Flush()
+		}
+		if readErr != nil {
+			return !errors.Is(readErr, io.EOF)
+		}
+	}
 }
 
 // readBody reads the request body whole, refusing one over MaxRequestBody.
@@ -277,13 +320,34 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 	return false
 }
 
-// refuse answers a refusal and logs why — never the token, a header, a path or
-// a body.
+// refuse answers a refusal and logs why — as a stable category, never the
+// cause's text. Error messages can carry request-derived content (a sandbox
+// name from the token, for one), and nothing about a request's content is
+// logged (review of PR #29).
 func (h *Handler) refuse(w http.ResponseWriter, r *http.Request, status int, message, host string, cause error) {
 	attrs := []any{slog.Int("status", status), slog.String("host", host), slog.String("reason", message)}
 	if cause != nil {
-		attrs = append(attrs, slog.String("error", cause.Error()))
+		attrs = append(attrs, slog.String("cause", causeCategory(cause)))
 	}
 	h.logger.WarnContext(r.Context(), "egress request refused", attrs...)
 	http.Error(w, message, status)
+}
+
+// causeCategory names a refusal's cause without repeating its text.
+func causeCategory(err error) string {
+	switch {
+	case errors.Is(err, application.ErrVerifierUnavailable):
+		return "verifier_unavailable"
+	case errors.Is(err, application.ErrEgressHostNotAuthorized):
+		return "host_not_in_snapshot"
+	case errors.Is(err, application.ErrEgressRunnerNotLive):
+		return "runner_not_live"
+	case errors.Is(err, application.ErrEgressSnapshotMissing):
+		return "snapshot_missing"
+	case errors.Is(err, domain.ErrRunnerNotFound):
+		return "runner_not_found"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "cancelled"
+	}
+	return "other"
 }

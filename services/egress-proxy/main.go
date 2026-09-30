@@ -26,7 +26,6 @@ import (
 
 	"github.com/jigmetnamgyal/weave/internal/adapters/postgres"
 	"github.com/jigmetnamgyal/weave/internal/adapters/vercelsandbox"
-	"github.com/jigmetnamgyal/weave/internal/application"
 	"github.com/jigmetnamgyal/weave/services/egress-proxy/internal/config"
 	"github.com/jigmetnamgyal/weave/services/egress-proxy/internal/proxy"
 )
@@ -61,8 +60,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	authorizer := application.NewEgressAuthorizer(postgres.NewRegistryStore(pool), postgres.NewEgressStore(pool),
-		postgres.WithTenantWorkspace, vercelsandbox.BackendName+"-")
+	authorizer := postgres.NewEgressAuthorizer(pool, vercelsandbox.BackendName+"-")
 	handler := proxy.New(proxy.Config{PublicBase: cfg.PublicURL, Verifier: verifier, Authorizer: authorizer, Logger: logger})
 
 	// No write timeout: a large download streams for as long as it streams. The
