@@ -106,18 +106,54 @@ func TestARegistryRequestIsRefusedWhenItCannotBeTrusted(t *testing.T) {
 	}
 }
 
-// TestALongPathIsCappedOnARuneBoundary, so an odd request is still recorded.
-func TestALongPathIsCappedOnARuneBoundary(t *testing.T) {
+// TestAPathIsRecordedExactlyOrRefused is a review finding on PR #26: a path
+// was cut to 2 KiB for the record while the whole was forwarded, so two
+// different fetches could read the same. Now the record is exactly what is
+// forwarded, less its query, or the request is refused.
+func TestAPathIsRecordedExactlyOrRefused(t *testing.T) {
 	runner := uuid.New()
 	store := &fakeRegistryStore{runners: map[uuid.UUID]application.RegistryRunner{
 		runner: {SessionID: uuid.New(), WorkspaceID: uuid.New(), Backend: "vercel-live", State: domain.RunnerProvisioning},
 	}}
-	long := "/" + strings.Repeat("é", 3000)
-	got, err := newRecorder(store).Record(context.Background(), runner, "pypi.org", "GET", long)
-	if err != nil {
-		t.Fatal(err)
+	recorder := newRecorder(store)
+	atCap := "/" + strings.Repeat("a", application.MaxRegistryPathBytes-1)
+	got, err := recorder.Record(context.Background(), runner, "pypi.org", "GET", atCap+"?q=1")
+	if err != nil || got.Path != atCap {
+		t.Errorf("a path at the cap: %d bytes recorded, %v; want it whole", len(got.Path), err)
 	}
-	if len(got.Path) > application.MaxRegistryPathBytes || !utf8.ValidString(got.Path) {
-		t.Errorf("path of %d bytes, valid UTF-8 %v", len(got.Path), utf8.ValidString(got.Path))
+	for name, path := range map[string]string{
+		"one byte over the cap": atCap + "a",
+		"not valid UTF-8":       "/left-pad\xff",
+		"a NUL":                 "/left\x00pad",
+	} {
+		if _, err := recorder.Record(context.Background(), runner, "pypi.org", "GET", path); !errors.Is(err, application.ErrRegistryRequestInvalid) {
+			t.Errorf("%s: %v, want refused rather than rewritten", name, err)
+		}
+	}
+	if len(store.recorded) != 1 {
+		t.Errorf("%d rows; only the path at the cap should be recorded", len(store.recorded))
+	}
+	if !utf8.ValidString(got.Path) {
+		t.Error("the recorded path is not valid UTF-8")
+	}
+}
+
+// TestAProxyBaseWithAPathIsRefused is a review finding on PR #26: the proxy
+// serves /r/<host> at its root, so a base under a prefix would route every
+// registry request to a 404.
+func TestAProxyBaseWithAPathIsRefused(t *testing.T) {
+	for raw, ok := range map[string]bool{
+		"https://registry.weave.example":         true,
+		"https://registry.weave.example/":        true,
+		"https://registry.weave.example/prefix":  false,
+		"https://registry.weave.example/r":       false,
+		"http://registry.weave.example":          false,
+		"https://u:p@registry.weave.example":     false,
+		"https://registry.weave.example/?q=1":    false,
+		"https://registry.weave.example/#anchor": false,
+	} {
+		if err := application.ValidateRegistryProxyURL(raw); (err == nil) != ok {
+			t.Errorf("%q: %v, want ok=%v", raw, err, ok)
+		}
 	}
 }

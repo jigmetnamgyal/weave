@@ -94,6 +94,10 @@ func TestLiveRegistryRequestsAreRecordedAndForwarded(t *testing.T) {
 	for _, host := range application.RegistryHosts {
 		rules = append(rules, application.EgressRule{Host: host, ForwardURL: application.RegistryForwardURL(publicBase, host)})
 	}
+	ingress := os.Getenv("WEAVE_LIVE_INGRESS_HOST")
+	if ingress != "" {
+		rules = append(rules, application.EgressRule{Host: ingress})
+	}
 	session, err := backend.LiveSandbox(ctx, runner, rules)
 	t.Cleanup(func() {
 		if err := backend.Destroy(context.Background(), runner, ""); err != nil {
@@ -113,6 +117,9 @@ func TestLiveRegistryRequestsAreRecordedAndForwarded(t *testing.T) {
 	}{
 		{"npm resolves a package through the proxy", "cd /tmp && timeout 60 npm view left-pad version", "registry.npmjs.org", "/left-pad", "1.3.0"},
 		{"a pip index page through the proxy", "curl -sS --max-time 30 https://pypi.org/simple/left-pad/ | head -c 200", "pypi.org", "/simple/left-pad/", "left"},
+		// A scoped package is requested as /@scope%2fname: refused by the
+		// first version, which compared the route decoded (review of PR #26).
+		{"a scoped npm package through the proxy", "cd /tmp && timeout 60 npm view @types/left-pad name", "registry.npmjs.org", "/@types%2fleft-pad", "@types/left-pad"},
 	} {
 		exit, out, err := backend.LiveRun(ctx, session, c.script)
 		t.Logf("%s: exit=%d output=%q", c.name, exit, strings.TrimSpace(out))
@@ -123,10 +130,44 @@ func TestLiveRegistryRequestsAreRecordedAndForwarded(t *testing.T) {
 			t.Errorf("%s: no record of %s %s for runner %s", c.name, c.host, c.path, runner)
 		}
 	}
-	exit, out, _ := backend.LiveRun(ctx, session, "curl -sS -o /dev/null -w '%{http_code}' --max-time 10 https://example.com 2>&1")
-	t.Logf("an unlisted host: exit=%d %q", exit, strings.TrimSpace(out))
-	if exit == 0 && strings.HasPrefix(strings.TrimSpace(out), "2") {
-		t.Error("an unlisted host was reached under the rules-format policy")
+	// The egress matrix, under **the policy that ships** — registries
+	// forwarded, git and the ingress plain — rather than a plain-rules policy
+	// (review of PR #26). Reached means an HTTP response or a banner came
+	// back; a connect is never evidence.
+	reaches := func(url string, extra ...string) string {
+		return "code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 " + strings.Join(extra, " ") + " '" + url +
+			"' 2>/dev/null); [ -n \"$code\" ] && [ \"$code\" != 000 ]"
+	}
+	matrix := []struct {
+		name, script string
+		reached      bool
+	}{
+		{"github.com (plain)", reaches("https://github.com"), true},
+		{"a forwarded registry host that has no route of its own (files.pythonhosted.org)", reaches("https://files.pythonhosted.org/"), true},
+		{"example.com (not listed)", reaches("https://example.com"), false},
+		{"api.github.com (a subdomain, not listed)", reaches("https://api.github.com"), false},
+		{"registry.npmjs.org on port 80", reaches("http://registry.npmjs.org/left-pad"), false},
+		{"GitHub by raw IP", reaches("https://140.82.112.3", "-k"), false},
+		{"cloud metadata", reaches("http://169.254.169.254/latest/meta-data/"), false},
+		{"a private address", reaches("http://10.0.0.1/"), false},
+		{"github.com on port 22 (SSH banner)", "timeout 10 bash -c 'exec 3<>/dev/tcp/github.com/22; head -c 4 <&3' 2>/dev/null | grep -q SSH", false},
+		{"an unlisted name resolving", "getent hosts example.com >/dev/null", false},
+	}
+	if ingress != "" {
+		matrix = append(matrix, struct {
+			name, script string
+			reached      bool
+		}{"the event ingress (plain)", reaches("https://" + ingress + "/"), true})
+	}
+	for _, c := range matrix {
+		exit, _, err := backend.LiveRun(ctx, session, c.script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("egress under the shipped policy: %-72s reached=%v", c.name, exit == 0)
+		if (exit == 0) != c.reached {
+			t.Errorf("egress: %s: reached=%v, want %v", c.name, exit == 0, c.reached)
+		}
 	}
 
 	// From outside: no token, or forged forwarding headers, is refused.

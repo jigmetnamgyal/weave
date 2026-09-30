@@ -136,6 +136,7 @@ func TestStagingAndProductionRefuseToStartWithoutARegistryProxy(t *testing.T) {
 		{"development", "http://registry.weave.example", false},
 		{"production", "https://u:p@registry.weave.example", false},
 		{"production", "https://registry.weave.example/?t=1", false},
+		{"production", "https://registry.weave.example/prefix", false},
 	} {
 		if err := validateRegistryProxy(tc.env, tc.url); (err == nil) != tc.ok {
 			t.Errorf("APP_ENV=%q RUNNER_REGISTRY_PROXY_URL=%q: %v, want ok=%v", tc.env, tc.url, err, tc.ok)

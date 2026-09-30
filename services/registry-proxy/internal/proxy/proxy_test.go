@@ -297,3 +297,52 @@ func TestUnverifiableTokensAreAnOutage(t *testing.T) {
 		t.Errorf("= %d with %d records; want 503, none", rec.Code, len(recorder.calls))
 	}
 }
+
+// TestAScopedPackageIsForwardedInItsEncodedForm is a review finding on PR #26:
+// npm requests a scoped package as /@scope%2fname. The route was compared in
+// Go's decoded form against the encoded Vercel-Forwarded-Path, so every
+// scoped package was refused.
+func TestAScopedPackageIsForwardedInItsEncodedForm(t *testing.T) {
+	w := newWorld(t)
+	r := httptest.NewRequest(http.MethodGet, "/r/registry.npmjs.org/@types%2fnode", nil)
+	for k, v := range forwarded(http.MethodGet, "registry.npmjs.org", "/@types%2fnode", w.token(t, "registry.npmjs.org"), nil).Header {
+		r.Header[k] = v
+	}
+	rec := serve(w.handler, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a scoped package: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(w.recorder.calls) != 1 || w.recorder.calls[0].path != "/@types%2fnode" {
+		t.Errorf("recorded %+v; want the encoded path", w.recorder.calls)
+	}
+	if len(w.upstream.requests) != 1 || w.upstream.requests[0].URL.EscapedPath() != "/@types%2fnode" {
+		t.Errorf("the registry was asked for %v; want the encoded path", w.upstream.requests)
+	}
+}
+
+// TestAnOversizedBodyIsRefusedBeforeAnythingIsSent is a review finding on
+// PR #26: the limit tripped while the body streamed upstream, after the record
+// and after part of it had reached the registry.
+func TestAnOversizedBodyIsRefusedBeforeAnythingIsSent(t *testing.T) {
+	for name, chunked := range map[string]bool{"declared length": false, "chunked, length unknown": true} {
+		w := newWorld(t)
+		r := forwarded(http.MethodPost, "registry.npmjs.org", "/-/npm/v1/security/audits/quick", w.token(t, "registry.npmjs.org"),
+			strings.NewReader(strings.Repeat("x", proxy.MaxRequestBody+1)))
+		if chunked {
+			r.ContentLength = -1
+		}
+		rec := serve(w.handler, r)
+		if rec.Code != http.StatusRequestEntityTooLarge || len(w.recorder.calls) != 0 || len(w.upstream.requests) != 0 {
+			t.Errorf("%s: %d with %d records and %d upstream requests; want 413 and nothing",
+				name, rec.Code, len(w.recorder.calls), len(w.upstream.requests))
+		}
+	}
+	// And a body at the limit goes through whole.
+	w := newWorld(t)
+	body := strings.Repeat("x", proxy.MaxRequestBody)
+	rec := serve(w.handler, forwarded(http.MethodPost, "registry.npmjs.org", "/-/npm/v1/security/audits/quick",
+		w.token(t, "registry.npmjs.org"), strings.NewReader(body)))
+	if rec.Code != http.StatusOK || len(w.upstream.bodies) != 1 || len(w.upstream.bodies[0]) != len(body) {
+		t.Errorf("a body at the limit: %d; want it forwarded whole", rec.Code)
+	}
+}

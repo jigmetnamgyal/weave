@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -79,6 +80,11 @@ func ValidateRegistryProxyURL(raw string) error {
 		return fmt.Errorf("%q must be https", raw)
 	case parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(raw, "#"):
 		return fmt.Errorf("%q must carry no user information, query or fragment", raw)
+	case strings.Trim(parsed.Path, "/") != "":
+		// The proxy serves /r/<host> at its root. A base with a path would
+		// build forwardURLs under a prefix the proxy does not serve, and every
+		// registry request would be refused (review of PR #26).
+		return fmt.Errorf("%q must be a host with no path: the proxy serves /r/<host> at its root", raw)
 	}
 	return nil
 }
@@ -124,9 +130,10 @@ var (
 	ErrRegistryRequestInvalid = errors.New("the registry request is not one the record accepts")
 )
 
-// MaxRegistryPathBytes caps a recorded path. Package paths are short; a
-// longer one is cut on a rune boundary rather than refused, so an odd request
-// is still recorded and still forwarded.
+// MaxRegistryPathBytes bounds a registry request's path. Package paths are
+// short. A longer one is **refused, not cut**: the record must say exactly
+// what was fetched, and a prefix would let two different fetches read the
+// same (review of PR #26).
 const MaxRegistryPathBytes = 2048
 
 var registryMethods = map[string]bool{
@@ -161,11 +168,19 @@ func (r *RegistryRecorder) Record(ctx context.Context, runnerID uuid.UUID, host,
 	if !registryMethods[method] {
 		return RegistryRequest{}, fmt.Errorf("%w: method %q", ErrRegistryRequestInvalid, method)
 	}
+	// The path is recorded exactly as it is forwarded, less its query. Nothing
+	// here rewrites it: one that is too long, not valid UTF-8, or carries a
+	// NUL — none of which a registry client sends — is refused, so the
+	// record can never differ from what was fetched.
 	path, _, _ := strings.Cut(rawPath, "?")
-	if !strings.HasPrefix(path, "/") {
+	switch {
+	case !strings.HasPrefix(path, "/"):
 		return RegistryRequest{}, fmt.Errorf("%w: path must be absolute", ErrRegistryRequestInvalid)
+	case len(path) > MaxRegistryPathBytes:
+		return RegistryRequest{}, fmt.Errorf("%w: path longer than %d bytes", ErrRegistryRequestInvalid, MaxRegistryPathBytes)
+	case !utf8.ValidString(path) || strings.ContainsRune(path, 0):
+		return RegistryRequest{}, fmt.Errorf("%w: path is not text the record can hold exactly", ErrRegistryRequestInvalid)
 	}
-	path = domain.SafeText(path, MaxRegistryPathBytes)
 	if !IsRegistryHost(host) {
 		return RegistryRequest{}, fmt.Errorf("%w: %q is not a registry host", ErrRegistryRequestInvalid, host)
 	}

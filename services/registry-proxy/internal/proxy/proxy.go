@@ -9,6 +9,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -108,8 +109,11 @@ func New(cfg Config) *Handler {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// 1. The route names the host: /r/<host>/<path>.
-	rest, ok := strings.CutPrefix(r.URL.Path, "/r/")
+	// 1. The route names the host: /r/<host>/<path>. **In its encoded form**:
+	// Vercel-Forwarded-Path arrives encoded, and a scoped npm package is
+	// requested as /@scope%2fname — compared with Go's decoded path, every
+	// one was refused (review of PR #26).
+	rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/r/")
 	host, routePath, _ := strings.Cut(rest, "/")
 	if !ok || host == "" {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -155,6 +159,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The body is read — bounded — before anything is recorded or forwarded.
+	// Streaming it upstream would have sent a prefix of an oversized body to
+	// the registry before the limit tripped (review of PR #26); registry
+	// requests carry small bodies, so holding one costs little.
+	body, tooLarge, err := readBody(r)
+	switch {
+	case tooLarge:
+		h.refuse(w, r, http.StatusRequestEntityTooLarge, "the request body is larger than the proxy forwards", host, nil)
+		return
+	case err != nil:
+		h.refuse(w, r, http.StatusBadRequest, "the request body could not be read", host, err)
+		return
+	}
+
 	// 4. Record, before a byte is fetched. A request that cannot be recorded
 	// is not forwarded: the control fails closed.
 	recorded, err := h.recorder.Record(r.Context(), runnerID, host, r.Method, forwardedPath)
@@ -171,7 +189,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Forward.
-	status, size := h.forward(w, r, host, forwardedPath)
+	status, size := h.forward(w, r, host, forwardedPath, body)
 	h.logger.InfoContext(r.Context(), "registry request",
 		slog.String("session_id", recorded.SessionID.String()), slog.String("runner_id", runnerID.String()),
 		slog.String("host", host), slog.String("method", recorded.Method), slog.String("path", recorded.Path),
@@ -179,18 +197,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // forward fetches from the registry and streams the answer back.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path string) (int, int64) {
-	var body io.Reader
-	if r.ContentLength != 0 {
-		body = http.MaxBytesReader(w, r.Body, MaxRequestBody)
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path string, body []byte) (int, int64) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, h.origin(host)+path, body)
+	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, h.origin(host)+path, reader)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return http.StatusBadRequest, 0
 	}
 	copyHeaders(upstream.Header, r.Header, true)
-	upstream.ContentLength = r.ContentLength
+	upstream.ContentLength = int64(len(body))
 	upstream.Host = host
 
 	response, err := h.upstream.Do(upstream)
@@ -207,6 +225,26 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, host, path str
 	w.WriteHeader(response.StatusCode)
 	size, _ := io.Copy(w, response.Body)
 	return response.StatusCode, size
+}
+
+// readBody reads the request body whole, refusing one over MaxRequestBody —
+// by its declared length before reading anything, and by what arrives when
+// the length is unknown.
+func readBody(r *http.Request) (body []byte, tooLarge bool, err error) {
+	if r.Body == nil || r.ContentLength == 0 {
+		return nil, false, nil
+	}
+	if r.ContentLength > MaxRequestBody {
+		return nil, true, nil
+	}
+	body, err = io.ReadAll(io.LimitReader(r.Body, MaxRequestBody+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(body) > MaxRequestBody {
+		return nil, true, nil
+	}
+	return body, false, nil
 }
 
 // hopByHop are the headers that describe one connection, never the message.
