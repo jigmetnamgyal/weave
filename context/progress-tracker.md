@@ -508,3 +508,17 @@ workspace-lock trigger makes it fail. (3) Parent spec 22 status updated. (4)
 `egress_host_exists`/`egress_host_limit` added to the `Error.code` enum and httpx
 constants; generated types regenerated. lint/typecheck/test/build and
 contracts/sqlc checks pass; all six PostgreSQL egress tests pass with `-race`.
+
+### Fix — workspace creation failed under row-level security (since M3.0)
+
+Reported by the operator: creating a workspace from the app failed. PostgreSQL
+logged `new row violates row-level security policy for table "workspaces"` on
+`CreateWorkspace`. Cause: `INSERT ... RETURNING *` makes PostgreSQL apply the
+workspaces *read* policy to the returned row, and that policy shows a workspace
+only to its members — none exist in the statement that creates it. Latent since
+M3.0 because every workspace-creation test ran on the owner connection, which
+bypasses RLS. Fix: insert without RETURNING, add the owner membership, then read
+the row back as its member. New app-role regression test failed before the fix
+and passes after; a reproduction against the dev database now succeeds.
+`make test-integration`, lint, typecheck, test, build pass. Separate branch
+`fix/workspace-create-under-rls`, independent of M5.4d.3a (PR #29).

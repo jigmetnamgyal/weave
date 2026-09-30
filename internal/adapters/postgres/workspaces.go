@@ -56,7 +56,10 @@ func (s *WorkspaceStore) CreateWithOwner(ctx context.Context, workspace domain.W
 	var created domain.Workspace
 
 	err := s.inTx(ctx, func(q *postgresdb.Queries) error {
-		row, err := q.CreateWorkspace(ctx, postgresdb.CreateWorkspaceParams{
+		// Insert, then membership, then read back: the read policy shows a
+		// workspace only to its members, so the row cannot be returned by the
+		// insert itself (see the query).
+		err := q.CreateWorkspace(ctx, postgresdb.CreateWorkspaceParams{
 			ID:        workspace.ID,
 			Slug:      workspace.Slug,
 			Name:      workspace.Name,
@@ -74,11 +77,19 @@ func (s *WorkspaceStore) CreateWithOwner(ctx context.Context, workspace domain.W
 		}
 
 		if _, err := q.AddWorkspaceMember(ctx, postgresdb.AddWorkspaceMemberParams{
-			WorkspaceID: row.ID,
+			WorkspaceID: workspace.ID,
 			UserID:      workspace.CreatedBy,
 			Role:        string(domain.RoleOwner),
 		}); err != nil {
 			return fmt.Errorf("insert owner membership: %w", err)
+		}
+
+		row, err := q.GetWorkspaceForMember(ctx, postgresdb.GetWorkspaceForMemberParams{
+			ID:     workspace.ID,
+			UserID: workspace.CreatedBy,
+		})
+		if err != nil {
+			return fmt.Errorf("read back created workspace: %w", err)
 		}
 
 		if err := appendAudit(ctx, q, event); err != nil {

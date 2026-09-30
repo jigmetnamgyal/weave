@@ -88,10 +88,9 @@ func (q *Queries) CountWorkspaceOwners(ctx context.Context, workspaceID uuid.UUI
 	return count, err
 }
 
-const createWorkspace = `-- name: CreateWorkspace :one
+const createWorkspace = `-- name: CreateWorkspace :exec
 INSERT INTO workspaces (id, slug, name, created_by)
 VALUES ($1, $2, $3, $4)
-RETURNING id, slug, name, created_by, version, created_at, updated_at
 `
 
 type CreateWorkspaceParams struct {
@@ -101,24 +100,18 @@ type CreateWorkspaceParams struct {
 	CreatedBy uuid.UUID
 }
 
-func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, createWorkspace,
+// No RETURNING. Under RLS, PostgreSQL applies the workspaces *read* policy to
+// returned rows, and that policy shows a workspace only to its members — none
+// exist yet, in the statement that creates it. The store reads the row back
+// after inserting the owner's membership.
+func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) error {
+	_, err := q.db.Exec(ctx, createWorkspace,
 		arg.ID,
 		arg.Slug,
 		arg.Name,
 		arg.CreatedBy,
 	)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.Slug,
-		&i.Name,
-		&i.CreatedBy,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
+	return err
 }
 
 const deleteWorkspaceMember = `-- name: DeleteWorkspaceMember :execrows
