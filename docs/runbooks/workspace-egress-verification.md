@@ -61,6 +61,71 @@ Use https://vercel.com/docs/sandbox/concepts/firewall as the reference:
 - What is the supported way to test denial against a controlled private fixture
   without probing provider infrastructure or accessing metadata?
 
+## Operator next steps
+
+### 1. Ask Vercel before provisioning a fixture
+
+Open a support request through your Vercel account's available support channel.
+If the Hobby account cannot open a private ticket, use the Vercel Community
+support channel with only the sanitized technical details below. Do not upgrade
+plans solely for this test without explicit cost approval.
+
+Suggested message:
+
+> **Subject: Sandbox firewall — private-address denial, DNS rebinding and IPv6**
+>
+> We use Vercel Sandbox for untrusted coding-agent workloads. Our rules-format
+> policy allows exact hostnames and forwards selected public-registry requests
+> using `forwardURL`. We want to allow workspace admins to add exact hostnames,
+> while always denying private, loopback, link-local and metadata destinations.
+>
+> In live tests, `subnets.deny: ["0.0.0.0/0"]` overrides an allowed hostname.
+> However, sandbox creation via `/v4/sandboxes` rejects `subnets.deny: ["::/0"]`
+> with HTTP 400, `Invalid CIDR "::/0"`. The current sandbox resolves public AAAA
+> records but has no usable external IPv6 route; we do not assume that is a
+> permanent security guarantee.
+>
+> Could you confirm:
+>
+> 1. The supported IPv6 deny syntax, or whether outbound IPv6 is unavailable
+>    by contract across supported regions/images.
+> 2. Whether deny ranges are enforced against the final upstream address on
+>    every new connection, including CNAME chains and DNS rebinding after an
+>    allowed hostname changes its answers.
+> 3. How this applies to plain hostname rules versus `forwardURL` rules, and
+>    where each upstream is resolved.
+> 4. A supported safe verification fixture: an endpoint at a forbidden address
+>    that we can demonstrate is reachable in an isolated control without the
+>    deny, then blocked with it. We do not want to probe your internal services
+>    or fetch metadata credentials. Is Secure Compute required for such a
+>    fixture, or can your team provide equivalent verification evidence?
+>
+> Please link the supported enforcement contract/documentation where possible.
+
+Share the answer, not account credentials or tokens. Provider guarantees and
+live observations must be recorded separately; a support answer does not mean
+a controlled test has run.
+
+### 2. Identify a disposable DNS name if a fixture is feasible
+
+Tell the implementation agent the DNS provider and a proposed unused hostname,
+for example `egress-check.<your-domain>`. Do not paste DNS API tokens into chat.
+Use an isolated test name; do not change apex, mail, application, or production
+records. The test plan must specify endpoint placement, TLS handling, TTL/cache
+observations, positive controls and rollback before any DNS mutation.
+
+Cloudflare quick-tunnel names used by local development cannot be switched to
+arbitrary A/AAAA records by this project, so they are not a rebinding fixture.
+A third-party wildcard resolver also does not provide a controlled same-name
+answer transition or a reachable private endpoint.
+
+### 3. Resume implementation after the gate closes
+
+Once enforcement is supported and verification is sufficient, write the policy
+ADR/amendment, then build the contracted tenant-scoped store/API/audit boundary,
+followed by runner policy composition and UI. If the fixture requires paid
+infrastructure, present the cost and alternative evidence before creating it.
+
 ## Completion and escalation
 
 Save sanitized observations and provider references in the spec and tracker.

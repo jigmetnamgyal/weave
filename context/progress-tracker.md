@@ -351,3 +351,15 @@ Do not use unknown internal services or metadata contents as test fixtures. Afte
 this gate closes, contract/build the tenant-scoped additions API and audit store,
 then runner-policy composition and UI. Completed task summaries must state the
 next actionable step and any operator prerequisite.
+
+### M5.4d — operator verification setup prepared
+
+Added a ready-to-send Vercel support request and concrete setup/rollback
+prerequisites to `docs/runbooks/workspace-egress-verification.md`. Next operator
+action: send the sanitized request through the account's available support
+channel and share the response. Also identify the DNS provider and an unused
+project-owned test hostname if available; no tokens in chat. No DNS changes,
+paid infrastructure, support submission or new live tests performed in this step.
+A quick tunnel alone cannot supply a controlled rebinding fixture. The feature
+remains gated; resume with provider-supported evidence or a controlled reachable
+fixture, not an assumed private-address timeout.
