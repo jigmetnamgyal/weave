@@ -73,6 +73,19 @@ capture serialization. Report synthetic evidence separately from live CLI proof.
 - Draft 00016 applied locally; revised function definitions synced atomically
   without Down/data loss. No existing snapshot row was rewritten/deleted.
 
+## PR #34 review verification
+
+CodeRabbit identified that Down left the privileged role's task SELECT grant
+behind. Down now revokes precisely the grant introduced in 00016. Migration
+integration asserts effective `has_table_privilege` is false at 00015, true at
+00016, false after Down and true after reapply. The new assertion fails on the
+old migration and passes on the fix (equivalent to removing the revoke mutation).
+Targeted PostgreSQL race integration and full isolated integration pass, the
+latter with package parallelism set to one and all workflow tests enabled.
+Two parallel wider runs hit the existing synthetic CLI's first 5-second version
+probe deadline; no timeout/assertion was changed. Its standalone race suite
+passes three repeats. Lint passes; test-owned DB/container cleanup verified.
+
 ## Next
 
 Review this storage slice; decide provider account/credential ownership, then

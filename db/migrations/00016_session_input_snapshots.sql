@@ -133,4 +133,6 @@ DROP TRIGGER sessions_lock_input_task ON sessions;
 DROP FUNCTION weave_lock_session_input_task();
 DROP TABLE session_input_snapshots;
 DROP FUNCTION weave_session_input_reject_mutation();
+-- Remove only the task-read privilege introduced by this migration.
+REVOKE SELECT ON tasks FROM weave_rls_bypass;
 -- +goose StatementEnd

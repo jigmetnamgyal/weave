@@ -860,3 +860,21 @@ connection timeouts, not a proven unhealthy Temporal process.
 PR #34 can leave draft and enter review; merge still requires user authorization.
 Credential account/funding and secret-store choices remain pending; next deliverable
 is authenticated input/credential handoff only after those decisions.
+
+### PR #34 review — rollback privilege cleanup
+
+Checked all four review surfaces with complete pagination and no orphan inline
+comments. One valid CodeRabbit finding, repeated in its issue/review summaries:
+00016 Down retained SELECT on tasks for weave_rls_bypass. Revoked that grant and
+added effective privilege lifecycle checks to the disposable migration test:
+false at 00015, true at 00016, false after Down, true on reapply. Assertion fails
+before fix and passes after; removing the revoke is caught by that same check.
+No shared dev DB rollback or credential/runtime change.
+
+Targeted PostgreSQL race integration passes. Full isolated integration passes
+with package parallelism one and workflows enabled. Two parallel attempts hit
+an existing synthetic CLI initial version-probe deadline; its standalone race
+suite passes three repeats. No timeout/assertion relaxed. Lint/golangci-lint
+passes, sqlc regenerated without drift, no test DB/runner container remains.
+Next: current-head CI and review closeout; ask before merging PR #34. Credential
+account/funding and managed-secret-store choices still require an owner decision.

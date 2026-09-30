@@ -361,6 +361,18 @@ func TestSessionInputsMigrationLegacyIntegration(t *testing.T) {
 	if _, err := provider.UpTo(ctx, 15); err != nil {
 		t.Fatal("prepare previous schema", err)
 	}
+	// Check effective privilege, not only the text of the GRANT/REVOKE.
+	assertTaskRead := func(want bool) {
+		t.Helper()
+		var canRead bool
+		if err := pool.QueryRow(ctx, "SELECT has_table_privilege('weave_rls_bypass','public.tasks','SELECT')").Scan(&canRead); err != nil {
+			t.Fatal(err)
+		}
+		if canRead != want {
+			t.Fatalf("bypass task SELECT privilege = %t, want %t", canRead, want)
+		}
+	}
+	assertTaskRead(false)
 	f := seedSessionFixture(t, pool, "Legacy Input Migration")
 	store := postgres.NewSessionStore(pool)
 	legacy, err := f.createSession(t, store, nil)
@@ -373,6 +385,7 @@ func TestSessionInputsMigrationLegacyIntegration(t *testing.T) {
 	if _, err := provider.UpTo(ctx, 16); err != nil {
 		t.Fatal("expand migration", err)
 	}
+	assertTaskRead(true)
 	if _, err := store.GetInputs(f.ctx, legacy.ID, f.workspace.ID); !errors.Is(err, application.ErrSessionInputUnavailable) {
 		t.Fatal("migration fabricated legacy input", err)
 	}
@@ -387,9 +400,11 @@ func TestSessionInputsMigrationLegacyIntegration(t *testing.T) {
 	if _, err := provider.Down(ctx); err != nil {
 		t.Fatal("rollback migration with data", err)
 	}
+	assertTaskRead(false)
 	if _, err := provider.UpTo(ctx, 16); err != nil {
 		t.Fatal("restore migration", err)
 	}
+	assertTaskRead(true)
 	if _, err := store.GetInputs(f.ctx, modern.ID, f.workspace.ID); !errors.Is(err, application.ErrSessionInputUnavailable) {
 		t.Fatal("rollback data loss was hidden by reconstruction", err)
 	}
