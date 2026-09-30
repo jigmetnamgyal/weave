@@ -5,11 +5,17 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; next M5.4d (workspace allowlist additions), before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport built, awaiting review (PR #27)**; M5.4d.2 API/audit/snapshots and M5.4d.3 runtime proxy/runner/UI pending, before M6
 
 ## Current Goal
 
-Make a session actually run: drain the outbox, start a durable workflow, cut a branch, and provision an isolated runner for a deterministic provider. M4 left every session sitting in `queued` with a promise nothing reads.
+Review M5.4d.1, the built guarded resolver/dial transport and deterministic security
+tests defined by ADR-017 (`context/features-specs/23-guarded-egress-transport.md`). The operator approved a separate Weave egress proxy for
+workspace additions rather than waiting for provider verification or purchasing
+a DNS/private-network fixture. Approved rules remain: 20 exact ASCII hosts,
+future runner allocations only. M5.4d.2 adds the API/audit/store and immutable
+runner snapshots; M5.4d.3 wires the authenticated edge, runner and admin UI.
+All three are needed before declaring M5.4d complete. The transport is built; no public proxy or runtime wiring yet.
 
 ## Product Milestones
 
@@ -306,3 +312,104 @@ of reachability. All six live tests pass; forcing that upstream fetch to fail
 makes the wheel check fail, confirming proxy 502s cannot pass it. Tunnels stopped.
 
 PR #26 merged with all published checks green and all eight review threads resolved.
+
+### M5.4d — specification started
+
+Draft: `context/features-specs/22-workspace-egress-allowlist.md`. Defines the
+store/API/audit/runner/UI boundary, fail-closed behavior and acceptance gates.
+No implementation yet. Operator approved: cap 20, future-provisioning
+only (removal is not immediate revocation), ASCII exact hostnames. Security gate:
+prove forbidden resolved addresses and DNS rebinding remain blocked by Vercel;
+one-time DNS checks are not an acceptable substitute. Next: verify this enforcement boundary before contracting/building the feature.
+
+M5.4d operator policy approval recorded: 20 extra destinations excluding defaults,
+changes apply only to newly provisioned sandboxes, exact ASCII hostnames. The
+provider security gate remains open: existing live tests prove raw-IP denial and
+proxy-side hostname resolution, not denial of an allowed name resolving to a
+private address or rebinding. Do not treat those tests as proof of this gate.
+
+### M5.4d — provider enforcement spike (partial)
+
+Added live-only `internal/adapters/vercelsandbox/egress_ranges_live_test.go`.
+Confirmed Vercel accepts `subnets.deny` and an IPv4 deny overrides an allowed
+hostname: GitHub reached in the control, not reached with `0.0.0.0/0` denied.
+Mutation removing that deny fails the test. Tagged vet and lint pass. Sandbox
+cleanup checks pass; project listing confirms zero sandboxes and zero snapshots.
+No production policy changed. Vercel rejects IPv6 `::/0` (400 Invalid CIDR),
+so IPv6 enforcement requires investigation. Private-address and rebinding tests
+still need controlled DNS and a reachable forbidden-address fixture; an absent
+server or a `--resolve` probe is not sufficient evidence. Feature implementation
+remains gated on this verification, not on the already-approved policy choices.
+
+### M5.4d — IPv6 investigation completed (security gate still open)
+
+Added `internal/adapters/vercelsandbox/ipv6_live_test.go`: current kernel has
+IPv6 enabled and public AAAA resolution works, but no usable external IPv6 route;
+IPv4 control passes, IPv6 request fails. The live snapshot passes twice, and
+build-tagged vet/lint pass. Cleanup verifies each sandbox deleted and no snapshots.
+This does not establish a durable provider guarantee. No production policy changed.
+
+**Next:** use `docs/runbooks/workspace-egress-verification.md` to obtain Vercel's
+IPv6/deny-range enforcement contract and a disposable controlled DNS fixture for
+private-address/rebinding tests. Operator input needed: a test subdomain and
+permission to configure its DNS/test endpoints (or provider-assisted equivalent).
+Do not use unknown internal services or metadata contents as test fixtures. After
+this gate closes, contract/build the tenant-scoped additions API and audit store,
+then runner-policy composition and UI. Completed task summaries must state the
+next actionable step and any operator prerequisite.
+
+### M5.4d — operator verification setup prepared
+
+Added a ready-to-send Vercel support request and concrete setup/rollback
+prerequisites to `docs/runbooks/workspace-egress-verification.md`. Next operator
+action: send the sanitized request through the account's available support
+channel and share the response. Also identify the DNS provider and an unused
+project-owned test hostname if available; no tokens in chat. No DNS changes,
+paid infrastructure, support submission or new live tests performed in this step.
+A quick tunnel alone cannot supply a controlled rebinding fixture. The feature
+remains gated; resume with provider-supported evidence or a controlled reachable
+fixture, not an assumed private-address timeout.
+
+### M5.4d — guarded proxy approach approved and specified
+
+ADR-017 (`docs/adr/0017-workspace-egress-proxy.md`) records the operator's decision
+to enforce additions through a separate proxy instead of waiting for Vercel
+support or obtaining a domain. Updated M5.4d spec, architecture and ADR-013.
+Only added hosts use this new edge; default registry logging remains fixed-list.
+Authorize against immutable per-runner snapshots to preserve future-only changes;
+resolve, validate all answers, and dial numeric addresses with original-host TLS.
+Plaintext handling, resource bounds and deterministic rebinding tests are explicit.
+This is design only, not a closed security gate or changed runtime policy.
+
+**Next:** M5.4d.1 guarded transport and regression/mutation tests. No operator DNS
+setup required for this unit. Then M5.4d.2 contracted API/audit/snapshots, followed
+by M5.4d.3 edge/runner/UI and live forwarding. Existing staging gates still apply.
+
+### M5.4d.1 — guarded transport built, awaiting review
+
+`internal/adapters/guardedhttp` implements resolve-once, validate-all, numeric-only
+dialing with TLS original-host verification, no redirects/environment proxies,
+forbidden IPv4/IPv6 classification, bounded DNS/connect/TLS/header waits and safe
+error categories. Classifier tables checked against IANA special-purpose ranges.
+Tests use injected resolver/dial seams and a local trusted TLS fixture without
+weakening production validation. Rebinding on a new connection is refused before
+any dial; mixed answers are refused before even a public candidate is attempted.
+Four deliberate mutations fail: address-check removal, hostname redial, redirect
+following and TLS verification removal.
+
+Verification: package race tests pass three times, coverage 91.6%; `make lint-go`,
+`make test`, `go build ./...` and diff check pass. No live tests or DB changes in
+this unit. No runtime uses the adapter yet, so M5.4d remains incomplete.
+
+**Next:** review/merge the transport unit; then M5.4d.2 additions API/store/audit,
+idempotency, cap concurrency and immutable runner snapshots. M5.4d.3 integrates
+the authenticated edge/runner/UI. No DNS purchase or support reply required.
+
+### M5.4d.1 — PR #27 review round
+
+Two inline documentation findings corrected: the runbook no longer gates the
+API on optional provider verification or an unwritten ADR (ADR-017 exists), and
+current-phase/spec wording distinguishes built transport from pending runtime
+integration. Addressed CodeRabbit's top-level function-documentation warning
+with concise comments on private helpers and security regression tests. No
+runtime changes. Next: finish PR #27 checks/review, then M5.4d.2.
