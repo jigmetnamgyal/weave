@@ -117,6 +117,9 @@ func TestLiveRegistryRequestsAreRecordedAndForwarded(t *testing.T) {
 	}{
 		{"npm resolves a package through the proxy", "cd /tmp && timeout 60 npm view left-pad version", "registry.npmjs.org", "/left-pad", "1.3.0"},
 		{"a pip index page through the proxy", "curl -sS --max-time 30 https://pypi.org/simple/left-pad/ | head -c 200", "pypi.org", "/simple/left-pad/", "left"},
+		// Validate actual wheel content, not just an HTTP response: a proxy
+		// 502/504 must never count as files.pythonhosted.org being reached.
+		{"a Python wheel through the proxy", `timeout 60 python3 -c 'import urllib.request,json,io,zipfile; j=json.load(urllib.request.urlopen("https://pypi.org/pypi/idna/json",timeout=30)); u=next(f["url"] for f in j["urls"] if f["filename"].endswith(".whl")); assert u.startswith("https://files.pythonhosted.org/"); b=urllib.request.urlopen(u,timeout=30).read(); z=zipfile.ZipFile(io.BytesIO(b)); assert "idna/__init__.py" in z.namelist(); print("verified idna wheel")'`, "files.pythonhosted.org", "/packages/", "verified idna wheel"},
 		// A scoped package is requested as /@scope%2fname: refused by the
 		// first version, which compared the route decoded (review of PR #26).
 		{"a scoped npm package through the proxy", "cd /tmp && timeout 60 npm view @types/left-pad name", "registry.npmjs.org", "/@types%2fleft-pad", "@types/left-pad"},
@@ -143,7 +146,6 @@ func TestLiveRegistryRequestsAreRecordedAndForwarded(t *testing.T) {
 		reached      bool
 	}{
 		{"github.com (plain)", reaches("https://github.com"), true},
-		{"a forwarded registry host that has no route of its own (files.pythonhosted.org)", reaches("https://files.pythonhosted.org/"), true},
 		{"example.com (not listed)", reaches("https://example.com"), false},
 		{"api.github.com (a subdomain, not listed)", reaches("https://api.github.com"), false},
 		{"registry.npmjs.org on port 80", reaches("http://registry.npmjs.org/left-pad"), false},

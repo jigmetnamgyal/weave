@@ -45,6 +45,12 @@ const (
 	headerPort   = "Vercel-Forwarded-Port"
 )
 
+// DefaultBodyReadTimeout bounds reading a request's body. The header timeout
+// does not cover it, and the body is read whole before anything is recorded
+// or forwarded — so without this a client that sent half a body and stopped
+// held a handler and its connection indefinitely (review of PR #26).
+const DefaultBodyReadTimeout = 60 * time.Second
+
 // MaxRequestBody bounds a forwarded request's body. Registry clients send
 // little — an audit query, a search — and this proxy forwards nothing that
 // publishes, so a large upload is refused rather than relayed.
@@ -64,6 +70,9 @@ type Config struct {
 	// fake. Nil means https://<host>.
 	UpstreamURL func(host string) string
 	Logger      *slog.Logger
+	// BodyReadTimeout bounds reading a body; DefaultBodyReadTimeout when
+	// zero.
+	BodyReadTimeout time.Duration
 }
 
 // Handler serves forwarded registry requests.
@@ -74,6 +83,7 @@ type Handler struct {
 	upstream *http.Client
 	origin   func(string) string
 	logger   *slog.Logger
+	bodyRead time.Duration
 }
 
 // New builds the handler.
@@ -100,8 +110,12 @@ func New(cfg Config) *Handler {
 	if origin == nil {
 		origin = func(host string) string { return "https://" + host }
 	}
+	bodyRead := cfg.BodyReadTimeout
+	if bodyRead == 0 {
+		bodyRead = DefaultBodyReadTimeout
+	}
 	return &Handler{base: strings.TrimSuffix(cfg.PublicBase, "/"), verifier: cfg.Verifier, recorder: cfg.Recorder,
-		upstream: upstream, origin: origin, logger: cfg.Logger}
+		upstream: upstream, origin: origin, logger: cfg.Logger, bodyRead: bodyRead}
 }
 
 // ServeHTTP authenticates, records, then forwards — and at each step, refuses
@@ -163,7 +177,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Streaming it upstream would have sent a prefix of an oversized body to
 	// the registry before the limit tripped (review of PR #26); registry
 	// requests carry small bodies, so holding one costs little.
+	// A deadline on this request's reads, so a body that stops arriving ends
+	// the request instead of holding it. Cleared once the body is in: the
+	// response may stream for as long as a tarball takes.
+	control := http.NewResponseController(w)
+	_ = control.SetReadDeadline(time.Now().Add(h.bodyRead))
 	body, tooLarge, err := readBody(r)
+	if err == nil && !tooLarge {
+		_ = control.SetReadDeadline(time.Time{})
+	}
 	switch {
 	case tooLarge:
 		h.refuse(w, r, http.StatusRequestEntityTooLarge, "the request body is larger than the proxy forwards", host, nil)

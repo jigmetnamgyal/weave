@@ -65,9 +65,13 @@ func run() error {
 	handler := proxy.New(proxy.Config{PublicBase: cfg.PublicURL, Verifier: verifier, Recorder: recorder, Logger: logger})
 
 	// No write timeout: a large tarball streams for as long as it streams. The
-	// header timeout bounds a client that never finishes its request, and the
-	// idle timeout a connection left open.
-	public := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	// header and read timeouts bound a client that never finishes its request,
+	// and the idle timeout a connection left open.
+	// ReadTimeout backstops the handler's own body deadline: reading a whole
+	// request — headers and body — may take no longer. It bounds reads only,
+	// never the streamed response.
+	public := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout: proxy.DefaultBodyReadTimeout + 10*time.Second, IdleTimeout: 2 * time.Minute}
 	health := &http.Server{Handler: healthHandler(pool, verifier, logger), ReadHeaderTimeout: 5 * time.Second}
 
 	failed := make(chan error, 2)

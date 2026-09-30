@@ -130,8 +130,9 @@ proxy holds no credential of its own beyond its database role.
 `host`, `method`, `path`, `requested_at`. Row-level security in the creating
 migration, forced; append-only by trigger (no UPDATE, DELETE, TRUNCATE, except
 the workspace cascade, as `session_events`); an index on `(session_id,
-requested_at)`. `path` is capped (2,048 characters, cut on a rune boundary) and
-`method` checked against a closed set. **No query string, header or body is
+requested_at)`. `path` is limited to 2,048 bytes and recorded exactly; longer paths, invalid UTF-8
+and NUL bytes are refused rather than truncated or sanitized. The
+`method` is checked against a closed set. **No query string, header or body is
 ever stored** — a query can carry a token, and the path is the package.
 
 ## Non-scope
@@ -217,3 +218,12 @@ rule here.
   threat model updated.
 - `make ci` and `make test-integration` pass; the live acceptance test passes,
   recorded in the Verification Record.
+
+### Review hardening (PR #26)
+
+Bodies are buffered up to 8 MiB before recording or forwarding. Oversized bodies
+are refused with 413. Body reads have a 60-second deadline, with a server read
+timeout backstop; a failed read retains its deadline so draining cannot stall.
+Successful reads clear the deadline and responses remain free of a write timeout.
+The live test validates a real wheel downloaded from files.pythonhosted.org,
+including its ZIP contents; a proxy error status is not evidence of reachability.

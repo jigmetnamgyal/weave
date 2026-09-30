@@ -5,11 +5,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -80,6 +82,7 @@ func newUpstream(t *testing.T) *upstream {
 }
 
 type world struct {
+	verifier *vercelsandbox.OIDCVerifier
 	issuer   *vercelsandboxtest.Issuer
 	recorder *fakeRecorder
 	upstream *upstream
@@ -96,7 +99,7 @@ func newWorld(t *testing.T) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := &world{issuer: issuer, recorder: &fakeRecorder{}, upstream: newUpstream(t), runner: uuid.New()}
+	w := &world{verifier: verifier, issuer: issuer, recorder: &fakeRecorder{}, upstream: newUpstream(t), runner: uuid.New()}
 	w.handler = proxy.New(proxy.Config{
 		PublicBase: base, Verifier: verifier, Recorder: w.recorder,
 		UpstreamURL: func(string) string { return w.upstream.URL },
@@ -344,5 +347,46 @@ func TestAnOversizedBodyIsRefusedBeforeAnythingIsSent(t *testing.T) {
 		w.token(t, "registry.npmjs.org"), strings.NewReader(body)))
 	if rec.Code != http.StatusOK || len(w.upstream.bodies) != 1 || len(w.upstream.bodies[0]) != len(body) {
 		t.Errorf("a body at the limit: %d; want it forwarded whole", rec.Code)
+	}
+}
+
+// TestAStalledBodyEndsTheRequest is a review finding on PR #26: the body is
+// read whole before anything is recorded, and only the headers had a timeout,
+// so a client that sent half a body and stopped held its handler forever.
+// Over a real connection — the deadline is the connection's.
+func TestAStalledBodyEndsTheRequest(t *testing.T) {
+	w := newWorld(t)
+	w.handler = proxy.New(proxy.Config{PublicBase: base, Verifier: w.verifier,
+		Recorder: w.recorder, UpstreamURL: func(string) string { return w.upstream.URL },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), BodyReadTimeout: 300 * time.Millisecond})
+	server := httptest.NewServer(w.handler)
+	t.Cleanup(server.Close)
+
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	request := forwarded(http.MethodPost, "registry.npmjs.org", "/-/npm/v1/security/audits/quick", w.token(t, "registry.npmjs.org"), nil)
+	var head strings.Builder
+	head.WriteString("POST /r/registry.npmjs.org/-/npm/v1/security/audits/quick HTTP/1.1\r\nHost: proxy\r\nContent-Length: 1000\r\n")
+	for name, values := range request.Header {
+		head.WriteString(name + ": " + values[0] + "\r\n")
+	}
+	head.WriteString("\r\n" + strings.Repeat("x", 10)) // ten bytes of a thousand, then nothing
+	if _, err := conn.Write([]byte(head.String())); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() { _, _ = io.ReadAll(conn); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stalled body held the request for 5s; the body read must be bounded")
+	}
+	if len(w.recorder.calls) != 0 || len(w.upstream.requests) != 0 {
+		t.Errorf("%d records and %d upstream requests for a body that never arrived; want none",
+			len(w.recorder.calls), len(w.upstream.requests))
 	}
 }
