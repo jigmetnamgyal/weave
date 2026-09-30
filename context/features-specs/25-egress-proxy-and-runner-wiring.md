@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d.3 — Egress proxy, runner wiring and admin UI
 
-**Status: 3a merged (a5271af, PR #29); 3b built, awaiting review and the operator walkthrough.** M5.4d.2 merged as 6a1193a
+**Status: 3a merged (a5271af, PR #29); 3b built; operator walkthrough confirmed by the user; awaiting merge.** M5.4d.2 merged as 6a1193a
 (PR #28). Parent: `22-workspace-egress-allowlist.md`; design: ADR-017.
 
 This unit makes a workspace's added hostnames reachable from its runners, and
@@ -215,14 +215,12 @@ to default GitHub/registry/ingress rules.
   intermediate keystrokes. Three more checks cover edit/revert, another host's
   success, and renewal after confirmation (ten total). The first two fail on
   4545a84 and pass with the fix; the third guards against retaining a confirmed
-  key forever. Browser/action-transport verification is still outstanding.
-- **Not yet done: the walkthrough.**
-  a signed-in Clerk session is needed to render the page; as with M4.3, the walk
-  is the operator's: sign in as an owner, add a host, see it listed with the
-  count, try an invalid and a reserved hostname and see the API's message with
-  the input kept, remove one after confirming, and view the page as a developer.
+  key forever. These model tests do not verify browser/action transport.
+- **Operator walkthrough completed:** the user confirmed “completed, it works”
+  after the requested signed-in walkthrough. This is user-reported verification,
+  not an independently executed browser test by the coding agent.
 
 ## Next
 
-Review 3b and do the walkthrough. That completes M5.4d. Staging gates from
-ADR-013 still apply.
+Merge PR #31 after final CI/review checks and user authorization. That completes
+M5.4d. Staging gates from ADR-013 still apply.

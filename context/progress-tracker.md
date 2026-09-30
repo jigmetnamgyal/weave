@@ -5,14 +5,15 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); M5.4d.3a merged (a5271af, PR #29); workspace-creation fix merged (df55d96, PR #30); **M5.4d.3b admin screen built, awaiting review and the operator walkthrough**; M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); M5.4d.3a merged (a5271af, PR #29); workspace-creation fix merged (df55d96, PR #30); **M5.4d.3b admin screen built; user confirmed the walkthrough; PR #31 awaiting final checks and merge authorization**, before M6
 
 ## Current Goal
 
 Review M5.4d.3b on `m5.4d3b-egress-admin-ui`: the admin screen for added hosts
 (spec `context/features-specs/25-egress-proxy-and-runner-wiring.md`). M5.4d.3a
 (a5271af, PR #29) and the workspace-creation fix (df55d96, PR #30) are merged. The
-operator walkthrough is outstanding; with it M5.4d is complete, and M6 is next.
+user confirmed the operator walkthrough. Merge PR #31 after final checks and
+user authorization to complete M5.4d; M6 is next.
 
 ## Product Milestones
 
@@ -623,3 +624,11 @@ lint (six pre-existing warnings), web build and targeted formatting pass. These
 remain hook/host-model checks, not browser/action-transport verification.
 Next: complete the signed-in walkthrough and remaining PR #31 review/CI before
 requesting merge authorization.
+
+### M5.4d.3b operator walkthrough confirmed
+
+The user confirmed the requested signed-in walkthrough was completed and works.
+Recorded as user-reported verification, not an independent browser run by the
+coding agent. PR #31 remains open; no merge authorization has been given yet.
+Next: finish current-head CI/review checks, obtain merge authorization, and
+merge PR #31 to complete M5.4d before beginning M6.
