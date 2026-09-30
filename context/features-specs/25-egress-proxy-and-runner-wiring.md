@@ -2,7 +2,7 @@ Read `CLAUDE.md` before starting.
 
 # M5.4d.3 — Egress proxy, runner wiring and admin UI
 
-**Status: 3a built and verified live on Vercel Hobby, awaiting review; 3b pending.** M5.4d.2 merged as 6a1193a
+**Status: 3a merged (a5271af, PR #29); 3b built; operator walkthrough confirmed by the user; awaiting merge.** M5.4d.2 merged as 6a1193a
 (PR #28). Parent: `22-workspace-egress-allowlist.md`; design: ADR-017.
 
 This unit makes a workspace's added hostnames reachable from its runners, and
@@ -176,6 +176,51 @@ to default GitHub/registry/ingress rules.
 - `make test-integration` (22 packages), lint, typecheck, test, build, sqlc and
   contracts checks pass.
 
+## 3b implementation record
+
+- Page `apps/web/app/(app)/workspaces/[workspaceId]/settings/egress/page.tsx`,
+  with a `loading.tsx` skeleton in the page's shape (reduced motion respected),
+  linked from the workspace page ("Manage added hosts", or "About added hosts"
+  for members without `workspace:manage`).
+- States: the warnings (an added host can receive repository data; changes apply
+  to sessions that start afterwards; removal does not cut off a running session),
+  a count against the limit, empty, at-limit, a load failure distinct from empty
+  (with the request reference), and an explanation in place of the list for
+  members who cannot manage it.
+- `components/add-egress-host-form.tsx`: bound into `useActionState`; the API's
+  refusal is shown inline and the typed hostname kept; one idempotency key per
+  submission, written after mount. Retry identity lives outside the DOM, survives
+  the at-limit state. New hostnames get fresh keys; failed submissions keep their
+  keys through edit/revert and other hosts' successes until that host succeeds.
+- `components/remove-egress-host-button.tsx`: a confirmation that says removal is
+  not an immediate cut-off, submitted as a bound form action with its own key.
+- `app/actions/egress.ts` and `lib/api.ts`: pass-throughs over the generated
+  contract types; the API makes every decision.
+- Contract descriptions updated: the API is no longer "configuration only".
+- PR #31 review fixes: preserve removal identity across Keep/reconfirm; clear the
+  hostname on a successful retry; show `created_by` (the API's user identifier)
+  alongside the date; keep the workspace lookup's request reference on failure.
+
+## 3b verification record
+
+- `npm run typecheck` (with route typegen), lint (no new warnings), prettier,
+  `next build` (route registered), `make contracts-check`.
+- Seven dependency-free Node regression tests execute the actual TSX against a
+  small hook/host model: limit transitions, retry identity, changed input,
+  successful retry clearing, removal reconfirmation, creator attribution and
+  workspace failure reference. All pass on the fix and all fail against the
+  reviewed implementation. Wired into web CI and `make test`; this is not a
+  browser/React integration test and does not verify Next's action transport.
+- Follow-up PR #31 finding: retain keys for submitted unconfirmed hostnames, not
+  intermediate keystrokes. Three more checks cover edit/revert, another host's
+  success, and renewal after confirmation (ten total). The first two fail on
+  4545a84 and pass with the fix; the third guards against retaining a confirmed
+  key forever. These model tests do not verify browser/action transport.
+- **Operator walkthrough completed:** the user confirmed “completed, it works”
+  after the requested signed-in walkthrough. This is user-reported verification,
+  not an independently executed browser test by the coding agent.
+
 ## Next
 
-Review and merge 3a. Then 3b, the admin screen. Staging gates from ADR-013 still apply.
+Merge PR #31 after final CI/review checks and user authorization. That completes
+M5.4d. Staging gates from ADR-013 still apply.

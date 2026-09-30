@@ -5,14 +5,15 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Phase
 
 - **Phase 1 — Engineering foundation**
-- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); **M5.4d.3a egress proxy and runner wiring built and verified live, awaiting review**; M5.4d.3b admin screen next; M5.4d.3 runtime proxy/runner/UI pending, before M6
+- Status: M5.4b merged (baa6dbe, PR #24); **M5.4c (registry request logging) merged as 0cdd605 (PR #26)**; **M5.4d.1 guarded transport merged as 43ec4c7 (PR #27)**; M5.4d.2 API/audit/snapshots merged (6a1193a, PR #28); M5.4d.3a merged (a5271af, PR #29); workspace-creation fix merged (df55d96, PR #30); **M5.4d.3b admin screen built; user confirmed the walkthrough; PR #31 awaiting final checks and merge authorization**, before M6
 
 ## Current Goal
 
-Review M5.4d.3a on `m5.4d3-egress-proxy` (spec
-`context/features-specs/25-egress-proxy-and-runner-wiring.md`): `services/egress-proxy`
-plus runner wiring, verified live on Vercel Hobby. Added hosts now work end to end
-through the guarded proxy. Then M5.4d.3b, the admin screen, completes M5.4d.
+Review M5.4d.3b on `m5.4d3b-egress-admin-ui`: the admin screen for added hosts
+(spec `context/features-specs/25-egress-proxy-and-runner-wiring.md`). M5.4d.3a
+(a5271af, PR #29) and the workspace-creation fix (df55d96, PR #30) are merged. The
+user confirmed the operator walkthrough. Merge PR #31 after final checks and
+user authorization to complete M5.4d; M6 is next.
 
 ## Product Milestones
 
@@ -585,3 +586,49 @@ the row back as its member. New app-role regression test failed before the fix
 and passes after; a reproduction against the dev database now succeeds.
 `make test-integration`, lint, typecheck, test, build pass. Separate branch
 `fix/workspace-create-under-rls`, independent of M5.4d.3a (PR #29).
+
+### M5.4d.3a and the workspace fix merged; M5.4d.3b built
+
+PR #30 (workspace creation under RLS) merged as df55d96, then PR #29 (egress proxy
+and runner wiring) as a5271af after merging main to resolve a tracker conflict and
+re-running CI. M5.4d.3b adds the "Added hosts" settings page, add form, removal
+with confirmation, loading skeleton and every state the spec lists, over the
+merged API; contract descriptions no longer call the API configuration-only.
+Verified: typecheck with route typegen, lint (no new warnings), prettier,
+`next build`, contracts check. **Not verified: the walkthrough**, which needs a
+signed-in session; there is no web component-test runner, as in M4.3.
+
+### PR #31 review fixes — M5.4d.3b
+
+Addressed seven inline findings (six distinct issues): add retry keys survive
+at-limit hide/show and renew for changed input or a successful result; removal
+keys survive Keep/reconfirm after a lost response; a successful retry clears the
+hostname; list rows show the creator identifier; initial workspace failures keep
+the request reference. Added seven dependency-free Node tests of the actual TSX
+with a small hook/host model and wired them into web CI and `make test`. All
+seven pass with fixes and fail against the reviewed implementation. Typecheck,
+lint (only the six existing warnings), formatting and web build pass. These are
+not browser or Next action-transport tests; the signed-in operator walkthrough
+remains outstanding. Next: finish PR #31 review/CI and the walkthrough before
+asking to merge.
+
+### PR #31 follow-up — edit/revert retry identity
+
+Greptile found one additional valid case: after an uncertain add response,
+editing away and back discarded that hostname's replay key. The form now retains
+keys for submitted unconfirmed hostnames until confirmation of that host; a
+success for another host does not discard them. Three additional tests cover
+edit/revert, cross-host confirmation and key retirement. The first two fail on
+4545a84 and pass after the fix; all ten regression checks now pass. Typecheck,
+lint (six pre-existing warnings), web build and targeted formatting pass. These
+remain hook/host-model checks, not browser/action-transport verification.
+Next: complete the signed-in walkthrough and remaining PR #31 review/CI before
+requesting merge authorization.
+
+### M5.4d.3b operator walkthrough confirmed
+
+The user confirmed the requested signed-in walkthrough was completed and works.
+Recorded as user-reported verification, not an independent browser run by the
+coding agent. PR #31 remains open; no merge authorization has been given yet.
+Next: finish current-head CI/review checks, obtain merge authorization, and
+merge PR #31 to complete M5.4d before beginning M6.
