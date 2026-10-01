@@ -1293,4 +1293,6 @@ skipped both context docs (`ignored: true`, `inferredParser: null`); no formatti
 was applied and deliberate wrapped context formatting remains unchanged. Custom
 Markdown local-reference, fence and trailing-whitespace checks and git diff checks
 pass; all 13 cited public links returned HTTP 200. Docs draft is ready for owner
-read-only review. No code tests/build or `.next` work run; no commit, push or PR.
+read-only review via docs-only PR [#39](https://github.com/jigmetnamgyal/weave/pull/39),
+open and not merged. No code tests/build or `.next` work run; no implementation,
+dependency, cloud/IAM or runtime changes.
