@@ -1198,3 +1198,8 @@ repeats; `go build ./services/...` and official golangci pass. Tracked-file Pret
 check passes. Unrestricted local format check reports only unrelated ignored
 `.claude/settings.local.json` and `.claude/worktrees/pr22-record/...` files; neither
 modified. Clean-checkout CI remains the production web/build/security gate.
+
+PR [#38](https://github.com/jigmetnamgyal/weave/pull/38) opened at source head
+745c3f6. Initial all-four-surface pagination/orphan check: no source findings yet;
+engineering CI and Greptile pending. CodeRabbit auto-review skipped; included
+manual review requested, **not clearance**. No merge authorized or performed.
