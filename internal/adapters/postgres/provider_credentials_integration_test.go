@@ -51,7 +51,11 @@ func bindingRef() domain.ProviderSecretReference {
 // bindingService uses the supplied database role and a test-only metadata verifier.
 func bindingService(t *testing.T, pool *pgxpool.Pool, v *referenceVerifier) *application.ProviderCredentialService {
 	t.Helper()
-	s, err := application.NewProviderCredentialService(postgres.NewProviderCredentialStore(pool), v, "test", "918273645")
+	store, err := postgres.NewProviderCredentialStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := application.NewProviderCredentialService(store, v, "test", "918273645")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +172,11 @@ func TestProviderCredentialPermissionAndRecheckIntegration(t *testing.T) {
 	if err := s.Authorize(f.ctx, bindingMember(f)); err == nil {
 		t.Fatal("removed actor could replay")
 	}
-	if err := postgres.NewProviderCredentialStore(app).Authorize(f.ctx, f.workspace.ID, application.SystemActor()); !errors.Is(err, application.ErrPermissionDenied) {
+	store, err := postgres.NewProviderCredentialStore(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Authorize(f.ctx, f.workspace.ID, application.SystemActor()); !errors.Is(err, application.ErrPermissionDenied) {
 		t.Fatal("system metadata mutation allowed", err)
 	}
 }

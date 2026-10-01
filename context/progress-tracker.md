@@ -999,3 +999,13 @@ All four review surfaces were refreshed/paginated, with no unresolved threads or
 orphan inline URLs. Greptile's sole finding remains fixed/resolved in e875f2e.
 Comment-only follow-up package races, repository golangci and diff checks pass.
 Updated-head CI pending; no merge approval inferred.
+
+
+PR35 later review: Greptile identified that a nonnil store could wrap a nil pool,
+despite service typed-nil checks. `NewProviderCredentialStore` now returns an
+explicit configuration error and nil store for missing pools; both internal test
+construction sites handle its error. The new constructor regression fails before
+fix and passes after. Package races, repository golangci, disposable metadata/input
+integration (including real app-role valid construction) and diff checks pass.
+No production wiring, cloud access, migration or runtime contract changes. Updated
+head CI/review closeout pending; still not merged.

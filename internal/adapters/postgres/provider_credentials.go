@@ -19,9 +19,13 @@ type ProviderCredentialStore struct{ pool *pgxpool.Pool }
 
 var _ application.ProviderCredentialRepository = (*ProviderCredentialStore)(nil)
 
-// NewProviderCredentialStore expects a tenant-enforcing application-role pool.
-func NewProviderCredentialStore(pool *pgxpool.Pool) *ProviderCredentialStore {
-	return &ProviderCredentialStore{pool: pool}
+// NewProviderCredentialStore requires a tenant-enforcing application-role pool.
+// Missing configuration is refused before any storage operation can be reached.
+func NewProviderCredentialStore(pool *pgxpool.Pool) (*ProviderCredentialStore, error) {
+	if pool == nil {
+		return nil, application.ErrCredentialConfiguration
+	}
+	return &ProviderCredentialStore{pool: pool}, nil
 }
 
 // credentialStoreError preserves safe categories without leaking database diagnostics.
