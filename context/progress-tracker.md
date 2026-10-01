@@ -9,11 +9,11 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-M6.1b.2b credential binding metadata is merged (#35, 047b039).
-Next: scope M6.1b.2c trusted GCP ownership/creation verification and numeric-version
-retrieval under ADR-019/spec 29. Project/environment/IAM and synthetic resource
-approval are required before cloud provisioning or key access. No production
-registration, delivery, cleanup or real Claude activation is enabled.
+M6.1b.2c.0 in progress on `m6.1b2c-secret-store-contract`: bounded spec and
+proposed adapter/approval contract only. Define trusted creation evidence,
+identity, payload/error bounds and activation gates before SDK/schema work.
+No compiled secret accessor, SDK/dependency change, cloud access, provisioning,
+production wiring or real Claude activation is authorized in this unit.
 
 ## Product Milestones
 
@@ -1027,3 +1027,39 @@ Next: separately scope/verify GCP SDK/IAM, concrete trusted resource creation an
 ownership evidence, and numeric-version retrieval. Obtain explicit configuration
 and synthetic resource approval before cloud work; authenticated handoff, durable
 cleanup and real-provider activation remain later gates.
+
+
+### M6.1b.2c.0 — proposed GCP contract/authority design
+
+Branch `m6.1b2c-secret-store-contract`. Spec 31 defines narrow metadata verification
+and manager-only bounded-borrow retrieval contracts, explicit native identity/config,
+exact numeric version/incarnation checks, CRC/response/key limits, safe errors and
+synthetic acceptance plan. These are illustrative proposed ports, not compiled Go.
+No SDK/lockfile, schema, payload fetch, cloud resources, runtime composition or
+runner/backend secret contract changed. Public vendor behavior is still unverified.
+
+Proposed ADR-020 resolves the trust-root gap with a protected onboarding approval
+ledger, exact creation evidence and minimal nonreuse tombstones independent of
+workspace-cascading metadata. Retention/grants are **proposed**, requiring review/
+approval before migration. Labels/names/IAM success or random verification UUIDs
+cannot become production ownership authority. No current synthetic approval is
+promoted/backfilled. Metadata-only verifier cannot access key bytes; slice (d)
+allocation/fencing/cleanup remains required before production accessor composition.
+
+Verification: local relative Markdown links and fence balance checked across six
+changed documents, proposed 512-byte limit compared to current supervisor; scoped
+ADR Prettier and diff whitespace checks pass. Context specifications retain their
+deliberate wrapping under `.prettierignore`. No runtime/SDK/security mutation/live
+acceptance tests are claimed for documentation-only design.
+
+Next: review/approve ADR-020 trust authority and minimal tombstone retention, then
+scope c.1 protected approval metadata/scoped lookup with fake-only tests. Current
+SDK/license/IAM validation, unwired vendor adapter and separately approved synthetic
+cloud acceptance follow. No key access/provisioning/paid-call consent inferred.
+
+
+Design PR [#36](https://github.com/jigmetnamgyal/weave/pull/36) is open. Nonreuse
+includes durable reservation before external creation and retiring uncertain/failed
+identifiers, not only tombstones after successful approval. CI/review pending; do
+not treat proposed ADR-020 retention/grants or cloud access as approved. Next:
+review this planning PR and obtain the authority/retention decision before c.1.

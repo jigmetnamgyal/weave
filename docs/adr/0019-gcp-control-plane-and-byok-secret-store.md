@@ -106,3 +106,11 @@ These are reference links, not live acceptance evidence. Public-document fetches
 from this development environment did not complete; current SDK/version/IAM and
 hosting behavior must be checked during the implementation spike. No cloud API
 was authenticated and no resource was provisioned by this planning change.
+
+## Follow-up proposal
+
+Spec 31 and proposed ADR-020 define a protected trusted approval/creation-evidence
+boundary and separate metadata-verifier/payload-accessor contracts. This does not
+amend accepted deployment approval into ledger-retention, IAM or cloud-access
+consent. Concrete ledger retention/grants, current vendor behavior and synthetic
+resource approval remain gates before implementation/live access.

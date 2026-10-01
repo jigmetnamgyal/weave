@@ -184,6 +184,14 @@ no key-value column, production registration path, cloud adapter, credential run
 snapshot or runtime cleanup/delivery exists. Metadata-active is not runtime-enabled,
 and metadata-disable is not recall of an exported key.
 
+Spec 31/proposed ADR-020 define the next design boundary, not new implementation:
+a protected onboarding approval authority pins exact resource/version creation
+identity and tenant assignment independently of labels, plus minimal nonreuse
+tombstones surviving workspace deletion. Ledger retention/grants require review.
+The proposed metadata verifier has no payload capability; a separate manager-only
+bounded accessor remains unwired until allocation authorization/delivery gates land.
+No approval ledger, GCP SDK or payload accessor is implemented by this proposal.
+
 Every tenant-owned table includes `workspace_id`. Repository functions require workspace scope explicitly; there is no unscoped `GetByID` for tenant data. PostgreSQL row-level security is enabled as defense in depth for high-risk tables, with the application setting the verified tenant context per transaction.
 
 ### Object Storage

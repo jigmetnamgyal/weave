@@ -18,7 +18,9 @@ real Claude selection stays disabled until every activation gate passes.
    RLS, audit and idempotency. Internal registration via trusted onboarding only;
    deterministic fake verification of secret reference ownership. No key bytes,
    production wiring, new public API or image change. Merged in PR #35; see spec 30.
-2. **M6.1b.2c — GCP reference verification/retrieval:** approved pinned SDK/license,
+2. **M6.1b.2c — GCP reference verification/retrieval:** proposed contract and split
+   in [spec 31](31-gcp-secret-verification-and-retrieval-contract.md), with approval
+   authority/retention under proposed ADR-020. Then approved pinned SDK/license,
    exact project/resource/version validation, scoped workload identity, bounded
    response, payload integrity, safe errors and fake contract tests. No implicit
    credential discovery in CI/dev, cloud resource creation or paid model call.
@@ -39,7 +41,7 @@ Never synthesize them from tool-policy JSON or repository files. Task title/body
 is assembled only from spec 28 snapshots; legacy missing input refuses. Assembly
 must fit the supervisor's encoded 128-KiB limit without truncation or shell use.
 
-## Planned persistence contract — not a migration
+## Persistence contract — metadata implemented, allocation/evidence extensions planned
 
 - `workspace_provider_credentials`: one workspace/provider identity, lifecycle
   (`pending`, `active`, `revoked`), current approved version and monotonically
@@ -57,8 +59,11 @@ must fit the supervisor's encoded 128-KiB limit without truncation or shell use.
   reuse across tenants must be refused. Resource names/ownership evidence are
   restricted internal data; no public route/log exposes them.
 
-These table names/states are proposals until the next slice defines migration and
-ports. Append-only evidence does not authorize use; current binding state does.
+Spec 30/migration 00017 defines the implemented binding/resource/version schema;
+its verification UUID is not itself cloud proof. Allocation snapshots and protected
+approval/creation evidence in spec 31 remain proposals with no migration/ports
+implemented. Append-only evidence does not authorize runtime use; current binding
+state, exact allocation and delivery checks remain required.
 
 ## Registration, rotation and disable semantics
 
@@ -147,6 +152,7 @@ is not verification of a real Secret Manager or Claude session.
 ## Next
 
 M6.1b.2b metadata implementation/security evidence is merged (spec 30). Separately
-implement trusted GCP reference verification/retrieval, followed by capability-tested
+review spec 31/ADR-020 authority and retention, then implement protected approval
+metadata before the pinned unwired GCP adapter, followed by capability-tested
 authenticated delivery and cleanup. No cloud provisioning/key access/paid calls are
 approved by this metadata slice. Keep fake sessions working throughout.
