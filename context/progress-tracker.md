@@ -9,11 +9,10 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-M6.1b.2c.0 planning merged (#36, 1501e02): spec 31 and proposed ADR-020.
-Next: define the c.1 protected approval metadata/scoped-lookup slice, including
-concrete retention/grants and compatibility review before migration/implementation.
-No compiled accessor, SDK, approval ledger, cloud access/provisioning, production
-composition or real Claude activation is enabled by the documentation merge.
+M6.1b.2c.1a in progress on `m6.1b2c1-approval-contract`: pure approval/creation
+values, scoped lookup/resolver ports with deterministic tests, and concrete proposed
+ledger retention/grants in spec 32. No persistence/IAM migration until that policy
+is approved; no SDK, cloud access, production verifier/accessor or runtime wiring.
 
 ## Product Milestones
 
@@ -1079,3 +1078,39 @@ Next: scope c.1 protected approval metadata/exact scoped lookup with fake-only
 verification and explicit retention/grant/compatibility review. Pinned vendor SDK,
 unwired adapter, separately approved synthetic cloud tests and authenticated
 runner delivery/cleanup remain later units.
+
+
+### M6.1b.2c.1a — pure approval values and scoped resolution
+
+Branch `m6.1b2c1-approval-contract`, spec 32. Implemented exact post-epoch creation
+seconds/nanos without rounding, closed read-only approval value/schema/kind/family,
+fmt redaction/JSON refusal, exact workspace/provider/reference lookup and selected
+ID-plus-scope resolver. Required authority rejects nil/typed-nil construction;
+invalid intent makes zero authority calls, poisoned diagnostics are normalized,
+late cancellation returns no evidence, and withdrawal/missing projections do not
+use cached/current-approval fallback. A valid value proves shape, not cloud/ledger
+ownership. Fake authority only in tests; no production implementation/composition.
+
+Spec 32 proposes concrete retention: only restricted environment/project/secret UUID/
+family/reservation-state inventory retained indefinitely; tenant assignments,
+approvals and withdrawals cascade on workspace deletion. One-way consumed state
+must survive child deletion to prevent reassignment. Proposed NOLOGIN reader/writer
+roles have separate grants, no automatic runtime membership, no ordinary app writer.
+These retention/grant choices require explicit approval before any migration.
+No schema/sqlc, IAM/role changes, SDK/dependency, key bytes, cloud access, factory,
+runner/backend secret transport, paid call or real Claude activation in this unit.
+
+Verification: scoped domain/application races three repeats; 100% statement coverage
+for all new value/resolver functions (not repository-wide coverage). Ten-second
+pure timestamp fuzz smoke passes with 2,599,688 executions. Seven deliberate
+mutations caught by assertions: returned scope, selected ID, schema version,
+chronology, nanosecond rounding, debug disclosure and late cancellation. None
+survived this set. Full repository-source Go race/unit suite passes serialized
+(`-p=1`), official golangci (zero issues), Go build, doc links/fences and diff checks
+pass. Existing DB integrations skip without test URLs; no actual ledger/RLS/vendor
+or live cloud acceptance claim. Context formatting follows deliberate wrapping.
+
+Next: open review; obtain explicit spec 32 minimal indefinite-retention and DB
+capability-grant decision. Then c.1b additive protected ledger/actual-role tests,
+with compatibility/nonreuse/cascade/withdrawal/recovery verification. No customer
+or operator credentials are discovered/accessed and no cloud work follows implicitly.
