@@ -1056,3 +1056,10 @@ Next: review/approve ADR-020 trust authority and minimal tombstone retention, th
 scope c.1 protected approval metadata/scoped lookup with fake-only tests. Current
 SDK/license/IAM validation, unwired vendor adapter and separately approved synthetic
 cloud acceptance follow. No key access/provisioning/paid-call consent inferred.
+
+
+Design PR [#36](https://github.com/jigmetnamgyal/weave/pull/36) is open. Nonreuse
+includes durable reservation before external creation and retiring uncertain/failed
+identifiers, not only tombstones after successful approval. CI/review pending; do
+not treat proposed ADR-020 retention/grants or cloud access as approved. Next:
+review this planning PR and obtain the authority/retention decision before c.1.

@@ -35,6 +35,10 @@ metadata against the recorded creation identity (spec 31).
   and forced tenant RLS on tenant-bearing approval records. No broad runtime
   writer or generic lookup-by-UUID. A minimal restricted resource tombstone survives
   workspace deletion to prevent reassigning/recreating an approved identifier.
+- Reserve each resource identifier durably before any external creation. Failed,
+  abandoned or ambiguous onboarding must not release that identifier for reuse.
+  Reconcile with the exact approved intent; cloud creation and ledger commit are
+  not one transaction, and an uncertain result cannot publish approval.
 - Cloud creation observations are exact timestamp tuples if vendor validation
   confirms those fields are reliable incarnation evidence. Preserve seconds and
   nanoseconds; do not silently round to PostgreSQL microseconds. Mutable etags and

@@ -30,6 +30,11 @@ A protected onboarding authority must record, from approved operations:
 - Approved project canonical naming, replication policy and designated workload
   identities. These are trusted deployment/onboarding facts, not request options.
 
+Reserve the opaque resource identifier in the protected nonreuse authority before
+any external creation. Failed/abandoned/ambiguous creation never frees that name;
+reconcile the exact intent or retire it, not recreate/reassign it. Cloud creation
+and PostgreSQL persistence are not a single transaction.
+
 The producer must establish workspace assignment independently of secret labels
 or requester claims, reconcile cloud creation/read-back with the approved intent,
 and atomically persist the scoped immutable evidence. Ambiguous onboarding cannot
