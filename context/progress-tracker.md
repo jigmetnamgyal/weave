@@ -1229,3 +1229,13 @@ policy and added a no-SQL table regression. The Go-floor mutation now catches
 independently. All ten total mutation cases caught/restored; ten ledger actual-
 role integrations pass three final isolated race repeats. Final current-head
 CI/four-surface review check remains before asking merge approval.
+
+Source head c9392a7 passes final engineering CI, including clean-checkout web
+production build/dependency/secret gates. Final all-four-surface pagination/orphan
+cross-check: zero unresolved threads or orphan inline URLs; all three verified
+fixes replied/resolved. CodeRabbit completed initial source review and confirmed
+its Down fix by source inspection; current-head automatic review is skipped,
+not refreshed clearance. Greptile's summary still references initial 745c3f6;
+no refreshed bot approval is claimed. Final evidence/gaps posted in PR38 comment
+5930471992. Ready for owner review/explicit merge decision; not merged. No live
+role attachment/cloud/key access/activation, and restore gates remain open.
