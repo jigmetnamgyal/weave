@@ -54,7 +54,14 @@ approval/workspace/provider/reference/incarnation/kind. A random test witness or
 unknown UUID is refused in production. Do not reconstruct old approvals from live
 labels or turn synthetic rows into verified production bindings.
 
-## Proposed consumer ports (illustrative, not compiled Go)
+## Consumer contracts and implementation provenance
+
+Spec 32 implements pure approval/creation values and an unwired scoped reader/
+resolver contract only. It does not implement the ledger, cloud verifier or accessor.
+The sketches below remain design context; exact compiled reader signatures are in
+`internal/application/secret_approvals.go`. Retention/grants remain proposed.
+
+### Proposed cloud consumer ports (illustrative, not compiled Go)
 
 Keep the existing metadata-only port unchanged:
 

@@ -192,6 +192,12 @@ The proposed metadata verifier has no payload capability; a separate manager-onl
 bounded accessor remains unwired until allocation authorization/delivery gates land.
 No approval ledger, GCP SDK or payload accessor is implemented by this proposal.
 
+Spec 32 adds pure exact creation/approval values and a scoped authority reader/
+resolver interface, unwired and test-faked only. Result validation/cancellation/
+redaction is not ownership proof; the trusted ledger and vendor observation checks
+are still absent. Concrete ledger retention/grants remain proposed before migration.
+No existing service factory or provider selection consumes these new contracts.
+
 Every tenant-owned table includes `workspace_id`. Repository functions require workspace scope explicitly; there is no unscoped `GetByID` for tenant data. PostgreSQL row-level security is enabled as defense in depth for high-risk tables, with the application setting the verified tenant context per transaction.
 
 ### Object Storage
