@@ -974,3 +974,10 @@ scans and local-stack health). Greptile review remains pending. CodeRabbit skipp
 automatic OSS review; explicit review requested. This is not final review clearance
 or merge approval. Next: address incoming review on all four surfaces, then ask
 before merging; no cloud/runtime activation follows automatically.
+
+
+PR35 review follow-up: Greptile found interface-typed nil dependencies could pass
+constructor validation. Added nilable-kind detection and a typed-nil store/verifier
+regression; fails before fix, passes after. Scoped races pass three repeats,
+repository golangci and disposable metadata/input integrations pass. No runtime
+composition or cloud access added. Review/updated-head CI still pending.

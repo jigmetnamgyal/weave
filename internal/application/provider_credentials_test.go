@@ -233,3 +233,21 @@ func TestCredentialStatusDisableAndReplayAuthorization(t *testing.T) {
 		t.Fatal("stale replay role accepted")
 	}
 }
+
+// TestCredentialTypedNilDependenciesFailClosed prevents interface-typed nil
+// pointers bypassing configuration checks and panicking on their first call.
+func TestCredentialTypedNilDependenciesFailClosed(t *testing.T) {
+	var store *credentialRepoFake
+	var verifier *credentialVerifierFake
+	for _, deps := range []struct {
+		store    ProviderCredentialRepository
+		verifier ProviderReferenceVerifier
+	}{
+		{store, &credentialVerifierFake{}}, {&credentialRepoFake{}, verifier},
+	} {
+		s, err := NewProviderCredentialService(deps.store, deps.verifier, "test", "918273645")
+		if !errors.Is(err, ErrCredentialConfiguration) || s != nil {
+			t.Fatal("typed-nil dependency accepted")
+		}
+	}
+}

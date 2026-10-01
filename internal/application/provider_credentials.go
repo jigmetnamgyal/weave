@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,13 +70,28 @@ type ProviderCredentialService struct {
 // NewProviderCredentialService requires explicit trusted verification/config.
 // Neither construction nor any operation discovers ambient/local credentials.
 func NewProviderCredentialService(store ProviderCredentialRepository, verifier ProviderReferenceVerifier, environment, project string) (*ProviderCredentialService, error) {
-	if store == nil || verifier == nil {
+	if nilCredentialDependency(store) || nilCredentialDependency(verifier) {
 		return nil, ErrCredentialConfiguration
 	}
 	if err := (domain.ProviderSecretReference{Environment: environment, ProjectNumber: project, SecretID: uuid.UUID{15: 1}, Version: 1}).Validate(); err != nil {
 		return nil, ErrCredentialConfiguration
 	}
 	return &ProviderCredentialService{store: store, verifier: verifier, environment: environment, project: project}, nil
+}
+
+// Interface equality alone misses nil concrete pointers (and other nilable
+// implementations). Refuse them before a service can reach a method call.
+func nilCredentialDependency(dependency any) bool {
+	if dependency == nil {
+		return true
+	}
+	value := reflect.ValueOf(dependency)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func credentialActor(m domain.Membership) Actor {
