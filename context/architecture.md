@@ -176,6 +176,14 @@ ownership is BYOK: workspace-supplied provider API keys, billed directly by the
 provider. GCP Secret Manager is selected (ADR-019); authenticated retrieval/delivery
 is not implemented. No platform key or local subscription/login fallback.
 
+Spec 30 adds unwired workspace/provider binding metadata: forced tenant RLS,
+immutable resource ownership/numeric versions, epoch-fenced owner/admin lifecycle,
+transactional audit/idempotency and a required trusted-reference verification port.
+Only tests supply fake verification. Safe status excludes restricted references;
+no key-value column, production registration path, cloud adapter, credential runner
+snapshot or runtime cleanup/delivery exists. Metadata-active is not runtime-enabled,
+and metadata-disable is not recall of an exported key.
+
 Every tenant-owned table includes `workspace_id`. Repository functions require workspace scope explicitly; there is no unscoped `GetByID` for tenant data. PostgreSQL row-level security is enabled as defense in depth for high-risk tables, with the application setting the verified tenant context per transaction.
 
 ### Object Storage

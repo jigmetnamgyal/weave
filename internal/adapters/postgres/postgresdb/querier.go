@@ -12,6 +12,7 @@ import (
 )
 
 type Querier interface {
+	ActivateProviderCredential(ctx context.Context, arg ActivateProviderCredentialParams) (WorkspaceProviderCredential, error)
 	AddSessionParticipant(ctx context.Context, arg AddSessionParticipantParams) (SessionParticipant, error)
 	AddWorkspaceMember(ctx context.Context, arg AddWorkspaceMemberParams) (WorkspaceMember, error)
 	AppendAuditEvent(ctx context.Context, arg AppendAuditEventParams) (AuditEvent, error)
@@ -96,6 +97,7 @@ type Querier interface {
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) error
 	DeleteWorkspaceEgressHost(ctx context.Context, arg DeleteWorkspaceEgressHostParams) (WorkspaceEgressHost, error)
 	DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) (int64, error)
+	DisableProviderCredential(ctx context.Context, arg DisableProviderCredentialParams) (WorkspaceProviderCredential, error)
 	// The terminal write, after the backend confirms the environment is gone.
 	// Conditional on the runner being live, so a redelivered teardown finds no
 	// row and treats that as already done.
@@ -132,6 +134,8 @@ type Querier interface {
 	// The row occupying the one-outstanding slot, if any. May be expired: the
 	// unique index predicate cannot reference now(), so the caller decides.
 	GetOutstandingInvitationForEmail(ctx context.Context, arg GetOutstandingInvitationForEmailParams) (WorkspaceInvitation, error)
+	GetOwnedCredentialResource(ctx context.Context, arg GetOwnedCredentialResourceParams) (ProviderCredentialResource, error)
+	GetProviderCredentialBinding(ctx context.Context, arg GetProviderCredentialBindingParams) (WorkspaceProviderCredential, error)
 	GetRepositoryForWorkspace(ctx context.Context, arg GetRepositoryForWorkspaceParams) (Repository, error)
 	GetRunner(ctx context.Context, arg GetRunnerParams) (Runner, error)
 	GetRunnerEgressSnapshot(ctx context.Context, arg GetRunnerEgressSnapshotParams) (RunnerEgressSnapshot, error)
@@ -151,6 +155,9 @@ type Querier interface {
 	// workspace identifiers cannot be probed.
 	GetWorkspaceForMember(ctx context.Context, arg GetWorkspaceForMemberParams) (Workspace, error)
 	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
+	InsertProviderCredentialBinding(ctx context.Context, arg InsertProviderCredentialBindingParams) (WorkspaceProviderCredential, error)
+	InsertProviderCredentialResource(ctx context.Context, arg InsertProviderCredentialResourceParams) (ProviderCredentialResource, error)
+	InsertProviderCredentialVersion(ctx context.Context, arg InsertProviderCredentialVersionParams) error
 	// Recorded before the proxy forwards the request. Runs in the tenant context
 	// of the runner's workspace; RLS refuses any other.
 	InsertRegistryRequest(ctx context.Context, arg InsertRegistryRequestParams) error
