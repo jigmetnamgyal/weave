@@ -128,6 +128,59 @@ type ProviderCredentialVersion struct {
 	CreatedAt         pgtype.Timestamptz
 }
 
+type ProviderSecretApproval struct {
+	ID             uuid.UUID
+	IntentID       uuid.UUID
+	WorkspaceID    uuid.UUID
+	SecretVersion  int64
+	VersionSeconds int64
+	VersionNanos   int32
+	SchemaVersion  int32
+	CredentialKind string
+	PrincipalID    uuid.UUID
+	CreatedAt      pgtype.Timestamptz
+}
+
+type ProviderSecretAssignment struct {
+	IntentID      uuid.UUID
+	WorkspaceID   uuid.UUID
+	SecretSeconds int64
+	SecretNanos   int32
+	PrincipalID   uuid.UUID
+	CreatedAt     pgtype.Timestamptz
+}
+
+type ProviderSecretIntent struct {
+	ID             uuid.UUID
+	WorkspaceID    uuid.UUID
+	Provider       string
+	Environment    string
+	ProjectNumber  string
+	SecretID       uuid.UUID
+	ResourceFamily string
+	InitialVersion int64
+	PrincipalID    uuid.UUID
+	CreatedAt      pgtype.Timestamptz
+}
+
+// Permanent minimal nonreuse inventory. Reserved intent precedes external creation; consumed assignment does not itself approve cloud ownership.
+type ProviderSecretReservation struct {
+	ProjectNumber  string
+	SecretID       uuid.UUID
+	Environment    string
+	ResourceFamily string
+	State          string
+}
+
+type ProviderSecretWithdrawal struct {
+	ID          uuid.UUID
+	IntentID    uuid.UUID
+	WorkspaceID uuid.UUID
+	ApprovalID  pgtype.UUID
+	PrincipalID uuid.UUID
+	CreatedAt   pgtype.Timestamptz
+}
+
 // Every package-registry request a runner made, recorded before the registry proxy forwarded it (ADR-016). Append-only.
 type RegistryRequest struct {
 	ID          uuid.UUID

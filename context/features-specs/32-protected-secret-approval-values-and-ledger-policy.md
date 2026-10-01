@@ -2,7 +2,8 @@
 
 **Status: pure values/resolver merged in PR #37 (6cc6399). Owner confirmed the
 retention and separate database-capability policy; ledger migration/implementation
-remains next, with no deployed authority or cloud/runtime access.**
+is implemented on the spec 33 review branch, with no deployed authority or
+cloud/runtime access.**
 
 Builds on spec 31/proposed ADR-020 and merged spec 30. No vendor SDK/API behavior
 is established by these tests.
@@ -154,3 +155,8 @@ reservation/assignment/withdrawal, permanent nonreuse after tenant cascade,
 rollback/restore gates, explicit scoped readers and safe error/audit/idempotency.
 No SDK/key bytes in c.1b. Current vendor/identity/creation timestamp behavior and
 bounded secret access remain later separately reviewed units.
+
+
+Protected ledger implementation and concrete retry/rollback/security evidence are
+tracked in [spec 33](33-protected-secret-approval-ledger.md). Deployment/identity
+attachment, restore reconciliation and cloud acceptance remain gated.

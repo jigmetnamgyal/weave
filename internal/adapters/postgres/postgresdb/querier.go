@@ -139,6 +139,10 @@ type Querier interface {
 	GetRepositoryForWorkspace(ctx context.Context, arg GetRepositoryForWorkspaceParams) (Repository, error)
 	GetRunner(ctx context.Context, arg GetRunnerParams) (Runner, error)
 	GetRunnerEgressSnapshot(ctx context.Context, arg GetRunnerEgressSnapshotParams) (RunnerEgressSnapshot, error)
+	GetSecretApprovalDecision(ctx context.Context, arg GetSecretApprovalDecisionParams) (ProviderSecretApproval, error)
+	GetSecretAssignment(ctx context.Context, arg GetSecretAssignmentParams) (ProviderSecretAssignment, error)
+	GetSecretIntent(ctx context.Context, arg GetSecretIntentParams) (ProviderSecretIntent, error)
+	GetSecretWithdrawal(ctx context.Context, arg GetSecretWithdrawalParams) (ProviderSecretWithdrawal, error)
 	// Scoped by workspace, so a session id from one tenant cannot be read through
 	// another even before the policies are consulted.
 	GetSessionForWorkspace(ctx context.Context, arg GetSessionForWorkspaceParams) (Session, error)
@@ -155,12 +159,18 @@ type Querier interface {
 	// workspace identifiers cannot be probed.
 	GetWorkspaceForMember(ctx context.Context, arg GetWorkspaceForMemberParams) (Workspace, error)
 	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
+	HasInitialSecretApproval(ctx context.Context, arg HasInitialSecretApprovalParams) (bool, error)
 	InsertProviderCredentialBinding(ctx context.Context, arg InsertProviderCredentialBindingParams) (WorkspaceProviderCredential, error)
 	InsertProviderCredentialResource(ctx context.Context, arg InsertProviderCredentialResourceParams) (ProviderCredentialResource, error)
 	InsertProviderCredentialVersion(ctx context.Context, arg InsertProviderCredentialVersionParams) error
 	// Recorded before the proxy forwards the request. Runs in the tenant context
 	// of the runner's workspace; RLS refuses any other.
 	InsertRegistryRequest(ctx context.Context, arg InsertRegistryRequestParams) error
+	InsertSecretApproval(ctx context.Context, arg InsertSecretApprovalParams) error
+	InsertSecretAssignment(ctx context.Context, arg InsertSecretAssignmentParams) error
+	InsertSecretIntent(ctx context.Context, arg InsertSecretIntentParams) error
+	InsertSecretReservation(ctx context.Context, arg InsertSecretReservationParams) error
+	InsertSecretWithdrawal(ctx context.Context, arg InsertSecretWithdrawalParams) error
 	InsertWorkspaceEgressHost(ctx context.Context, arg InsertWorkspaceEgressHostParams) (WorkspaceEgressHost, error)
 	// What the workspace currently has connected. Removed installations are kept
 	// for their repository history but are not connections any more.
@@ -204,6 +214,7 @@ type Querier interface {
 	// edits both read the same MAX(version) and one fails on the unique index —
 	// an error the caller can do nothing useful with.
 	LockAgentForUpdate(ctx context.Context, arg LockAgentForUpdateParams) (Agent, error)
+	LockSecretIntentRoot(ctx context.Context, arg LockSecretIntentRootParams) (string, error)
 	// Taken by a transition into a terminal state, before it writes the state.
 	//
 	// Creates the counter if the session has emitted nothing yet, so the lock
@@ -245,6 +256,8 @@ type Querier interface {
 	// that counts owners, so two concurrent demotions cannot both observe two
 	// owners and both proceed.
 	LockWorkspace(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	LookupSecretApproval(ctx context.Context, arg LookupSecretApprovalParams) (LookupSecretApprovalRow, error)
+	LookupSelectedSecretApproval(ctx context.Context, arg LookupSelectedSecretApprovalParams) (LookupSelectedSecretApprovalRow, error)
 	// Used when GitHub reports the installation removed.
 	//
 	// The row is marked, not deleted. Deleting it cascades to the repositories,
