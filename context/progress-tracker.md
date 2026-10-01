@@ -981,3 +981,11 @@ constructor validation. Added nilable-kind detection and a typed-nil store/verif
 regression; fails before fix, passes after. Scoped races pass three repeats,
 repository golangci and disposable metadata/input integrations pass. No runtime
 composition or cloud access added. Review/updated-head CI still pending.
+
+
+Updated source head e875f2e passes every engineering CI check, including clean
+production web build. All four review surfaces checked with pagination/orphan URL
+cross-check: the Greptile constructor thread is fixed/replied/resolved and its
+summary answered, with no other unresolved/orphan inline feedback. CodeRabbit
+manual run aborted because the head changed while processing; re-request review
+on the stable updated branch. Not merged; final review/explicit approval remain.
