@@ -1126,3 +1126,12 @@ additional five-second fuzz smoke passes (1,342,994 executions), and golangci pa
 CodeRabbit auto-review skipped (manual requested after stable fix). Retention/grant
 proposal remains unapproved; no schema, cloud or runtime change. Updated CI/review
 pending, ask before merge.
+
+
+PR37 source head 9d43862 passes all engineering CI. Greptile's first-second boundary
+finding is fixed/replied/resolved; all four surfaces rechecked, no unresolved/orphan
+inline comments. CodeRabbit manual review is **rate-limited**, not completed; its
+passing status is not review clearance. Bot reported next included review in about
+25 minutes at this check. No paid-review upgrade or automatic polling scheduled.
+Next: retry included review after reset, address feedback and ask before merge;
+obtain spec 32 retention/grant decision separately before ledger DDL.
