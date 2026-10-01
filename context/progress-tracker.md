@@ -9,11 +9,10 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-M6.1b.2c.1a merged (#37, 6cc6399); owner explicitly approved spec 32 retention
-and separate restricted reader/writer database-capability direction.
-Next: c.1b additive protected approval ledger/sqlc/store and isolated actual-role
-nonreuse/cascade/withdrawal/compatibility/recovery tests. No cloud IAM, login/service
-role attachment, SDK, key access, production composition or real Claude activation.
+M6.1b.2c.1b in progress on `m6.1b2c1b-approval-ledger`: additive protected
+nonreuse/intent/assignment/approval/withdrawal metadata, capability roles without
+login attachment, scoped sqlc reader/writer and disposable actual-role tests.
+No SDK, GCP IAM, cloud/key access, runtime composition or real Claude activation.
 
 ## Product Milestones
 
@@ -1156,3 +1155,46 @@ paid call, privileged-role attachment or runtime activation occurred.
 Next: implement c.1b protected ledger and explicit scoped reader/store using the
 approved policy, with additive migration and isolated actual-role security tests.
 Ask before merging that implementation; cloud adapter/delivery remain separate.
+
+### M6.1b.2c.1b — protected ledger implemented, review pending
+
+Spec 33/migration 00018 add minimal permanent nonreuse inventory and cascading
+immutable tenant intents/assignments/approvals/withdrawals. Separate restricted
+NOLOGIN reader/writer capabilities, forced RLS/composite FKs, native grants,
+append-only/TRUNCATE guards and shared root-lock/deferred decision fencing. No
+membership/login attachment, SECURITY DEFINER, SDK, GCP/key access or runtime
+composition. Constructors validate actual non-bypass role/config/privileges and
+trusted writer attribution. Sqlc store requires caller tenant context and exact
+project/environment/ID+scope; five-second local transactions, safe diagnostics,
+immutable-ID retries and no approval/binding fallback. Pending name attachment
+uses same-live-transaction xmin fencing; assignment consumes reserved root;
+tenant cascade cannot enable a second intent even for unassigned names.
+
+Seven disposable actual-role integration cases pass: lifecycle/retries/nanos,
+roles/raw RLS/constructor refusals, immutable evidence/withdrawals/cascade,
+atomic rollback/publication-vs-retirement, empty/populated Down/Up and grant
+lifecycle, pending-name nonreuse/ambiguous retirement, concurrent cross-tenant
+reservation/cancellation. Existing binding/snapshot integrations and complete
+serialized isolated integration suite (including Temporal/NATS) pass without
+changing dev workers or weakening timeouts. Full repository-source serialized
+Go race/unit suite passes. Official golangci reports zero issues; generated sqlc
+regenerated. Six schema mutations caught (pending reclaim, tenant read, root
+erasure, retirement fencing, chronology, populated Down). Chronology first
+survived due to Go validation; independent raw-writer nanosecond regression now
+catches it. Mutations restored and passing suite rerun.
+
+These are synthetic metadata/actual PostgreSQL-role tests, not cloud ownership,
+vendor timestamp or live native-identity acceptance. In-place mutation guards
+and Down refusal do not protect against stale archive restoration/admin DDL.
+Restore quiescence, inventory/withdrawal reconciliation/high-water design,
+approved backup runbook and identity attachment remain **live-composition gates**.
+No fake approval backfill or spec30 compatibility FK. Generic audit retention
+unchanged; protected decision attribution is tenant-cascading, not permanent root
+history. Next: PR/threat review on all four surfaces; ask before merge. Cloud
+adapter/authenticated onboarding/handoff remain separate approvals/slices.
+
+Stable ledger actual-role race/integration suite passes three additional isolated
+repeats; `go build ./services/...` and official golangci pass. Tracked-file Prettier
+check passes. Unrestricted local format check reports only unrelated ignored
+`.claude/settings.local.json` and `.claude/worktrees/pr22-record/...` files; neither
+modified. Clean-checkout CI remains the production web/build/security gate.
