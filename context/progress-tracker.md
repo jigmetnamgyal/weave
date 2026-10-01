@@ -9,10 +9,11 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-Implement M6.1b.2b credential binding metadata on `m6.1b2b-byok-bindings`
-(spec 30; plan spec 29): scoped owner/admin lifecycle, verified immutable numeric
-references, epoch fencing, audit/idempotency and PostgreSQL tenant guards. Trusted
-reference verifier is test-faked only; no production/cloud/runtime wiring or keys.
+M6.1b.2b credential binding metadata is merged (#35, 047b039).
+Next: scope M6.1b.2c trusted GCP ownership/creation verification and numeric-version
+retrieval under ADR-019/spec 29. Project/environment/IAM and synthetic resource
+approval are required before cloud provisioning or key access. No production
+registration, delivery, cleanup or real Claude activation is enabled.
 
 ## Product Milestones
 
@@ -1009,3 +1010,20 @@ fix and passes after. Package races, repository golangci, disposable metadata/in
 integration (including real app-role valid construction) and diff checks pass.
 No production wiring, cloud access, migration or runtime contract changes. Updated
 head CI/review closeout pending; still not merged.
+
+
+### PR35 merged — metadata slice complete
+
+Merged with explicit owner approval as 047b039. Merge head d233bc2 passed all CI
+checks; four review surfaces were checked again with no unresolved/orphan inline
+feedback. Greptile's latest summary accepts the metadata-only scope (5/5);
+CodeRabbit's completed source review found no code issues, with doc-comment warning
+addressed subsequently. Constructor typed-nil and missing-pool findings were both
+fixed, regression-tested, replied to and resolved. Local main fast-forwarded;
+unrelated worktrees preserved. No shared-dev migration, cloud provisioning, key
+access, runtime delivery or paid call performed by this merge.
+
+Next: separately scope/verify GCP SDK/IAM, concrete trusted resource creation and
+ownership evidence, and numeric-version retrieval. Obtain explicit configuration
+and synthetic resource approval before cloud work; authenticated handoff, durable
+cleanup and real-provider activation remain later gates.

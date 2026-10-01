@@ -1,6 +1,6 @@
 # M6.1b.2b — Provider credential binding metadata
 
-**Status: implementation under verification/review.** Implements only slice (b)
+**Status: merged in PR #35 (047b039).** Implements only slice (b)
 of [spec 29](29-byok-binding-and-delivery.md), under ADR-018/019. There is no
 production composition, public route, key ingestion/readback, cloud adapter,
 runner credential snapshot, delivery, cleanup job or real Claude activation.
@@ -112,7 +112,7 @@ storage diagnostic disclosure. Broader verification results are in the tracker.
 
 ## Next
 
-Review this slice before proceeding. Separately define/verify the current GCP
+This metadata slice is reviewed/merged. Separately define/verify the current GCP
 SDK/IAM, concrete trusted creation/ownership evidence and numeric-version retrieval
 under approved synthetic resources. Authenticated delivery/capability acceptance,
 allocation fencing and convergent cleanup remain slice (d). Explicit project,
