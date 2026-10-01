@@ -12,11 +12,11 @@ Update this file after every meaningful implementation change. It is the concise
 M6.1b.2c.1b protected ledger merged as cf92599 (PR #38), with explicit owner
 approval. Docs-only GCP Secret Manager SDK/API/IAM contract review merged as PR #39
 at `3b4fcbba3b58c0513fb533c54383d7e3516966bc`; this is not SDK/dependency or
-implementation approval. **Next gate:** a separate isolated dependency-closure
-review before any SDK addition (delegation model: `gpt-6-luna max`). Native identity,
-restore reconciliation and authenticated allocation/handoff/cleanup remain
-separate gates. No cloud/key access, service role attachment or real Claude
-activation authorized.
+implementation approval. **Owner-approved app-focused and separate SDK-only audits are complete; this branch is documentation-only, with no SDK adoption.** Branch `m6.1b2c2-gcp-dependency-closure-review`, baseline main `66279f174f3ce313ca738cc3e7f06b91ee7bc11e`, candidate `cloud.google.com/go/secretmanager v1.22.0`. Original app matrix: baseline/candidate each 644 package records, 52 roots, 55 external modules, same package paths; current app does not import SDK. SDK/proposed-auth probe: 471 package records, 31 external modules, versions match preserved MVS. Graphs: 164 baseline → 170 module-only → 291 SDK package-loaded; baseline→291 is +127/7 upgrades/0 removed, 170→291 is +121/2 upgrades/0 removed. MVS-only additions are not runtime imports. Ignored evidence is LOCAL-ONLY/not published; reviewer-accessible reproduction commands/snippets and immutable public references are in spec 35.
+
+SDK `govulncheck` v1.8.0 module/package/symbol JSON scans completed at 2026-10-01 16:30:58/16:32:25/16:33:58 UTC; public DB last updated `2026-09-28T16:43:40Z`. Each stream emitted three x/crypto v0.55.0 findings (GO-2026-6355/6354, fixed v0.56.0; GO-2026-5932, openpgp/no fix); JSON process exit was 0 despite finding events. Package records contain module-only traces; synthetic symbol scan emitted no package/function trace. No production reachability claim. Scanner SBOM was 33 entries (31 external), not full MVS291. Targeted license evidence covers 16 imported module/version deltas vs baseline app (92 package records/193 GoFiles): 17 root legal files, one nested `google.golang.org/api/internal/third_party/uritemplates/LICENSE` with separate 2013 Joshua Tacoma attribution, 23 Apache-2.0 SPDX headers in OTel files, and no NOTICE in these scoped ancestors. Full terms/hashes are preserved; this is not all291 clearance. Original probe `.go` files were absent from the old compact bundle; the later flattened copy collided on two `probe.go` basenames, so the original scanned injected-auth `syntheticroot/probe.go` is unavailable. Spec 35 includes labelled reconstructed minimal equivalents, not retrospective exact provenance; all roots were never executed.
+
+Maximum observed combined workspace/evidence at final pre-cleanup sample was 653,576 KiB (sampled, not a guaranteed peak), below the 3-GiB operational cap. 512-MiB headroom and 3-second polling are safeguards, not continuous/pre-allocation/OS enforcement. Exact owned workspace/pointer removed and verified absent (zero symlinks/cleanup diagnostics); previous compact evidence untouched. Repository mod/sum/vendor unchanged; no code execution, SDK adoption, runtime/cloud/auth/key/IAM change, commit or PR. No further audit or adoption is authorized by this pass.
 
 ## Product Milestones
 
@@ -1307,8 +1307,46 @@ passed; all 13 cited public links returned HTTP 200. No local code tests/build o
 `.next` work were run; the clean-checkout CI tests/builds listed above did run and
 passed.
 
-Next gate: a separate, isolated dependency-closure review before any SDK addition
-(delegation model: `gpt-6-luna max`). This merge approves only the bounded source/doc
-review—not SDK adoption, synthetic adapter implementation, IAM/identity attachment,
-cloud access or runtime use. Restore reconciliation, allocation fencing and
-backend handoff remain separate gates; no blanket approval applies to later PRs.
+Current gate: documentation-only PR review for the completed bounded audit (delegation model: `gpt-6-luna max`). This PR does not approve SDK adoption, synthetic adapter implementation, IAM/identity attachment, cloud access or runtime use. Merge requires separate explicit owner approval; restore reconciliation, allocation fencing and backend handoff remain separate gates.
+
+### M6.1b.2c.3 — candidate GCP SDK dependency-closure audit (Owner-approved bounded audit complete; docs-only PR pending)
+
+The owner approved continuing the isolated dependency/import/advisory/license audit
+under a 3-GiB aggregate owned-temp cap for one bounded 30-minute pass. Preserve the
+previous docs and compact evidence; do not install tools, use default caches or
+change repository module files. Candidate
+`cloud.google.com/go/secretmanager v1.22.0`: MVS is 164 baseline / 170 candidate,
+with 6 additions, 5 upgrades, no removals/downgrades. Exact delta, reproducible
+method, checksums and limits are in
+[`spec 35`](features-specs/35-gcp-secret-manager-dependency-closure-review.md).
+Repository `go.mod`/`go.sum` remain unchanged; no SDK adoption.
+
+The later SDK-only pass completed readonly import loading (471 package records,
+31 external modules) and scoped module/package/synthetic-symbol advisory scans.
+Each JSON scan exited 0 while emitting three module-level x/crypto v0.55.0 findings;
+package traces were module-only and synthetic symbol mode had no package/function
+trace. Targeted license evidence covers 16 imported module/version deltas, 92
+packages, 193 GoFiles, 17 root legal files, and a separate nested uritemplates
+LICENSE. This is not a full 291-module scan, production reachability conclusion,
+or legal clearance. Original injected-root source is unavailable due flattened
+`probe.go` filename collision; spec 35 labels reconstructed equivalents.
+
+The previous 1-GiB pass sampled every 20 downloads and overshot: 1,046,352 KiB at
+160 modules; 1,373,636 KiB at 170; 1,373,772 KiB after inventory. Its source paths
+were not pruned. Its first cleanup failed on read-only module files; after exact
+root/pointer validation, zero-symlink check and owner-write permission only inside
+the owned tree, removal succeeded and was verified. Retained ignored evidence is
+112 KiB at `tmp/gcp-secret-manager-dependency-closure-audit-2026-10-01/`. An earlier
+version-only `govulncheck` probe ran under default HOME; possible DB-cache effect
+is unknown and no default cache was inspected or cleaned. The later SDK-only pass
+used isolated scanner and Go cache locations before each invocation.
+
+The audit sequence is complete and recorded in spec 35, including actual UTC scan
+times, findings, source-reconstruction caveat, graph deltas, license scope, resource
+sample and cleanup. The 653,576-KiB maximum observed aggregate sample is not a
+guaranteed peak; 3-second polling and 512-MiB headroom were operational safeguards,
+not quotas. SDK adoption remains a separate approval gate.
+
+No tests/builds, fetched package execution, cloud/credential/metadata/key/IAM
+access, identity attachment or runtime work. Documentation-only commit/push/PR are
+authorized; no merge or SDK adoption is authorized. `.claude/worktrees/` is preserved.
