@@ -989,3 +989,13 @@ cross-check: the Greptile constructor thread is fixed/replied/resolved and its
 summary answered, with no other unresolved/orphan inline feedback. CodeRabbit
 manual run aborted because the head changed while processing; re-request review
 on the stable updated branch. Not merged; final review/explicit approval remain.
+
+
+PR35 review pass: CodeRabbit completed review through 4871674 with no actionable
+code findings. Its summary did flag doc-comment coverage (61.11%); documented all
+previously uncommented handwritten lifecycle helpers and test fakes/helpers.
+Generated sqlc output, migration behavior and runtime contracts are unchanged.
+All four review surfaces were refreshed/paginated, with no unresolved threads or
+orphan inline URLs. Greptile's sole finding remains fixed/resolved in e875f2e.
+Comment-only follow-up package races, repository golangci and diff checks pass.
+Updated-head CI pending; no merge approval inferred.

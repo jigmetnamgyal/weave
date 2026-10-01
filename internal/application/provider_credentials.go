@@ -94,9 +94,12 @@ func nilCredentialDependency(dependency any) bool {
 	}
 }
 
+// credentialActor pins the caller to workspace-management authority at commit.
 func credentialActor(m domain.Membership) Actor {
 	return Actor{UserID: m.UserID, Required: domain.PermissionWorkspaceManage}
 }
+
+// credentialPermission rejects missing identity/scope before checking the role.
 func credentialPermission(m domain.Membership) error {
 	if m.UserID == uuid.Nil || m.WorkspaceID == uuid.Nil {
 		return ErrPermissionDenied

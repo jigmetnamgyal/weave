@@ -29,6 +29,7 @@ type referenceVerifier struct {
 	calls  int
 }
 
+// Verify runs a race hook before returning synthetic scoped evidence, not cloud proof.
 func (v *referenceVerifier) Verify(_ context.Context, ws uuid.UUID, p domain.Provider, ref domain.ProviderSecretReference) (domain.VerifiedProviderReference, error) {
 	v.calls++
 	if v.before != nil {
@@ -36,12 +37,18 @@ func (v *referenceVerifier) Verify(_ context.Context, ws uuid.UUID, p domain.Pro
 	}
 	return domain.VerifiedProviderReference{WorkspaceID: ws, Provider: p, Reference: ref, VerificationID: uuid.New()}, nil
 }
+
+// bindingMember supplies the fixture owner snapshot for authorization rechecks.
 func bindingMember(f sessionFixture) domain.Membership {
 	return domain.Membership{UserID: f.owner.ID, WorkspaceID: f.workspace.ID, Role: domain.RoleOwner}
 }
+
+// bindingRef creates an opaque synthetic reference without accessing a cloud resource.
 func bindingRef() domain.ProviderSecretReference {
 	return domain.ProviderSecretReference{Environment: "test", ProjectNumber: "918273645", SecretID: uuid.New(), Version: 1}
 }
+
+// bindingService uses the supplied database role and a test-only metadata verifier.
 func bindingService(t *testing.T, pool *pgxpool.Pool, v *referenceVerifier) *application.ProviderCredentialService {
 	t.Helper()
 	s, err := application.NewProviderCredentialService(postgres.NewProviderCredentialStore(pool), v, "test", "918273645")
@@ -50,6 +57,8 @@ func bindingService(t *testing.T, pool *pgxpool.Pool, v *referenceVerifier) *app
 	}
 	return s
 }
+
+// bindingCounts checks atomic persistence using the fixture owner connection.
 func bindingCounts(t *testing.T, pool *pgxpool.Pool, ws uuid.UUID, wantBinding, wantResource, wantVersion int) {
 	t.Helper()
 	for table, want := range map[string]int{"workspace_provider_credentials": wantBinding, "provider_credential_resources": wantResource, "provider_credential_versions": wantVersion} {

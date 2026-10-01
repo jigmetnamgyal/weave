@@ -17,7 +17,10 @@ type credentialRepoFake struct {
 	registration CredentialRegistration
 }
 
+// Authorize simulates a fresh membership decision without persistence.
 func (f *credentialRepoFake) Authorize(context.Context, uuid.UUID, Actor) error { return f.authErr }
+
+// Get supplies synthetic status or a safe authorization/not-found category.
 func (f *credentialRepoFake) Get(context.Context, uuid.UUID, domain.Provider, Actor) (domain.ProviderCredentialBinding, error) {
 	if f.authErr != nil {
 		return domain.ProviderCredentialBinding{}, f.authErr
@@ -27,11 +30,15 @@ func (f *credentialRepoFake) Get(context.Context, uuid.UUID, domain.Provider, Ac
 	}
 	return *f.current, nil
 }
+
+// Register captures approved metadata for service-boundary assertions.
 func (f *credentialRepoFake) Register(_ context.Context, r CredentialRegistration, _ Actor, _ *CredentialCompletion) (domain.ProviderCredentialBinding, error) {
 	f.writes++
 	f.registration = r
 	return domain.ProviderCredentialBinding{ID: r.BindingID, Epoch: r.ExpectedEpoch + 1}, nil
 }
+
+// Disable counts delegated metadata mutations without runtime effects.
 func (f *credentialRepoFake) Disable(context.Context, uuid.UUID, domain.Provider, int64, Actor, *CredentialCompletion) (domain.ProviderCredentialBinding, error) {
 	f.writes++
 	return domain.ProviderCredentialBinding{}, nil
@@ -42,6 +49,7 @@ type credentialVerifierFake struct {
 	fn    func(context.Context, uuid.UUID, domain.Provider, domain.ProviderSecretReference) (domain.VerifiedProviderReference, error)
 }
 
+// Verify supplies scoped synthetic evidence or the test-specific failure/race hook.
 func (f *credentialVerifierFake) Verify(ctx context.Context, ws uuid.UUID, p domain.Provider, r domain.ProviderSecretReference) (domain.VerifiedProviderReference, error) {
 	f.calls++
 	if f.fn != nil {
@@ -49,12 +57,18 @@ func (f *credentialVerifierFake) Verify(ctx context.Context, ws uuid.UUID, p dom
 	}
 	return domain.VerifiedProviderReference{WorkspaceID: ws, Provider: p, Reference: r, VerificationID: uuid.New()}, nil
 }
+
+// credentialTestMember creates an isolated synthetic owner identity and workspace.
 func credentialTestMember() domain.Membership {
 	return domain.Membership{UserID: uuid.New(), WorkspaceID: uuid.New(), Role: domain.RoleOwner}
 }
+
+// credentialTestRef creates metadata only, with no real secret or key bytes.
 func credentialTestRef() domain.ProviderSecretReference {
 	return domain.ProviderSecretReference{Environment: "test", ProjectNumber: "918273645", SecretID: uuid.New(), Version: 1}
 }
+
+// credentialTestService constructs an unwired service using deterministic test configuration.
 func credentialTestService(t *testing.T, r *credentialRepoFake, v *credentialVerifierFake) *ProviderCredentialService {
 	t.Helper()
 	s, e := NewProviderCredentialService(r, v, "test", "918273645")

@@ -24,6 +24,7 @@ func NewProviderCredentialStore(pool *pgxpool.Pool) *ProviderCredentialStore {
 	return &ProviderCredentialStore{pool: pool}
 }
 
+// credentialStoreError preserves safe categories without leaking database diagnostics.
 func credentialStoreError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -44,6 +45,7 @@ func credentialStoreError(ctx context.Context, err error) error {
 	return application.ErrCredentialStoreUnavailable
 }
 
+// authorizeCredentialActor refuses system/weak authority, then locks and rechecks membership.
 func authorizeCredentialActor(ctx context.Context, q *postgresdb.Queries, ws uuid.UUID, actor application.Actor) error {
 	if actor.System || actor.UserID == uuid.Nil || actor.Required != domain.PermissionWorkspaceManage {
 		return application.ErrPermissionDenied
@@ -187,6 +189,7 @@ func (s *ProviderCredentialStore) Disable(ctx context.Context, ws uuid.UUID, pro
 	return out, nil
 }
 
+// credentialBinding maps status only; resource and verification metadata stay internal.
 func credentialBinding(row postgresdb.WorkspaceProviderCredential) domain.ProviderCredentialBinding {
 	var version *uuid.UUID
 	if row.CurrentVersionID.Valid {
@@ -195,9 +198,13 @@ func credentialBinding(row postgresdb.WorkspaceProviderCredential) domain.Provid
 	}
 	return domain.ProviderCredentialBinding{ID: row.ID, WorkspaceID: row.WorkspaceID, Provider: domain.Provider(row.Provider), State: row.State, Epoch: row.Epoch, CurrentVersionID: version, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}
 }
+
+// credentialAudit records lifecycle facts without restricted references or key values.
 func credentialAudit(ctx context.Context, q *postgresdb.Queries, b domain.ProviderCredentialBinding, actor application.Actor, action string) error {
 	return appendAudit(ctx, q, application.AuditEvent{WorkspaceID: b.WorkspaceID, ActorUserID: actor.UserID, Action: action, Target: b.ID.String(), Detail: map[string]any{"provider": string(b.Provider), "epoch": b.Epoch, "state": b.State, "version_id": b.CurrentVersionID}})
 }
+
+// completeCredential validates response scope and completes under the claimant fence.
 func completeCredential(ctx context.Context, q *postgresdb.Queries, b domain.ProviderCredentialBinding, actor application.Actor, endpoint string, c *application.CredentialCompletion) error {
 	if c == nil {
 		return nil
