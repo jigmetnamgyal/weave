@@ -965,3 +965,12 @@ Dev workers and unrelated `.claude/worktrees/` untouched; owned test DBs cleaned
 Next: open review, verify clean-checkout CI and address feedback.
 Ask before merge. GCP verification/retrieval and authenticated delivery/cleanup
 remain separate slices with explicit configuration/resource approval gates.
+
+
+PR [#35](https://github.com/jigmetnamgyal/weave/pull/35) is open, implementation
+b6cf5e0. Clean-checkout engineering CI passes (API format/vet/race/build, golangci,
+web format/lint/contracts/typecheck/test/**production build**, dependency/secret
+scans and local-stack health). Greptile review remains pending. CodeRabbit skipped
+automatic OSS review; explicit review requested. This is not final review clearance
+or merge approval. Next: address incoming review on all four surfaces, then ask
+before merging; no cloud/runtime activation follows automatically.
