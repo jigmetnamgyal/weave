@@ -1,6 +1,6 @@
 # M6.1b.2c.0 — GCP verification/retrieval contract
 
-**Status: proposed design for review, not implementation or live acceptance.**
+**Status: planning merged in PR #36 (1501e02), not implementation or live acceptance.**
 Follows merged spec 30, plan spec 29 and accepted ADR-018/019. ADR-020 proposes
 additional trusted approval/creation evidence; its retention/grants require review.
 

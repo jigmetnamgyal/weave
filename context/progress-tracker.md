@@ -9,11 +9,11 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-M6.1b.2c.0 in progress on `m6.1b2c-secret-store-contract`: bounded spec and
-proposed adapter/approval contract only. Define trusted creation evidence,
-identity, payload/error bounds and activation gates before SDK/schema work.
-No compiled secret accessor, SDK/dependency change, cloud access, provisioning,
-production wiring or real Claude activation is authorized in this unit.
+M6.1b.2c.0 planning merged (#36, 1501e02): spec 31 and proposed ADR-020.
+Next: define the c.1 protected approval metadata/scoped-lookup slice, including
+concrete retention/grants and compatibility review before migration/implementation.
+No compiled accessor, SDK, approval ledger, cloud access/provisioning, production
+composition or real Claude activation is enabled by the documentation merge.
 
 ## Product Milestones
 
@@ -1063,3 +1063,19 @@ includes durable reservation before external creation and retiring uncertain/fai
 identifiers, not only tombstones after successful approval. CI/review pending; do
 not treat proposed ADR-020 retention/grants or cloud access as approved. Next:
 review this planning PR and obtain the authority/retention decision before c.1.
+
+
+### PR36 merged — GCP contract planning
+
+Merged with explicit owner approval as 1501e02. Merge head 3897cf4 passed all
+reported CI checks; CodeRabbit completed review without actionable comments and
+Greptile accepted the documentation-only scope. All four review surfaces checked,
+no unresolved/orphan inline feedback. Local main fast-forwarded; unrelated
+worktrees preserved. This merges the planning documents, not an implemented ledger
+or blanket approval for concrete retention/IAM grants, cloud access or spending.
+ADR-020 remains proposed pending those implementation decisions.
+
+Next: scope c.1 protected approval metadata/exact scoped lookup with fake-only
+verification and explicit retention/grant/compatibility review. Pinned vendor SDK,
+unwired adapter, separately approved synthetic cloud tests and authenticated
+runner delivery/cleanup remain later units.
