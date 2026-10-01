@@ -30,7 +30,7 @@ func NewSecretCreationTime(seconds int64, nanos int32) (SecretCreationTime, erro
 
 // Validate rejects zero/missing, overflow and noncanonical nanosecond tuples.
 func (t SecretCreationTime) Validate() error {
-	if t.seconds <= 0 || t.seconds > 253402300799 || t.nanos < 0 || t.nanos > 999999999 {
+	if t.seconds < 0 || (t.seconds == 0 && t.nanos == 0) || t.seconds > 253402300799 || t.nanos < 0 || t.nanos > 999999999 {
 		return ErrInvalidSecretApproval
 	}
 	return nil

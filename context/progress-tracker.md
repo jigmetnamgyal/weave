@@ -1114,3 +1114,15 @@ Next: open review; obtain explicit spec 32 minimal indefinite-retention and DB
 capability-grant decision. Then c.1b additive protected ledger/actual-role tests,
 with compatibility/nonreuse/cascade/withdrawal/recovery verification. No customer
 or operator credentials are discovered/accessed and no cloud work follows implicitly.
+
+
+PR [#37](https://github.com/jigmetnamgyal/weave/pull/37) is open. Initial engineering
+CI passes; four review surfaces checked with pagination/orphan cross-check. Greptile
+found the documented post-epoch format rejected valid first-second observations
+(seconds=0, nanos>0). Added those boundary cases/fuzz seeds: regression fails before
+fix and passes after. Exact epoch zero still denotes missing/refused evidence;
+negative/noncanonical tuples remain refused. Scoped races pass three repeats, an
+additional five-second fuzz smoke passes (1,342,994 executions), and golangci passes.
+CodeRabbit auto-review skipped (manual requested after stable fix). Retention/grant
+proposal remains unapproved; no schema, cloud or runtime change. Updated CI/review
+pending, ask before merge.

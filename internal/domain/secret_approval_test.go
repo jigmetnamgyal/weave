@@ -31,7 +31,7 @@ func TestSecretCreationTimePreservesPrecision(t *testing.T) {
 	for _, tuple := range []struct {
 		seconds int64
 		nanos   int32
-	}{{1, 0}, {1700000000, 123456789}, {253402300799, 999999999}} {
+	}{{0, 1}, {0, 999999999}, {1, 0}, {1700000000, 123456789}, {253402300799, 999999999}} {
 		value, err := NewSecretCreationTime(tuple.seconds, tuple.nanos)
 		if err != nil {
 			t.Fatal(err)
@@ -130,12 +130,12 @@ func FuzzSecretCreationTimeRoundTrip(f *testing.F) {
 	for _, tuple := range []struct {
 		seconds int64
 		nanos   int32
-	}{{1, 0}, {1700000000, 123456789}, {0, 0}, {253402300799, 999999999}, {math.MaxInt64, -1}} {
+	}{{0, 1}, {0, 999999999}, {1, 0}, {1700000000, 123456789}, {0, 0}, {253402300799, 999999999}, {math.MaxInt64, -1}} {
 		f.Add(tuple.seconds, tuple.nanos)
 	}
 	f.Fuzz(func(t *testing.T, seconds int64, nanos int32) {
 		value, err := NewSecretCreationTime(seconds, nanos)
-		valid := seconds > 0 && seconds <= 253402300799 && nanos >= 0 && nanos <= 999999999
+		valid := seconds >= 0 && (seconds != 0 || nanos != 0) && seconds <= 253402300799 && nanos >= 0 && nanos <= 999999999
 		if !valid {
 			if !errors.Is(err, ErrInvalidSecretApproval) || value != (SecretCreationTime{}) {
 				t.Fatal("invalid tuple accepted")
