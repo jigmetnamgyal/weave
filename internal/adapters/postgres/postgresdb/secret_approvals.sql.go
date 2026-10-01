@@ -112,6 +112,23 @@ func (q *Queries) GetSecretWithdrawal(ctx context.Context, arg GetSecretWithdraw
 	return i, err
 }
 
+const hasInitialSecretApproval = `-- name: HasInitialSecretApproval :one
+SELECT EXISTS(SELECT 1 FROM provider_secret_approvals WHERE intent_id=$1 AND workspace_id=$2 AND secret_version=$3)
+`
+
+type HasInitialSecretApprovalParams struct {
+	IntentID      uuid.UUID
+	WorkspaceID   uuid.UUID
+	SecretVersion int64
+}
+
+func (q *Queries) HasInitialSecretApproval(ctx context.Context, arg HasInitialSecretApprovalParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasInitialSecretApproval, arg.IntentID, arg.WorkspaceID, arg.SecretVersion)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertSecretApproval = `-- name: InsertSecretApproval :exec
 INSERT INTO provider_secret_approvals(id,intent_id,workspace_id,secret_version,version_seconds,version_nanos,principal_id)
 VALUES($1,$2,$3,$4,$5,$6,$7)

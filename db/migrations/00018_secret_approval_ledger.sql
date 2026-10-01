@@ -165,7 +165,7 @@ CREATE TRIGGER secret_intent_claim BEFORE INSERT ON provider_secret_intents FOR 
 
 -- Shared root row lock serializes approval publication with withdrawal.
 CREATE FUNCTION weave_secret_decision_guard() RETURNS trigger LANGUAGE plpgsql SET search_path=public,pg_temp AS $$
-DECLARE p text; resource uuid; s text; sec bigint; ns integer;
+DECLARE p text; resource uuid; s text; sec bigint; ns integer; initial bigint;
 BEGIN
  SELECT project_number,secret_id INTO p,resource FROM provider_secret_intents WHERE id=NEW.intent_id AND workspace_id=NEW.workspace_id;
  IF NOT FOUND THEN RAISE EXCEPTION 'secret intent unavailable' USING ERRCODE='check_violation'; END IF;
@@ -182,6 +182,10 @@ BEGIN
  IF TG_TABLE_NAME='provider_secret_withdrawals' THEN
   IF NEW.approval_id IS NULL THEN UPDATE provider_secret_reservations SET state='retired' WHERE project_number=p AND secret_id=resource; END IF;
  ELSIF TG_TABLE_NAME='provider_secret_approvals' THEN
+  SELECT initial_version INTO initial FROM provider_secret_intents WHERE id=NEW.intent_id AND workspace_id=NEW.workspace_id;
+  IF NEW.secret_version<initial OR (NEW.secret_version<>initial AND NOT EXISTS(SELECT 1 FROM provider_secret_approvals WHERE intent_id=NEW.intent_id AND workspace_id=NEW.workspace_id AND secret_version=initial)) THEN
+   RAISE EXCEPTION 'secret initial version refused' USING ERRCODE='check_violation';
+  END IF;
   SELECT secret_seconds,secret_nanos INTO sec,ns FROM provider_secret_assignments WHERE intent_id=NEW.intent_id AND workspace_id=NEW.workspace_id;
   IF NOT FOUND OR ROW(NEW.version_seconds,NEW.version_nanos)<ROW(sec,ns) THEN
    RAISE EXCEPTION 'secret observation refused' USING ERRCODE='check_violation';
@@ -214,6 +218,10 @@ COMMENT ON TABLE provider_secret_reservations IS 'Permanent minimal nonreuse inv
 -- +goose StatementBegin
 -- Routine downgrade must never free reserved names, even after tenant deletion.
 DO $$ BEGIN
+ -- row_security=off does not bypass RLS: filtered callers ERROR instead of
+ -- mistaking hidden inventory for an empty ledger. A trustworthy full-inventory
+ -- migration capability is required even for verifying an empty downgrade.
+ PERFORM set_config('row_security','off',true);
  IF EXISTS(SELECT 1 FROM provider_secret_reservations) THEN
   RAISE EXCEPTION 'populated secret ledger downgrade refused' USING ERRCODE='restrict_violation';
  END IF;

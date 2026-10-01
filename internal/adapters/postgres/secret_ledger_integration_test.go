@@ -529,3 +529,80 @@ func TestSecretLedgerReservationRaceAndCancellationIntegration(t *testing.T) {
 		t.Fatal("cancellation left a root", err)
 	}
 }
+
+// TestSecretLedgerInitialVersionFenceIntegration independently checks Go and
+// PostgreSQL against approval drift before the exact initial decision exists.
+func TestSecretLedgerInitialVersionFenceIntegration(t *testing.T) {
+	owner := newPool(t)
+	f := seedSessionFixture(t, owner, "Ledger Initial Version")
+	w, _, wp, _ := ledgerStores(t, "")
+	intent, proof := ledgerEvidence(t, f.workspace.ID)
+	intent.Scope.Reference.Version = 5
+	record := proof.Record()
+	record.Scope = intent.Scope
+	proof, _ = domain.NewProviderSecretApproval(record)
+	if err := w.ReserveIntent(f.ctx, intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AssignResource(f.ctx, f.workspace.ID, intent.ID, record.SecretCreated); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []int64{1, 6} {
+		wrong := record
+		wrong.ID = uuid.New()
+		wrong.Scope.Reference.Version = version
+		drift, _ := domain.NewProviderSecretApproval(wrong)
+		if err := ledgerSQL(wp, f.workspace.ID, "918273645", func(tx pgx.Tx) error {
+			_, err := tx.Exec(context.Background(), "INSERT INTO provider_secret_approvals(id,intent_id,workspace_id,secret_version,version_seconds,version_nanos,principal_id) VALUES($1,$2,$3,$4,1700000000,123456789,$5)", uuid.New(), intent.ID, f.workspace.ID, version, uuid.New())
+			if err == nil {
+				t.Errorf("SQL accepted initial-version drift %d", version)
+				return errors.New("synthetic rollback of invalid test decision")
+			}
+			return err
+		}); err == nil {
+			t.Errorf("SQL accepted initial-version drift %d", version)
+		}
+		if err := w.PublishApproval(f.ctx, intent.ID, drift); !errors.Is(err, application.ErrCredentialReferenceRejected) {
+			t.Errorf("Go accepted initial-version drift %d: %v", version, err)
+		}
+	}
+	if err := w.PublishApproval(f.ctx, intent.ID, proof); err != nil {
+		t.Fatal("exact initial version", err)
+	}
+	record.ID = uuid.New()
+	record.Scope.Reference.Version = 6
+	later, _ := domain.NewProviderSecretApproval(record)
+	if err := w.PublishApproval(f.ctx, intent.ID, later); err != nil {
+		t.Fatal("later rotation rejected", err)
+	}
+	record.ID = uuid.New()
+	record.Scope.Reference.Version = 4
+	earlier, _ := domain.NewProviderSecretApproval(record)
+	if err := w.PublishApproval(f.ctx, intent.ID, earlier); !errors.Is(err, application.ErrCredentialReferenceRejected) {
+		t.Fatal("pre-initial version accepted after rotation", err)
+	}
+}
+
+// TestSecretLedgerDowngradeRLSDenialIntegration executes the actual Down guard
+// under a genuine non-bypass writer with no root scope. Hidden rows must cause
+// refusal, not a false empty-ledger result; no destructive statement is run.
+func TestSecretLedgerDowngradeRLSDenialIntegration(t *testing.T) {
+	owner := newPool(t)
+	f := seedSessionFixture(t, owner, "Ledger Downgrade RLS")
+	w, _, wp, _ := ledgerStores(t, "")
+	intent, proof := ledgerEvidence(t, f.workspace.ID)
+	publishLedgerFixture(t, w, f.ctx, intent, proof)
+	migrations, err := fs.Sub(weavedb.MigrationsFS, weavedb.MigrationsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration, err := fs.ReadFile(migrations, "00018_secret_approval_ledger.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	down := strings.SplitN(string(migration), "-- +goose Down", 2)[1]
+	guard := down[strings.Index(down, "DO $$"):strings.Index(down, "DROP TABLE")]
+	if _, err := wp.Exec(context.Background(), guard); err == nil {
+		t.Fatal("non-bypass Down guard silently treated hidden rows as empty")
+	}
+}

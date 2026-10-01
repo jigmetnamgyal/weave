@@ -98,7 +98,11 @@ func secretLedgerTx(ctx context.Context, pool *pgxpool.Pool, cfg secretLedgerCon
 	if err != nil {
 		return secretLedgerError(ctx, err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = tx.Rollback(cleanup)
+	}()
 	if err = applyTenantContext(ctx, tx, TenantFrom(ctx)); err != nil {
 		return secretLedgerError(ctx, err)
 	}
@@ -252,6 +256,18 @@ func (s *SecretApprovalWriter) PublishApproval(ctx context.Context, intent uuid.
 		}
 		if i.Provider != string(r.Scope.Provider) || i.Environment != r.Scope.Reference.Environment || i.ProjectNumber != r.Scope.Reference.ProjectNumber || i.SecretID != r.Scope.Reference.SecretID || i.ResourceFamily != r.ResourceFamily {
 			return application.ErrCredentialReferenceRejected
+		}
+		if r.Scope.Reference.Version < i.InitialVersion {
+			return application.ErrCredentialReferenceRejected
+		}
+		if r.Scope.Reference.Version != i.InitialVersion {
+			initial, err := q.HasInitialSecretApproval(ctx, postgresdb.HasInitialSecretApprovalParams{IntentID: intent, WorkspaceID: ws, SecretVersion: i.InitialVersion})
+			if err != nil {
+				return err
+			}
+			if !initial {
+				return application.ErrCredentialReferenceRejected
+			}
 		}
 		assigned, err := q.GetSecretAssignment(ctx, postgresdb.GetSecretAssignmentParams{IntentID: intent, WorkspaceID: ws})
 		if err != nil {

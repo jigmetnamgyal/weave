@@ -53,3 +53,6 @@ JOIN provider_secret_assignments s ON s.intent_id=a.intent_id AND s.workspace_id
 WHERE a.id=$1 AND i.workspace_id=$2 AND i.provider=$3 AND i.environment=$4 AND i.project_number=$5 AND i.secret_id=$6
  AND a.secret_version=$7
  AND NOT EXISTS(SELECT 1 FROM provider_secret_withdrawals w WHERE w.intent_id=a.intent_id AND w.workspace_id=a.workspace_id AND (w.approval_id IS NULL OR w.approval_id=a.id));
+
+-- name: HasInitialSecretApproval :one
+SELECT EXISTS(SELECT 1 FROM provider_secret_approvals WHERE intent_id=$1 AND workspace_id=$2 AND secret_version=$3);

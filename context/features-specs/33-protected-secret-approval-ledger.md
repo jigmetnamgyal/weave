@@ -63,7 +63,9 @@ not change an intent to adopt another resource.
 `AssignResource` locks the root and transitions reserved → consumed atomically
 with the immutable tenant creation observation. `PublishApproval` locks the same
 root, validates exact scope/resource observation, checks chronology in Go and
-PostgreSQL, and publishes only under a consumed resource. `Withdraw` shares that
+PostgreSQL, and publishes only under a consumed resource. The first approval must match
+the intent’s exact initial version; later approvals require that initial record
+and cannot target an earlier numeric version. Both Go and PostgreSQL enforce this. `Withdraw` shares that
 lock; whole-resource decisions transition reserved/consumed → retired. Deferred
 guards forbid consumed roots without assignment or retirement without a durable
 withdrawal when tenant intent exists. Reader projection excludes both version and
@@ -76,6 +78,8 @@ without restoring usability. Concurrent first reservation attempts can return a
 conflict; retry only the unchanged stable intent, never invent another name or
 reinterpret an ambiguous external result. There is no exactly-once cloud claim.
 
+Rollback uses an independent two-second cleanup context, preserving cancellation
+for the returned result rather than passing an expired context to cleanup.
 Each adapter transaction has a five-second local budget (caller deadlines may be
 shorter), no external I/O/callback, and rollback on failure. Invalid/foreign/absent
 or conflicting evidence maps to reference rejection; other DB diagnostics map to
@@ -89,7 +93,9 @@ with state. No generic app audit/outbox permission or exposed API is added.
 
 Binary rollback leaves the additive ledger. Down refuses **any** nonreuse row,
 including names whose workspace has disappeared; an empty ledger may be removed.
-It revokes helper/schema grants and drops tables/functions, leaving cluster-wide
+The Down guard sets `row_security=off` locally, which causes an error rather than
+silently filtering inventory for a non-bypass migration caller; it does not grant
+a bypass. It revokes helper/schema grants and drops tables/functions, leaving cluster-wide
 capability roles with no login/membership attachment. Destructive recovery is a
 separate approval, never a routine Down or cleanup script.
 
@@ -105,11 +111,12 @@ composition remains disabled. Existing backup/audit retention is unchanged.
 
 ## Acceptance and verification
 
-Seven disposable actual-role integration cases cover lifecycle/exact retries,
+Ten disposable actual-role integration cases cover lifecycle/exact retries,
 ID+scope reads, nanosecond evidence, native grants/RLS and constructor refusal,
 immutability/withdrawal/cascade, atomic failure/publication-vs-withdrawal,
 empty/populated Down/Up and privilege lifecycle, pending-name nonreuse after
-cascade, concurrent cross-tenant reservation and cancellation. Raw role SQL
+cascade, concurrent cross-tenant reservation and cancellation, exact initial-version fencing/rotation, cancelled
+transaction connection reuse and non-bypass RLS downgrade refusal. Raw role SQL
 checks complement adapter predicates; synthetic observations are **not cloud
 ownership or vendor timestamp evidence**. Existing provider-binding/input tests
 and full serialized integrations also pass with migration 00018.

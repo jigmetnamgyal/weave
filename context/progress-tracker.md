@@ -1203,3 +1203,17 @@ PR [#38](https://github.com/jigmetnamgyal/weave/pull/38) opened at source head
 745c3f6. Initial all-four-surface pagination/orphan check: no source findings yet;
 engineering CI and Greptile pending. CodeRabbit auto-review skipped; included
 manual review requested, **not clearance**. No merge authorized or performed.
+
+PR38 first review: engineering CI at 2e3b8e3 passes (including clean-checkout web
+production build and security/dependency gates). Greptile flagged missing initial
+version fencing and cancelled rollback context; CodeRabbit completed source
+review and flagged Down's RLS-filtered false-empty guard. All valid and fixed:
+first approval equals recorded initial version, later approvals require that
+initial record and cannot target lower versions (Go + DB); rollback gets a
+separate two-second `WithoutCancel` cleanup context; Down sets `row_security=off`
+locally to error rather than silently miss reservations, with no bypass grant.
+Three regressions observed failing before and passing after: Go/raw actual-role
+version drift; cancelled callback reuses a healthy backend only after proper
+rollback; actual Down guard under non-bypass role refuses hidden rows. Ten ledger
+actual-role integration cases now pass. Four surfaces paginated/cross-checked,
+no orphan URLs; review replies/resolution and current-head revalidation next.

@@ -159,6 +159,7 @@ type Querier interface {
 	// workspace identifiers cannot be probed.
 	GetWorkspaceForMember(ctx context.Context, arg GetWorkspaceForMemberParams) (Workspace, error)
 	GetWorkspaceMember(ctx context.Context, arg GetWorkspaceMemberParams) (WorkspaceMember, error)
+	HasInitialSecretApproval(ctx context.Context, arg HasInitialSecretApprovalParams) (bool, error)
 	InsertProviderCredentialBinding(ctx context.Context, arg InsertProviderCredentialBindingParams) (WorkspaceProviderCredential, error)
 	InsertProviderCredentialResource(ctx context.Context, arg InsertProviderCredentialResourceParams) (ProviderCredentialResource, error)
 	InsertProviderCredentialVersion(ctx context.Context, arg InsertProviderCredentialVersionParams) error
