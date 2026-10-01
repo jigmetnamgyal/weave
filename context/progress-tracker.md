@@ -10,11 +10,13 @@ Update this file after every meaningful implementation change. It is the concise
 ## Current Goal
 
 M6.1b.2c.1b protected ledger merged as cf92599 (PR #38), with explicit owner
-approval. **In Progress:** docs-only pinned GCP Secret Manager SDK/API/IAM
-contract review before any dependency or adapter work. Next synthetic adapter stays
-unwired and requires owner review. Native identity, restore reconciliation and
-authenticated allocation/handoff/cleanup remain separate live-use gates. No
-cloud/key access, service role attachment or real Claude activation authorized.
+approval. Docs-only GCP Secret Manager SDK/API/IAM contract review merged as PR #39
+at `3b4fcbba3b58c0513fb533c54383d7e3516966bc`; this is not SDK/dependency or
+implementation approval. **Next gate:** a separate isolated dependency-closure
+review before any SDK addition (delegation model: `gpt-6-luna max`). Native identity,
+restore reconciliation and authenticated allocation/handoff/cleanup remain
+separate gates. No cloud/key access, service role attachment or real Claude
+activation authorized.
 
 ## Product Milestones
 
@@ -1259,40 +1261,54 @@ Next: separately bounded pinned vendor/SDK/API/IAM review and unwired synthetic
 adapter; obtain approval for any native identity/cloud resources/live tests.
 Restore reconciliation and authenticated allocation/handoff/cleanup stay gated.
 
-### M6.1b.2c.2 — pinned GCP Secret Manager contract review (In Progress)
+### M6.1b.2c.2 — pinned GCP Secret Manager contract review (Merged, docs-only)
 
-Docs-only review from branch `m6.1b2c2-gcp-contract-review`, based on main
-`4e3c9d6` after PR #38 merge `cf92599`. Read CLAUDE/context baseline, specs
-29–33, ADR-019/020 and current approval-ledger/credential-supervisor contracts.
-Public source retrieval only; no credentialed cloud call, project/IAM/resource
-change, Go module resolution/cache installation, go.mod/go.sum edit, runtime wiring
-or paid provider call. The v1.22.0 archive was fetched from the public Go proxy,
-unpacked in a temporary directory and removed after inspecting `go.mod`, `LICENSE`,
-`apiv1/secret_manager_client.go`, `apiv1/secretmanagerpb/service.pb.go` and
+Docs-only PR [#39](https://github.com/jigmetnamgyal/weave/pull/39) was squash-
+merged at `3b4fcbba3b58c0513fb533c54383d7e3516966bc` from reviewed head
+`0d0da8af93e4d77a15084f480a8fde2469c3a283`. Local main was fast-forwarded to the
+merge commit before this merge-record update. The PR contains only
+`context/features-specs/34-gcp-secret-manager-sdk-contract-review.md`
+and `context/progress-tracker.md`. Public source retrieval only; no credentialed
+cloud call, project/IAM/resource change, Go module resolution/cache installation,
+go.mod/go.sum edit, runtime wiring or paid provider call. The v1.22.0 archive was
+fetched from the public Go proxy, unpacked in a temporary directory and removed
+after inspecting `go.mod`, `LICENSE`, `apiv1/secret_manager_client.go`,
+`apiv1/secretmanagerpb/service.pb.go` and
 `apiv1/secretmanagerpb/resources.pb.go` (review date 2026-10-01; immutable source
-commit recorded in spec 34; no checksum computed). Drafted
-`context/features-specs/34-gcp-secret-manager-sdk-contract-review.md`.
+commit recorded in spec 34; no checksum computed).
 
 Public source confirms candidate `cloud.google.com/go/secretmanager v1.22.0` is
 Apache-2.0, Go 1.26-compatible, with 30 declared module requirements (8 direct,
-22 indirect); exact repository MVS/license/vulnerability closure intentionally
-not resolved. The v1 API documents global/regional names, `latest`, states,
-timestamps, optional CRC32C and a 64-KiB payload ceiling. SDK source shows default
-GAX retries and `MaxInt32` gRPC receive size. Spec 31's no-SDK-retry requirement
-needs GAX/service-config suppression verified; gRPC transparent retry is distinct
-and is not an exactly-once claim. The 16-KiB candidate cap is serialized,
-uncompressed gRPC message bytes, excluding frames/headers/trailers; peak allocation
-and spec31 pre-full-allocation behavior remain unproved. SDK `resource_name`
-telemetry, metadata identity acquisition and ambient proxy behavior remain gates.
+22 indirect); exact repository MVS/license/vulnerability closure remains
+unresolved. The API documents global/regional names, `latest`, states, timestamps,
+optional CRC32C and a 64-KiB payload ceiling. SDK source shows default GAX retries
+and `MaxInt32` gRPC receive size. Spec 31's no-SDK-retry requirement needs
+GAX/service-config suppression verified; gRPC transparent retry is distinct and
+is not an exactly-once claim. The 16-KiB candidate cap is serialized, uncompressed
+gRPC message bytes, excluding frames/headers/trailers; peak allocation and spec31
+pre-full-allocation behavior remain unproved. Resource-name telemetry, metadata
+identity acquisition and ambient proxy behavior remain gates. Canonical numeric
+response identity, timestamp precision/uniqueness, same-name delete/recreation
+continuity, native identity wiring and exact IAM remain unverified. There is no
+runtime allocation authorization or backend handoff; slice (d) remains required.
 
-Canonical numeric response identity, timestamp precision/uniqueness and same-name
-delete/recreation continuity, native identity wiring and exact IAM remain
-unverified/live-gated. No allocation authorization or backend handoff exists until
-slice (d). No dependency, adapter, cloud/IAM, credential or paid call. Prettier
-skipped both context docs (`ignored: true`, `inferredParser: null`); no formatting
-was applied and deliberate wrapped context formatting remains unchanged. Custom
+At reviewed head `0d0da8af93e4d77a15084f480a8fde2469c3a283`, engineering CI passed:
+Resolve toolchain; Web format/lint/contracts/typecheck/test/build; API format/vet/test/build;
+API golangci-lint; Secret scan; Dependency scan; Local stack health; GitGuardian.
+CodeRabbit manual review completed; paginated GitHub review/comment checks found
+no actionable findings. Greptile rated the substantive commit
+`f316740dcc2fd93852fde9dad53766d1a45d3765` 5/5.
+All four paginated GitHub comment/review surfaces were checked; no unresolved or
+orphan findings remain. No dependency, adapter, cloud/IAM, credential or paid call.
+Prettier skipped both context docs (`ignored: true`, `inferredParser: null`); no
+formatting was applied and deliberate wrapped formatting remains unchanged. Custom
 Markdown local-reference, fence and trailing-whitespace checks and git diff checks
-pass; all 13 cited public links returned HTTP 200. Docs draft is ready for owner
-read-only review via docs-only PR [#39](https://github.com/jigmetnamgyal/weave/pull/39),
-open and not merged. No code tests/build or `.next` work run; no implementation,
-dependency, cloud/IAM or runtime changes.
+passed; all 13 cited public links returned HTTP 200. No local code tests/build or
+`.next` work were run; the clean-checkout CI tests/builds listed above did run and
+passed.
+
+Next gate: a separate, isolated dependency-closure review before any SDK addition
+(delegation model: `gpt-6-luna max`). This merge approves only the bounded source/doc
+review—not SDK adoption, synthetic adapter implementation, IAM/identity attachment,
+cloud access or runtime use. Restore reconciliation, allocation fencing and
+backend handoff remain separate gates; no blanket approval applies to later PRs.

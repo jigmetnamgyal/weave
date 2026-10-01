@@ -1,9 +1,12 @@
 # M6.1b.2c.2 — GCP Secret Manager SDK/API contract review
 
-**Status: docs-only review draft, pending owner/orchestrator review.** This is the
-bounded vendor contract review after PR #38 (`cf92599`), not dependency approval,
-cloud access, IAM consent, or runtime implementation. It splits the earlier
-spec 31 c.2 bundle: an unwired synthetic adapter is a separate, later slice.
+**Status: docs-only contract review merged by squash.** PR
+[#39](https://github.com/jigmetnamgyal/weave/pull/39) merge SHA:
+`3b4fcbba3b58c0513fb533c54383d7e3516966bc`. The source/documentation evidence
+below remains a bounded review draft, not dependency approval, cloud access, IAM
+consent, synthetic/live acceptance, or runtime implementation. It follows PR #38
+(`cf92599`) and splits the earlier spec 31 c.2 bundle: an unwired synthetic
+adapter is a separate, later slice.
 
 ## Outcome and limits
 
@@ -308,14 +311,14 @@ in that live test.
 
 ## Next
 
-Owner/orchestrator review of this spec and its explicit decisions: candidate
-SDK/dependency policy, response-cap semantics/pre-full-allocation feasibility, and
-whether vendor creation observations are adequate for the ledger's incarnation
-proof. Spec 31's no-automatic-SDK-retries requirement is assessed separately from
-gRPC transparent transport retries; request clarification only if a stronger
-no-transport-replay requirement is intended. Only after approval, scope the
-**separate unwired synthetic adapter**, limited to exact approval scope and bounded
-borrow—not allocation authorization or backend handoff. Slice (d) must supply
-allocation fencing and receiver delivery before runtime use. Separately approve
-later identity attachment or live synthetic-cloud acceptance. No commit, push, PR,
-implementation or cloud action is authorized by this draft.
+The next gate is a separate, isolated dependency-closure review before any SDK
+addition (delegation model: `gpt-6-luna max`). This docs-only merge does not approve
+the candidate for selection/addition or authorize implementation. Response-cap
+pre-full-allocation feasibility, vendor incarnation evidence, explicit native
+identity, telemetry/proxy behavior, effective IAM and restoration remain distinct
+acceptance gates. Any synthetic adapter implementation, native identity attachment
+or live synthetic-cloud acceptance requires separate approval. The unwired
+accessor remains limited to exact approval scope and bounded borrow—not allocation
+authorization or backend handoff. Slice (d) must supply allocation fencing and
+receiver delivery before runtime use. No code, dependency, cloud, IAM, identity,
+key or runtime change is included in this merged review.
