@@ -9,12 +9,10 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-BYOK and GCP accepted. Design recorded in ADR-019 and spec 29. Next coding unit:
-M6.1b.2b workspace/provider binding metadata, scoped lifecycle, immutable version
-references and fake trusted-reference verification; no cloud/runtime wiring.
-GCP Secret Manager retrieval and authenticated backend handoff are separate
-follow-ups. Environment/project/region, IAM and staging spend need configuration;
-no key ingestion/retrieval, paid call or cloud resource provisioned yet.
+Implement M6.1b.2b credential binding metadata on `m6.1b2b-byok-bindings`
+(spec 30; plan spec 29): scoped owner/admin lifecycle, verified immutable numeric
+references, epoch fencing, audit/idempotency and PostgreSQL tenant guards. Trusted
+reference verifier is test-faked only; no production/cloud/runtime wiring or keys.
 
 ## Product Milestones
 
@@ -926,3 +924,88 @@ links are not claimed live verification. No SDK/dependency or runtime change.
 Verification: Markdown formatting and diff checks only, no code tests claimed for
 this design-only change. Next: implement M6.1b.2b metadata/service/PostgreSQL with
 fake verifier and tenant/permission/epoch/retry/atomicity tests; then review.
+
+
+### M6.1b.2b — binding metadata verified locally, review pending
+
+Branch `m6.1b2b-byok-bindings`, spec 30 (implements slice b of spec 29).
+Domain/service/store/sqlc and additive migration 00017 provide owner/admin status,
+registration/rotation/disable, fresh permission and epoch checks, forced tenant
+RLS/composite FKs, immutable resource ownership/version history, safe audit and
+claimant-fenced completion. Optional completion does not itself claim/replay keys;
+callers must reauthorize replay. No transport or production composition is enabled.
+
+Trusted metadata verification port is required and test-faked only; syntax/names
+are not ownership proof. No SDK/dependency/runtime/runner contract changes, keys,
+cloud resources, paid calls or shared-dev migration. Metadata-active/disable must
+not be confused with runtime approval/revocation. Reference/evidence formatting
+is redacted and JSON refused; errors do not wrap sensitive diagnostics.
+
+Scoped synthetic unit/race and disposable real application-role PostgreSQL tests
+pass. Eight deliberate mutations caught by assertions: forged verifier workspace,
+viewer role bypass, debug reference leakage, resource read RLS bypass, skipped epoch
+guard, mutable version reference, ignored completion fence, raw storage diagnostics.
+No surviving mutation in this set.
+
+Serialized full Go race/unit and Go build pass. Full isolated integration passes
+with workflows enabled (`INPUT_TEST_FULL=1 INPUT_TEST_SERIAL=1
+INPUT_TEST_SKIP_TEMPORAL=0`); all nine new PostgreSQL cases and existing workflow
+cases actually ran. Scoped domain/service races pass three repeats; reference
+validation/redaction and non-registration service paths have 100% statement
+coverage, registration 87.8% (not whole-repository coverage). Official `make lint
+lint-go typecheck`, ten web tests, sqlc regeneration and diff checks pass.
+`govulncheck` finds no called/imported-package vulnerabilities (three uncalled
+module advisories); npm high/critical gate passes, fifteen prior moderate advisories
+remain. An ad-hoc `golangci-lint run ./...` includes ignored scratch `tmp` and flags
+three existing scratch issues; official repository-source lint is clean. No new
+frontend code; production web build is left to clean-checkout CI to avoid replacing
+a user's dev `.next` directory. No independent browser/live provider claim.
+Dev workers and unrelated `.claude/worktrees/` untouched; owned test DBs cleaned.
+
+Next: open review, verify clean-checkout CI and address feedback.
+Ask before merge. GCP verification/retrieval and authenticated delivery/cleanup
+remain separate slices with explicit configuration/resource approval gates.
+
+
+PR [#35](https://github.com/jigmetnamgyal/weave/pull/35) is open, implementation
+b6cf5e0. Clean-checkout engineering CI passes (API format/vet/race/build, golangci,
+web format/lint/contracts/typecheck/test/**production build**, dependency/secret
+scans and local-stack health). Greptile review remains pending. CodeRabbit skipped
+automatic OSS review; explicit review requested. This is not final review clearance
+or merge approval. Next: address incoming review on all four surfaces, then ask
+before merging; no cloud/runtime activation follows automatically.
+
+
+PR35 review follow-up: Greptile found interface-typed nil dependencies could pass
+constructor validation. Added nilable-kind detection and a typed-nil store/verifier
+regression; fails before fix, passes after. Scoped races pass three repeats,
+repository golangci and disposable metadata/input integrations pass. No runtime
+composition or cloud access added. Review/updated-head CI still pending.
+
+
+Updated source head e875f2e passes every engineering CI check, including clean
+production web build. All four review surfaces checked with pagination/orphan URL
+cross-check: the Greptile constructor thread is fixed/replied/resolved and its
+summary answered, with no other unresolved/orphan inline feedback. CodeRabbit
+manual run aborted because the head changed while processing; re-request review
+on the stable updated branch. Not merged; final review/explicit approval remain.
+
+
+PR35 review pass: CodeRabbit completed review through 4871674 with no actionable
+code findings. Its summary did flag doc-comment coverage (61.11%); documented all
+previously uncommented handwritten lifecycle helpers and test fakes/helpers.
+Generated sqlc output, migration behavior and runtime contracts are unchanged.
+All four review surfaces were refreshed/paginated, with no unresolved threads or
+orphan inline URLs. Greptile's sole finding remains fixed/resolved in e875f2e.
+Comment-only follow-up package races, repository golangci and diff checks pass.
+Updated-head CI pending; no merge approval inferred.
+
+
+PR35 later review: Greptile identified that a nonnil store could wrap a nil pool,
+despite service typed-nil checks. `NewProviderCredentialStore` now returns an
+explicit configuration error and nil store for missing pools; both internal test
+construction sites handle its error. The new constructor regression fails before
+fix and passes after. Package races, repository golangci, disposable metadata/input
+integration (including real app-role valid construction) and diff checks pass.
+No production wiring, cloud access, migration or runtime contract changes. Updated
+head CI/review closeout pending; still not merged.

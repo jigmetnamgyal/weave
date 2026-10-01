@@ -1,7 +1,9 @@
 # M6.1b.2b–d — BYOK binding and delivery plan
 
-**Status: design only.** BYOK and GCP direction accepted (ADR-018/019); no credential
-binding tables, cloud adapter, key onboarding or delivery implemented yet.
+**Status: plan; slice (b) implemented under verification/review in
+[spec 30](30-provider-credential-binding-metadata.md).** BYOK and GCP direction
+accepted (ADR-018/019). No production registration path, cloud access, runner
+credential snapshot, secret delivery or real-provider activation is enabled.
 
 ## Outcome
 
@@ -15,7 +17,7 @@ real Claude selection stays disabled until every activation gate passes.
 1. **M6.1b.2b — binding metadata:** domain/service/sqlc/PostgreSQL lifecycle, tenant
    RLS, audit and idempotency. Internal registration via trusted onboarding only;
    deterministic fake verification of secret reference ownership. No key bytes,
-   production wiring, new public API or image change. This is the next coding unit.
+   production wiring, new public API or image change. Implemented under review in spec 30.
 2. **M6.1b.2c — GCP reference verification/retrieval:** approved pinned SDK/license,
    exact project/resource/version validation, scoped workload identity, bounded
    response, payload integrity, safe errors and fake contract tests. No implicit
@@ -144,6 +146,7 @@ is not verification of a real Secret Manager or Claude session.
 
 ## Next
 
-Implement only M6.1b.2b binding metadata with trusted-reference verification port,
-fake verifier tests and no cloud/runtime wiring. Then review before secret-store
-retrieval or runner delivery. Keep fake sessions working throughout.
+Review M6.1b.2b metadata implementation/security evidence in spec 30. Then separately
+implement trusted GCP reference verification/retrieval, followed by capability-tested
+authenticated delivery and cleanup. No cloud provisioning/key access/paid calls are
+approved by this metadata slice. Keep fake sessions working throughout.

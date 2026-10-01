@@ -103,6 +103,31 @@ type OutboxEvent struct {
 	TerminatedAt pgtype.Timestamptz
 }
 
+// Restricted immutable resource ownership. Names/labels alone are not verification.
+type ProviderCredentialResource struct {
+	ID            uuid.UUID
+	WorkspaceID   uuid.UUID
+	CredentialID  uuid.UUID
+	Environment   string
+	ProjectNumber string
+	SecretID      uuid.UUID
+	CreatedAt     pgtype.Timestamptz
+}
+
+// Immutable numeric version and trusted verification identity, never key bytes.
+type ProviderCredentialVersion struct {
+	ID                uuid.UUID
+	WorkspaceID       uuid.UUID
+	CredentialID      uuid.UUID
+	ResourceID        uuid.UUID
+	SecretVersion     int64
+	RegistrationEpoch int64
+	CredentialKind    string
+	VerificationID    uuid.UUID
+	CreatedBy         uuid.UUID
+	CreatedAt         pgtype.Timestamptz
+}
+
 // Every package-registry request a runner made, recorded before the registry proxy forwarded it (ADR-016). Append-only.
 type RegistryRequest struct {
 	ID          uuid.UUID
@@ -316,4 +341,17 @@ type WorkspaceMember struct {
 	Role        string
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+}
+
+// BYOK metadata status only. Active does not enable secret access or provider runtime.
+type WorkspaceProviderCredential struct {
+	ID               uuid.UUID
+	WorkspaceID      uuid.UUID
+	Provider         string
+	State            string
+	Epoch            int64
+	CurrentVersionID pgtype.UUID
+	CreatedBy        uuid.UUID
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
 }
