@@ -22,13 +22,15 @@ export HOME="$AUDIT/home" GOMODCACHE="$AUDIT/gomodcache" \
   GOCACHE="$AUDIT/gocache" GOPATH="$AUDIT/gopath" TMPDIR="$AUDIT/tmp" \
   GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=https://proxy.golang.org \
   GOSUMDB=sum.golang.org GOOS=linux GOARCH=amd64 CGO_ENABLED=0
-cp go.mod go.sum "$AUDIT/baseline/"
-cp go.mod go.sum "$AUDIT/candidate/"
+git show 66279f174f3ce313ca738cc3e7f06b91ee7bc11e:go.mod > "$AUDIT/baseline/go.mod"
+git show 66279f174f3ce313ca738cc3e7f06b91ee7bc11e:go.sum > "$AUDIT/baseline/go.sum"
+cp "$AUDIT/baseline/go.mod" "$AUDIT/candidate/go.mod"
+cp "$AUDIT/baseline/go.sum" "$AUDIT/candidate/go.sum"
 (cd "$AUDIT/baseline" && "$GO" list -m -json all > "$AUDIT/baseline.json")
 (cd "$AUDIT/candidate" && "$GO" get cloud.google.com/go/secretmanager@v1.22.0)
 (cd "$AUDIT/candidate" && "$GO" list -m -json all > "$AUDIT/candidate.json")
-# Download each non-main Path@Version from candidate.json with:
-(cd "$AUDIT/candidate" && "$GO" mod download -json "$MODULE@$VERSION")
+# The earlier inventory downloaded only the 170 module-only selections; do not
+# expand source downloads to the separate 291-module package-loaded graph.
 ```
 
 An initial manually edited candidate copy was rejected because `go.mod` needed
@@ -359,6 +361,23 @@ modules. Each JSON stream emitted the same three findings for
 and GO-2026-5932 (`openpgp`, no fix). JSON-mode process status was 0 despite three
 `finding` events; report the structured findings, not a clean/pass based on status.
 These are the same baseline-existing module advisories from the earlier module scan.
+The following compact event summary is committed here so reviewers do not need the
+ignored local JSON artifacts:
+
+| Captured UTC | Scan level and roots | JSON exit | Event result |
+| --- | --- | --- | --- |
+| 2026-10-01 16:30:58 | module: `sdkapiv1` | 0 | 3 module findings |
+| 2026-10-01 16:32:25 | package: all four roots | 0 | same 3 findings; module/version traces only |
+| 2026-10-01 16:33:58 | symbol: synthetic injected/default roots | 0 | same 3 events; no package/function trace |
+
+| Advisory | Event summary | Module/version trace | Fixed version |
+| --- | --- | --- | --- |
+| GO-2026-6354 | DoS on deadlocked undecided channel in `x/crypto/ssh` | `golang.org/x/crypto@v0.55.0` | `v0.56.0` |
+| GO-2026-6355 | DoS on deadlocked established channel in `x/crypto/ssh` | `golang.org/x/crypto@v0.55.0` | `v0.56.0` |
+| GO-2026-5932 | `openpgp` is unmaintained/unsafe by design | `golang.org/x/crypto@v0.55.0` | none |
+
+The JSON process status of 0 is distinct from human-mode status 3 for findings;
+neither a zero exit nor an empty package/function trace means a clean SDK scan.
 
 Package-mode traces contain only module/version, with no affected package path.
 Imported x/crypto packages were `internal/alias`, `chacha20`, `internal/poly1305`,
@@ -374,15 +393,27 @@ invocation errors, not passes/findings.
 **Targeted license scope.** The 16 SDK import additions/upgrades versus baseline
 app packages covered 92 imported package records and 193 production `GoFiles`.
 Root legal files and package ancestors were read and preserved by SHA-256; full
-legal-file bytes are copied into the evidence bundle. Directly read root text:
+legal-file bytes remain LOCAL-ONLY. This sanitized inventory is published here so
+reviewers can inspect the scoped classifications without access to ignored files:
 
-- Apache License 2.0 form for 11 modules: `cloud.google.com/go/auth`,
-  `auth/oauth2adapt`, `compute/metadata`, `iam`, `secretmanager`,
-  `github.com/google/s2a-go`, enterprise-certificate-proxy, otelgrpc, otelhttp,
-  and both selected genproto modules.
-- BSD 3-clause terms for 4: `github.com/googleapis/gax-go/v2`,
-  `golang.org/x/oauth2`, `golang.org/x/time`, and `google.golang.org/api`.
-- MIT permission text for `github.com/felixge/httpsnoop`.
+| Imported module/version delta | Directly read root text heading/terms |
+| --- | --- |
+| `cloud.google.com/go/auth@v0.20.0` | Apache License 2.0 form |
+| `cloud.google.com/go/auth/oauth2adapt@v0.2.8` | Apache License 2.0 form |
+| `cloud.google.com/go/compute/metadata@v0.9.0` | Apache License 2.0 form |
+| `cloud.google.com/go/iam@v1.11.0` | Apache License 2.0 form |
+| `cloud.google.com/go/secretmanager@v1.22.0` | Apache License 2.0 form |
+| `github.com/felixge/httpsnoop@v1.1.0` | MIT permission text |
+| `github.com/google/s2a-go@v0.1.9` | Apache License 2.0 form |
+| `github.com/googleapis/enterprise-certificate-proxy@v0.3.17` | Apache License 2.0 form |
+| `github.com/googleapis/gax-go/v2@v2.23.0` | BSD 3-clause terms |
+| `go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0.67.0` | Apache License 2.0 form |
+| `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp@v0.71.0` | Apache License 2.0 form |
+| `golang.org/x/oauth2@v0.36.0` | BSD 3-clause terms |
+| `golang.org/x/time@v0.15.0` | BSD 3-clause terms |
+| `google.golang.org/api@v0.287.1` | BSD 3-clause terms |
+| `google.golang.org/genproto@v0.0.0-20260319201613-d00831a3d3e7` | Apache License 2.0 form |
+| `google.golang.org/genproto/googleapis/api@v0.0.0-20260630182238-925bb5da69e7` | Apache License 2.0 form |
 
 The imported `google.golang.org/api/internal/third_party/uritemplates` package
 has a **separate nested `LICENSE`** (2013 Joshua Tacoma copyright, three
