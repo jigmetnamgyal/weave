@@ -1,7 +1,9 @@
 # M6.1b.2c.1a — Approval values, lookup contract and ledger policy
 
-**Status: pure domain/resolver implementation under verification/review. Ledger
-policy below is proposed, not an approved migration or deployed authority.**
+**Status: pure values/resolver merged in PR #37 (6cc6399). Owner confirmed the
+retention and separate database-capability policy; ledger migration/implementation
+remains next, with no deployed authority or cloud/runtime access.**
+
 Builds on spec 31/proposed ADR-020 and merged spec 30. No vendor SDK/API behavior
 is established by these tests.
 
@@ -47,7 +49,7 @@ activation. Missing ledger means no authority, not an approval fallback. Existin
 spec 30 binary behavior and synthetic witnesses remain unchanged; they cannot be
 promoted into real approvals. Fake sessions remain key-free.
 
-## Proposed concrete retention decision — approval required
+## Accepted retention decision — owner confirmed after PR37
 
 1. **Minimal nonreuse root retained indefinitely**, including after workspace
    deletion: environment, numeric project, opaque secret UUID, fixed resource
@@ -74,11 +76,11 @@ promoted into real approvals. Fake sessions remain key-free.
    missing records refuses future lookup. No reconstruction from labels or cloud
    reads; no resurrection after deletion/restore.
 
-This is the requested policy choice before migration. Indefinite minimal name/state
-retention and cascading tenant evidence are **recommendations**, not inferred from
-approval to merge spec 31. Review must confirm legal/operational suitability.
+The owner explicitly confirmed this policy after reviewing spec 32, separately
+from merging spec 31. Implementation, backup/operational handling and deployment
+review remain required; no blanket data-retention change for other records.
 
-## Proposed persistence/grants — approval and compatibility review required
+## Persistence/grants direction accepted — implementation/compatibility review required
 
 Future additive tables (names provisional):
 
@@ -146,7 +148,7 @@ nil/typed-nil authority and zero calls for invalid intent. These are **not real
 ledger permission/RLS or cloud-ownership tests**. Mutation/fuzz results recorded
 in the tracker.
 
-Next c.1b only after the above retention/grant decision: additive ledger/schema/
+Next c.1b under the confirmed retention/grant decision: additive ledger/schema/
 sqlc/protected store, isolated actual-role positive/negative tests, concurrent
 reservation/assignment/withdrawal, permanent nonreuse after tenant cascade,
 rollback/restore gates, explicit scoped readers and safe error/audit/idempotency.

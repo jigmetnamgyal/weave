@@ -1,6 +1,6 @@
 # ADR-020: Trusted secret approval and creation evidence
 
-- Status: Proposed; review before schema/adapter implementation
+- Status: Accepted authority/retention and database-capability direction (owner confirmation after PR #37); implementation/IAM review gates remain
 - Date: 2026-10-01
 - Scope: M6.1b.2c planning, subordinate to accepted ADR-018/019
 
@@ -16,7 +16,7 @@ Secret-manager version numbers are meaningful within one resource incarnation.
 An explicit numeric reference alone is insufficient if a name can be recreated.
 This is a design requirement, not a claim about observed GCP recreation behavior.
 
-## Proposed decision
+## Decision
 
 Introduce a **separate protected onboarding approval authority**, not another
 owner/admin request field or generic `SystemActor` operation. It records an
@@ -71,10 +71,13 @@ objects even if their future implementation shares a package.
 ## Consequences and decisions still required
 
 This adds a trusted onboarding control surface and restricted retention burden;
-review must approve minimal nonreuse-tombstone retention/deletion policy before
-migration. A tombstone is not customer content or a key but is still restricted
+the owner approved the minimal nonreuse retention/cascade policy and separate
+database-capability roles in spec 32. Concrete schema/implementation review remains
+required before migration. A tombstone is not customer content or a key but is still restricted
 metadata. Do not silently retain workspace identifiers or approval actor history
-forever: lifecycle, legal/retention policy and access must be explicit.
+forever: tenant evidence cascades on workspace deletion while only the restricted
+nonreuse name/state tuple persists indefinitely, per spec 32. Backups and existing
+audit retention are not redefined by that decision.
 
 Public SDK/API evidence must establish metadata identity, creation timestamp
 precision, exact version response naming, version state, integrity fields and
@@ -85,3 +88,11 @@ plane that can rewrite authority or disable safeguards.
 This proposal grants no cloud/key access, provisioning, IAM changes or paid-call
 consent. Approval of ADR-019's hosting direction does not approve this new ledger's
 retention/grants automatically. See spec 31 for the bounded contract and next slice.
+
+## Owner confirmation after PR37
+
+The owner explicitly confirmed indefinite minimal nonreuse inventory retention,
+cascading tenant approval evidence, separate restricted NOLOGIN reader/writer DB
+capabilities, and merge of PR37. This authorizes the next protected-ledger coding
+slice and its reviewed migration design, not login/service membership, cloud IAM,
+resource provisioning, customer/operator key access, paid calls or runtime activation.

@@ -9,10 +9,11 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-M6.1b.2c.1a in progress on `m6.1b2c1-approval-contract`: pure approval/creation
-values, scoped lookup/resolver ports with deterministic tests, and concrete proposed
-ledger retention/grants in spec 32. No persistence/IAM migration until that policy
-is approved; no SDK, cloud access, production verifier/accessor or runtime wiring.
+M6.1b.2c.1a merged (#37, 6cc6399); owner explicitly approved spec 32 retention
+and separate restricted reader/writer database-capability direction.
+Next: c.1b additive protected approval ledger/sqlc/store and isolated actual-role
+nonreuse/cascade/withdrawal/compatibility/recovery tests. No cloud IAM, login/service
+role attachment, SDK, key access, production composition or real Claude activation.
 
 ## Product Milestones
 
@@ -1135,3 +1136,23 @@ passing status is not review clearance. Bot reported next included review in abo
 25 minutes at this check. No paid-review upgrade or automatic polling scheduled.
 Next: retry included review after reset, address feedback and ask before merge;
 obtain spec 32 retention/grant decision separately before ledger DDL.
+
+
+### PR37 merged and ledger policy confirmed
+
+Merged with explicit owner approval as 6cc6399. Owner separately confirmed minimal
+indefinite nonreuse name/state retention, cascading tenant approval evidence on
+workspace deletion and distinct restricted reader/writer DB capabilities. ADR-020
+and spec 32 reflect accepted direction; concrete ledger implementation/migration
+review remains next. No existing audit/backup retention or cloud IAM changed.
+
+Merge head bc26e01 passes engineering CI; Greptile reviewed it (5/5), with its
+creation-boundary regression fixed/replied/resolved. All four surfaces rechecked,
+no unresolved/orphan feedback. CodeRabbit remained rate-limited, not completed;
+owner reviewed and explicitly authorized merge, so no bot clearance is claimed.
+Local main fast-forwarded; unrelated worktrees preserved. No cloud/key access,
+paid call, privileged-role attachment or runtime activation occurred.
+
+Next: implement c.1b protected ledger and explicit scoped reader/store using the
+approved policy, with additive migration and isolated actual-role security tests.
+Ask before merging that implementation; cloud adapter/delivery remain separate.
