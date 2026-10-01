@@ -1,6 +1,6 @@
 # M6.1b.2c.1b — Protected approval ledger
 
-**Status: implemented on `m6.1b2c1b-approval-ledger`, awaiting review. Unwired;
+**Status: merged as cf92599 (PR #38) with explicit owner approval. Unwired;
 no deployed authority, GCP access or real Claude activation.**
 
 ## Outcome, scope and security
@@ -138,6 +138,6 @@ the DB path; a raw actual-writer regression now independently exercises the
 constraint and catches the mutation. All mutations restored before passing runs.
 No timeout/assertion weakening, dependency or live paid/provider call.
 
-Next: all-surface PR/threat review and explicit merge approval. Only then a separate
+PR/threat review findings fixed and merge explicitly approved. Next: a separate
 pinned vendor/SDK/IAM contract review and authenticated onboarding/native identity,
 restore reconciliation and allocation/handoff/cleanup slices.

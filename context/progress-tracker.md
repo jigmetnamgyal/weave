@@ -9,10 +9,11 @@ Update this file after every meaningful implementation change. It is the concise
 
 ## Current Goal
 
-M6.1b.2c.1b in progress on `m6.1b2c1b-approval-ledger`: additive protected
-nonreuse/intent/assignment/approval/withdrawal metadata, capability roles without
-login attachment, scoped sqlc reader/writer and disposable actual-role tests.
-No SDK, GCP IAM, cloud/key access, runtime composition or real Claude activation.
+M6.1b.2c.1b protected ledger merged as cf92599 (PR #38), with explicit owner
+approval. Next: pinned GCP metadata-verification/retrieval adapter contract review
+and an unwired synthetic implementation; native identity, restore reconciliation
+and authenticated allocation/handoff/cleanup remain separate live-use gates.
+No cloud/key access, service role attachment or real Claude activation authorized.
 
 ## Product Milestones
 
@@ -1239,3 +1240,20 @@ not refreshed clearance. Greptile's summary still references initial 745c3f6;
 no refreshed bot approval is claimed. Final evidence/gaps posted in PR38 comment
 5930471992. Ready for owner review/explicit merge decision; not merged. No live
 role attachment/cloud/key access/activation, and restore gates remain open.
+
+
+### PR38 merged with owner approval
+
+Merged as cf92599 after explicit owner instruction. Final reviewed head 2e91e24
+passes engineering CI; refreshed Greptile review is 5/5, previous findings fixed,
+no new actionable finding. All four review surfaces paginated/cross-checked:
+zero unresolved threads or orphan URLs. CodeRabbit completed initial source review
+and source-confirmed its Down fix, but final rerun is rate-limited, not clearance;
+owner explicitly authorized merge with the documented review limitations.
+Local main fast-forwarded; unrelated worktrees/settings preserved. This merges
+additive metadata code, not a deployed ledger/identity or cloud/runtime authority.
+No dev database migration, login/service attachment, key access, provisioning,
+SDK addition, paid call or real Claude activation performed by the merge.
+Next: separately bounded pinned vendor/SDK/API/IAM review and unwired synthetic
+adapter; obtain approval for any native identity/cloud resources/live tests.
+Restore reconciliation and authenticated allocation/handoff/cleanup stay gated.

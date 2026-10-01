@@ -2,7 +2,7 @@
 
 **Status: pure values/resolver merged in PR #37 (6cc6399). Owner confirmed the
 retention and separate database-capability policy; ledger migration/implementation
-is implemented on the spec 33 review branch, with no deployed authority or
+is merged as cf92599 (PR #38, spec 33), with no deployed authority or
 cloud/runtime access.**
 
 Builds on spec 31/proposed ADR-020 and merged spec 30. No vendor SDK/API behavior
