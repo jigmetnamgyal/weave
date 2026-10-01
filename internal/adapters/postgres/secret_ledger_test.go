@@ -97,3 +97,17 @@ func TestSecretLedgerCancelledRollbackIntegration(t *testing.T) {
 		t.Fatal("rollback left transaction open")
 	}
 }
+
+// TestSecretLedgerInitialVersionPolicy tests the Go boundary without SQL masking.
+func TestSecretLedgerInitialVersionPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		version        int64
+		approved, want bool
+	}{
+		{1, false, false}, {5, false, true}, {6, false, false}, {1, true, false}, {4, true, false}, {5, true, true}, {6, true, true},
+	} {
+		if got := secretApprovalVersionAllowed(tt.version, 5, tt.approved); got != tt.want {
+			t.Fatalf("version %d approved=%v", tt.version, tt.approved)
+		}
+	}
+}

@@ -257,17 +257,15 @@ func (s *SecretApprovalWriter) PublishApproval(ctx context.Context, intent uuid.
 		if i.Provider != string(r.Scope.Provider) || i.Environment != r.Scope.Reference.Environment || i.ProjectNumber != r.Scope.Reference.ProjectNumber || i.SecretID != r.Scope.Reference.SecretID || i.ResourceFamily != r.ResourceFamily {
 			return application.ErrCredentialReferenceRejected
 		}
-		if r.Scope.Reference.Version < i.InitialVersion {
-			return application.ErrCredentialReferenceRejected
-		}
-		if r.Scope.Reference.Version != i.InitialVersion {
-			initial, err := q.HasInitialSecretApproval(ctx, postgresdb.HasInitialSecretApprovalParams{IntentID: intent, WorkspaceID: ws, SecretVersion: i.InitialVersion})
+		initialApproved := false
+		if r.Scope.Reference.Version > i.InitialVersion {
+			initialApproved, err = q.HasInitialSecretApproval(ctx, postgresdb.HasInitialSecretApprovalParams{IntentID: intent, WorkspaceID: ws, SecretVersion: i.InitialVersion})
 			if err != nil {
 				return err
 			}
-			if !initial {
-				return application.ErrCredentialReferenceRejected
-			}
+		}
+		if !secretApprovalVersionAllowed(r.Scope.Reference.Version, i.InitialVersion, initialApproved) {
+			return application.ErrCredentialReferenceRejected
 		}
 		assigned, err := q.GetSecretAssignment(ctx, postgresdb.GetSecretAssignmentParams{IntentID: intent, WorkspaceID: ws})
 		if err != nil {
@@ -315,4 +313,10 @@ func (s *SecretApprovalWriter) Withdraw(ctx context.Context, ws, intent, decisio
 		}
 		return q.InsertSecretWithdrawal(ctx, postgresdb.InsertSecretWithdrawalParams{ID: decision, IntentID: intent, WorkspaceID: ws, ApprovalID: id, PrincipalID: s.config.principal})
 	})
+}
+
+// secretApprovalVersionAllowed keeps the Go fence independently testable from
+// the equivalent SQL guard, so driver rejection cannot mask Go policy regressions.
+func secretApprovalVersionAllowed(version, initial int64, initialApproved bool) bool {
+	return version >= initial && (version == initial || initialApproved)
 }

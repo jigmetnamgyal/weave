@@ -1217,3 +1217,15 @@ version drift; cancelled callback reuses a healthy backend only after proper
 rollback; actual Down guard under non-bypass role refuses hidden rows. Ten ledger
 actual-role integration cases now pass. Four surfaces paginated/cross-checked,
 no orphan URLs; review replies/resolution and current-head revalidation next.
+
+Review fixes ccb5857: all three verified threads AI-attributed/replied with bare
+SHA and resolved. Current engineering CI passes; CodeRabbit explicitly source-
+confirmed the Down fix in its reply (did not claim rerunning tests). Complete
+post-fix isolated serialized integration, repository-source race suite, build and
+lint pass. Additional mutations: SQL initial-version guard, rollback cleanup and
+RLS downgrade caught. Removing Go's numeric-floor branch initially survived
+because PostgreSQL independently rejected it; extracted the equivalent pure Go
+policy and added a no-SQL table regression. The Go-floor mutation now catches
+independently. All ten total mutation cases caught/restored; ten ledger actual-
+role integrations pass three final isolated race repeats. Final current-head
+CI/four-surface review check remains before asking merge approval.
