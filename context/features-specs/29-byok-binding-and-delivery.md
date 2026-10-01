@@ -20,9 +20,9 @@ real Claude selection stays disabled until every activation gate passes.
    production wiring, new public API or image change. Merged in PR #35; see spec 30.
 2. **M6.1b.2c — GCP reference verification/retrieval:** proposed contract and split
    in [spec 31](31-gcp-secret-verification-and-retrieval-contract.md), with approval
-   authority/retention under proposed ADR-020. [Spec 32](32-protected-secret-approval-values-and-ledger-policy.md)
-   adds pure approval values/scoped reader contracts and proposes concrete ledger
-   retention/grants; no database authority yet. Then approved pinned SDK/license,
+   authority/retention under ADR-020. [Spec 32](32-protected-secret-approval-values-and-ledger-policy.md)
+   adds merged pure approval values/scoped reader contracts and owner-confirmed
+   retention/database-capability direction; no database authority yet. Then approved pinned SDK/license,
    exact project/resource/version validation, scoped workload identity, bounded
    response, payload integrity, safe errors and fake contract tests. No implicit
    credential discovery in CI/dev, cloud resource creation or paid model call.

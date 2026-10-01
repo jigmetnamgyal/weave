@@ -1,8 +1,9 @@
 # M6.1b.2c.0 — GCP verification/retrieval contract
 
 **Status: planning merged in PR #36 (1501e02), not implementation or live acceptance.**
-Follows merged spec 30, plan spec 29 and accepted ADR-018/019. ADR-020 proposes
-additional trusted approval/creation evidence; its retention/grants require review.
+Follows merged spec 30, plan spec 29 and accepted ADR-018/019. ADR-020 records the accepted approval/creation-evidence direction. Owner confirmed
+spec 32 retention/database-capability policy after PR37; ledger implementation,
+cloud IAM/identity attachment and vendor behavior remain review gates.
 
 ## Outcome, scope and non-scope
 
@@ -43,10 +44,10 @@ Unproven pre-existing/adopted resources are refused, not auto-approved from IAM
 success. A provider API key's actual account/billing/validity is not established by
 cloud metadata; no paid provider request validates it in this slice.
 
-ADR-020 proposes a protected PostgreSQL ledger and minimal permanent nonreuse
+ADR-020 selects a protected PostgreSQL ledger and minimal permanent nonreuse
 resource tombstones surviving workspace deletion. These are **not tables created
-by migration 00017**. Concrete retention, privileged grants, schema and approval
-writer need approval/review before implementation. UUID-shaped naming alone never
+by migration 00017**. Spec 32 retention/capability direction is owner-confirmed; concrete schema/writer
+implementation and identity attachment still require review. UUID-shaped naming alone never
 proves nonreuse; exact creation evidence and nonreuse authority work together.
 
 Current `provider_credential_versions.verification_id` must resolve to the exact
@@ -59,7 +60,7 @@ labels or turn synthetic rows into verified production bindings.
 Spec 32 implements pure approval/creation values and an unwired scoped reader/
 resolver contract only. It does not implement the ledger, cloud verifier or accessor.
 The sketches below remain design context; exact compiled reader signatures are in
-`internal/application/secret_approvals.go`. Retention/grants remain proposed.
+`internal/application/secret_approvals.go`. Ledger implementation remains pending.
 
 ### Proposed cloud consumer ports (illustrative, not compiled Go)
 
